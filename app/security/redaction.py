@@ -9,7 +9,7 @@ PATTERNS = [
     ),
     re.compile(r"\[Interface\][\s\S]*?(?=\n\s*\n|\Z)", re.IGNORECASE),
     re.compile(r"(/bot)[^/\s]+", re.IGNORECASE),
-    re.compile(r"\bvpn://[A-Za-z0-9_-]+={0,2}", re.IGNORECASE),
+    re.compile(r"\bvpn://[^\s\"'<>]*", re.IGNORECASE),
     re.compile(r"\botpauth://[^\s\"'<>]+", re.IGNORECASE),
     re.compile(
         r"((?:Authorization|Proxy-Authorization)\s*:\s*Bearer\s+)[^\s,}]+",

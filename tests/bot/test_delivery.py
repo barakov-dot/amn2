@@ -7,6 +7,7 @@ from app.bot.delivery import (
     build_config_delivery,
     render_template,
 )
+from app.security.redaction import redact
 
 
 def _decode_vpn_link(link: str) -> str:
@@ -76,3 +77,42 @@ def test_build_config_delivery_preserves_utf8_secret_artifacts():
     assert package.vpn_import_link_encoding == "base64-url-no-padding"
     assert _decode_vpn_link(package.vpn_import_link) == config_text
     assert "client-private" not in package.vpn_import_link
+
+
+def test_config_delivery_artifacts_redact_when_rendered_as_text():
+    config_text = (
+        "[Interface]\n"
+        "PrivateKey = client-private\n"
+        "Address = 10.8.0.2/32\n"
+        "[Peer]\n"
+        "PublicKey = server-public\n"
+        "PresharedKey = client-psk\n"
+        "Endpoint = vpn.example.com:30001\n"
+    )
+    package = build_config_delivery(
+        device_id=9,
+        config_version="amneziawg_v2",
+        config_text=config_text,
+        template_text="Import link: {vpn_link}",
+    )
+
+    unsafe_text = "\n".join(
+        [
+            package.message_text,
+            package.vpn_import_link,
+            package.qr_payload_text,
+            package.config_bytes.decode("utf-8"),
+        ]
+    )
+    safe = redact(unsafe_text)
+
+    for unsafe_value in [
+        "vpn://",
+        "client-private",
+        "client-psk",
+        "[Interface]",
+        "[Peer]",
+    ]:
+        assert unsafe_value not in safe
+    assert "[CONFIG REDACTED]" in safe
+    assert "[REDACTED]" in safe

@@ -4,6 +4,7 @@ from app.db.connection import connect
 from app.db.repositories import Repository
 from app.db.schema import initialize_schema
 from app.security.crypto import SecretBox
+from app.security.redaction import redact
 from app.services.config_delivery import build_device_config_delivery
 import app.vpn.amneziawg_v2.config as awg_config
 
@@ -135,3 +136,16 @@ def test_device_config_delivery_preserves_utf8_artifacts_from_template(tmp_path)
     assert result.delivery.qr_payload_text == result.config_text
     assert _decode_vpn_link(result.delivery.vpn_import_link) == result.config_text
     assert result.delivery.config_secret_class == "client-config-secret"
+    redacted_delivery_text = redact(
+        "\n".join(
+            [
+                result.delivery.message_text,
+                result.delivery.vpn_import_link,
+                result.delivery.qr_payload_text,
+            ]
+        )
+    )
+    assert "vpn://" not in redacted_delivery_text
+    assert "client-private" not in redacted_delivery_text
+    assert "client-psk" not in redacted_delivery_text
+    assert "[Interface]" not in redacted_delivery_text
