@@ -54,6 +54,12 @@ Do not store real `.env`, `servers.yml`, SSH private keys, bot tokens, `APP_SECR
 
 If heavy artifacts are needed later, put them in GitHub Releases or separate storage. Keep only URL, version, and checksum in the repository.
 
+### Secret-bearing delivery artifacts
+
+`.conf`, QR payload/PNG, and `vpn://` import links are `client-config-secret` artifacts.
+They must not be included in runtime diagnostics, plain backups, audit metadata, logs, or error output.
+If such an artifact reaches text diagnostic output, it must pass through `app.security.redaction.redact()`.
+
 ## Quick VPS Check
 
 Docker peer apply/revoke requires `runtime.config_path` in `servers.yml`. The app rewrites that persistent config inside the container and then runs `docker restart <container_name>`. Traffic collection and `sync-peers` are read-only and use `awg show <interface> dump`.

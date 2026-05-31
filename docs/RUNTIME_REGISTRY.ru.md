@@ -67,6 +67,12 @@ VPS_SSH_PASSWORD=CHANGE_ME_REAL_SSH_PASSWORD
 
 Если позже понадобится закреплять тяжелые бинарные артефакты, используем GitHub Releases или отдельное хранилище, а в репозитории держим URL, версию и checksum.
 
+### Secret-bearing delivery artifacts
+
+`.conf`, QR payload/PNG и `vpn://` import link считаются `client-config-secret`.
+Их нельзя включать в runtime diagnostics, plain backups, audit metadata, logs или error output.
+Если такой artifact попадает в текстовый diagnostic output, он должен проходить через `app.security.redaction.redact()`.
+
 ## Runtime modes
 
 ### `host_systemd`

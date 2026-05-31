@@ -93,6 +93,8 @@ def test_runtime_docs_point_to_manifest_checker_and_examples():
     assert "deploy/examples/servers.docker.example.yml" in text
     assert "docker exec amnezia-awg command -v awg" not in text
     assert "Не храним в Git" in text
+    assert "client-config-secret" in text
+    assert "`vpn://`" in text
 
 
 def test_vps_log_collection_doc_lists_commands_and_redaction_rules():
