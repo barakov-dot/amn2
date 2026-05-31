@@ -4,7 +4,7 @@ import ipaddress
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
 from app.db.repositories import Repository
 from app.security.crypto import SecretBox
@@ -30,6 +30,22 @@ class OrderNotApprovable(ValueError):
 
 class IpAllocationConflict(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class RemoteMutationResult:
+    operation_id: str
+    consistency_status: str
+    remote_applied: bool
+    local_applied: bool
+    recovery_note: str
+
+
+class RemoteOperationPartialFailure(RuntimeError):
+    def __init__(self, result: RemoteMutationResult, cause: Exception) -> None:
+        super().__init__(f"{result.operation_id} partial failure: {result.recovery_note}")
+        self.result = result
+        self.cause = cause
 
 
 @dataclass(frozen=True)
@@ -82,14 +98,26 @@ class AccessService:
         admin_telegram_id: int,
         config_version: str | None = None,
     ) -> AccessApprovalResult:
-        with self._repo.transaction():
-            return self._approve_order(
-                order_id=order_id,
-                server_id=server_id,
-                device_name=device_name,
-                admin_telegram_id=admin_telegram_id,
-                config_version=config_version,
-            )
+        remote_mutation: RemoteMutationResult | None = None
+
+        def record_remote_mutation(result: RemoteMutationResult) -> None:
+            nonlocal remote_mutation
+            remote_mutation = result
+
+        try:
+            with self._repo.transaction():
+                return self._approve_order(
+                    order_id=order_id,
+                    server_id=server_id,
+                    device_name=device_name,
+                    admin_telegram_id=admin_telegram_id,
+                    config_version=config_version,
+                    remote_mutation_observer=record_remote_mutation,
+                )
+        except Exception as exc:
+            if remote_mutation is not None and not remote_mutation.local_applied:
+                raise RemoteOperationPartialFailure(remote_mutation, exc) from exc
+            raise
 
     def _approve_order(
         self,
@@ -99,6 +127,7 @@ class AccessService:
         device_name: str,
         admin_telegram_id: int,
         config_version: str | None,
+        remote_mutation_observer: Callable[[RemoteMutationResult], None] | None = None,
     ) -> AccessApprovalResult:
         order = self._repo.get_order(order_id)
         config_version = validate_config_version(
@@ -132,6 +161,8 @@ class AccessService:
             public_key=keypair.public_key,
             preshared_key=preshared_key,
             config_version=config_version,
+            order_id=order_id,
+            remote_mutation_observer=remote_mutation_observer,
         )
         self._repo.mark_order_fulfilled(order_id, device_id)
         self._repo.record_admin_action(
@@ -156,6 +187,8 @@ class AccessService:
         public_key: str,
         preshared_key: str,
         config_version: str,
+        order_id: int,
+        remote_mutation_observer: Callable[[RemoteMutationResult], None] | None,
     ) -> tuple[int, str]:
         last_error: sqlite3.IntegrityError | None = None
 
@@ -227,6 +260,21 @@ class AccessService:
                         preshared_key=preshared_key,
                         vpn_ip=vpn_ip,
                     )
+                    if remote_mutation_observer is not None:
+                        remote_mutation_observer(
+                            RemoteMutationResult(
+                                operation_id="access.approve_order",
+                                consistency_status="partial-failure",
+                                remote_applied=True,
+                                local_applied=False,
+                                recovery_note=(
+                                    "Remote peer was applied before local approval "
+                                    f"completed. Put order {order_id} and device "
+                                    f"{device_id} into manual review, verify the "
+                                    "server peer, and reconcile local state."
+                                ),
+                            )
+                        )
                 return device_id, config_text
 
         raise IpAllocationConflict("Could not allocate a unique VPN IP address") from last_error

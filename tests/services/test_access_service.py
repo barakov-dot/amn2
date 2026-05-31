@@ -15,6 +15,7 @@ from app.services.access import (
     MaxDevicesReached,
     OrderAlreadyFulfilled,
     OrderNotApprovable,
+    RemoteOperationPartialFailure,
 )
 from app.server.peer_apply import PeerApplyError
 import app.vpn.amneziawg_v2.config as awg_config
@@ -206,6 +207,41 @@ def test_approve_order_rolls_back_device_and_order_when_admin_audit_fails(tmp_pa
         service.approve_order(order_id, server_id, "iPhone", admin_telegram_id=999)
 
     order = repo.get_order(order_id)
+    assert repo.count_active_devices(user_id) == 0
+    assert order["status"] == "manual_review"
+    assert order["device_id"] is None
+
+
+def test_approve_order_reports_partial_failure_when_remote_apply_succeeds_but_admin_audit_fails(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = FailingAdminActionRepository(conn)
+    user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="alice",
+        first_name="Alice",
+        last_name=None,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    order_id = repo.create_order(user_id=user_id, plan_id=None, payment_mode="free_test")
+    peer_applier = RecordingPeerApplier()
+
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret("test-secret-for-access-service-1234567890"),
+        peer_applier=peer_applier,
+    )
+    with pytest.raises(RemoteOperationPartialFailure) as exc_info:
+        service.approve_order(order_id, server_id, "iPhone", admin_telegram_id=999)
+
+    failure = exc_info.value.result
+    order = repo.get_order(order_id)
+    assert failure.operation_id == "access.approve_order"
+    assert failure.consistency_status == "partial-failure"
+    assert failure.remote_applied is True
+    assert failure.local_applied is False
+    assert "manual review" in failure.recovery_note.lower()
+    assert peer_applier.calls
     assert repo.count_active_devices(user_id) == 0
     assert order["status"] == "manual_review"
     assert order["device_id"] is None
