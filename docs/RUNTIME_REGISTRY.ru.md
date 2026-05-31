@@ -134,6 +134,18 @@ Server health checks используют первый slice `RemoteOperationRun
 
 Для Docker `apply-peer` и `revoke-peer` доступны только при заполненном `runtime.config_path`: приложение переписывает этот файл внутри контейнера и выполняет `docker restart <container_name>`. `collect-traffic` и `sync-peers` остаются read-only и читают `awg show <interface> dump`.
 
+## Local gate для state-changing remote operations
+
+Перед любым live VPS apply/revoke state-changing операция должна пройти локальный gate:
+
+- `remote-state-write` и `destructive-remote` операции описывают `operation_id`, `risk_class`, `consistency_status`, `local_side_effects`, `remote_side_effects`, `rollback_note` и `idempotency_key`;
+- `RemoteOperationRunner.plan()` для state-changing операций возвращает preview со статусом `consistency_status=dry-run`, без выполнения SSH;
+- `OperationPlan.to_safe_metadata()` не публикует command strings, а `audit_summary`, `rollback_note` и idempotency metadata пропускает через redaction;
+- `apply-peer` и `revoke-peer` dry-run preview показывают operation ID, risk class, side effects и rollback note, но не раскрывают PSK, private key, `.conf` или `vpn://`;
+- real VPS gate начинается только после focused tests и полного локального `pytest tests -v`.
+
+Этот gate не заменяет live проверку. Он нужен, чтобы live проверка была узкой, воспроизводимой и заранее имела rollback/recovery context.
+
 ## Быстрая проверка VPS
 
 Скопировать или запустить из репозитория:
