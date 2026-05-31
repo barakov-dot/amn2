@@ -150,6 +150,10 @@ def test_verified_user_device_config_email_sends_without_exposing_encrypted_secr
         metadata = actions[0]["metadata_json"]
         assert "ENCRYPTED_PRIVATE_SHOULD_NOT_APPEAR" not in metadata
         assert "private-phone" not in metadata
+        assert "vpn://" not in metadata
+        assert "psk-phone" not in metadata
+        assert "PrivateKey" not in metadata
+        assert "PresharedKey" not in metadata
 
 
 def test_recovery_start_link_sends_config_to_verified_email_and_is_one_time(
@@ -198,6 +202,13 @@ def test_recovery_start_link_sends_config_to_verified_email_and_is_one_time(
     with _repo(Path(settings.database_path)) as repo:
         row = _email_token_row(repo, purpose="recover_config")
         assert row["used_at"] is not None
+    with _repo(Path(settings.database_path)) as repo:
+        actions = repo.list_admin_actions_for_target_user(user_id)
+        serialized_actions = "\n".join(str(action["metadata_json"]) for action in actions)
+        assert token not in serialized_actions
+        assert "vpn://" not in serialized_actions
+        assert "private-phone" not in serialized_actions
+        assert "psk-phone" not in serialized_actions
 
 
 def test_recovery_start_rejects_unverified_email(tmp_path: Path):
