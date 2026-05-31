@@ -90,6 +90,18 @@ Server health checks use the first `RemoteOperationRunner` slice:
 
 This slice does not enable peer apply/revoke, Docker config writes, firewall changes, or destructive operations.
 
+## Local Gate For State-Changing Remote Operations
+
+Before any live VPS apply/revoke, state-changing operations must pass a local gate:
+
+- `remote-state-write` and `destructive-remote` operations describe `operation_id`, `risk_class`, `consistency_status`, `local_side_effects`, `remote_side_effects`, `rollback_note`, and `idempotency_key`;
+- `RemoteOperationRunner.plan()` returns a `consistency_status=dry-run` preview for state-changing operations without executing SSH;
+- `OperationPlan.to_safe_metadata()` does not publish command strings, and redacts `audit_summary`, `rollback_note`, and idempotency metadata;
+- `apply-peer` and `revoke-peer` dry-run previews show operation ID, risk class, side effects, and rollback note without exposing PSK, private keys, `.conf`, or `vpn://`;
+- the real VPS gate starts only after focused tests and the full local `pytest tests -v` suite pass.
+
+This gate does not replace live verification. It makes live verification narrow, repeatable, and backed by rollback/recovery context before a real server is touched.
+
 The script does not install packages, change firewall rules, restart services, or write files. It only reads VPS state and exits with code `1` when critical errors are found.
 
 ## Debug Snapshot
