@@ -28,10 +28,10 @@ class Settings(BaseSettings):
     client_awg_jmax: int = Field(default=70, alias="CLIENT_AWG_JMAX")
     client_awg_s1: int = Field(default=0, alias="CLIENT_AWG_S1")
     client_awg_s2: int = Field(default=0, alias="CLIENT_AWG_S2")
-    client_awg_h1: int = Field(default=1, alias="CLIENT_AWG_H1")
-    client_awg_h2: int = Field(default=2, alias="CLIENT_AWG_H2")
-    client_awg_h3: int = Field(default=3, alias="CLIENT_AWG_H3")
-    client_awg_h4: int = Field(default=4, alias="CLIENT_AWG_H4")
+    client_awg_h1: int | str = Field(default=1, alias="CLIENT_AWG_H1")
+    client_awg_h2: int | str = Field(default=2, alias="CLIENT_AWG_H2")
+    client_awg_h3: int | str = Field(default=3, alias="CLIENT_AWG_H3")
+    client_awg_h4: int | str = Field(default=4, alias="CLIENT_AWG_H4")
     expiration_notice_days: str = Field(default="7,5,3,1", alias="EXPIRATION_NOTICE_DAYS")
     vpn_port_min: int = Field(default=30001, alias="VPN_PORT_MIN")
     vpn_port_max: int = Field(default=65535, alias="VPN_PORT_MAX")
@@ -116,6 +116,10 @@ class Settings(BaseSettings):
                 "CLIENT_AWG_JMAX": self.client_awg_jmax,
                 "CLIENT_AWG_S1": self.client_awg_s1,
                 "CLIENT_AWG_S2": self.client_awg_s2,
+            }
+        )
+        _validate_awg_h_values(
+            {
                 "CLIENT_AWG_H1": self.client_awg_h1,
                 "CLIENT_AWG_H2": self.client_awg_h2,
                 "CLIENT_AWG_H3": self.client_awg_h3,
@@ -202,3 +206,13 @@ def _validate_non_negative(values: dict[str, int]) -> None:
     for name, value in values.items():
         if value < 0:
             raise ValueError(f"{name} must be non-negative")
+
+
+def _validate_awg_h_values(values: dict[str, int | str]) -> None:
+    for name, value in values.items():
+        if isinstance(value, int):
+            if value < 0:
+                raise ValueError(f"{name} must be non-negative")
+            continue
+        if not value.strip():
+            raise ValueError(f"{name} must be non-blank")

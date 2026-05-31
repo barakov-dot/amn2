@@ -309,7 +309,7 @@ http://127.0.0.1:3030/login
 
 В разделе `Config templates` можно редактировать клиентские `.conf.tpl` шаблоны для `amneziawg_v1_5` и `amneziawg_v2`. Сохранение пишет override-файл в `CLIENT_CONFIG_TEMPLATE_DIR`, не меняя встроенные шаблоны приложения. Перед сохранением шаблон валидируется: неизвестные placeholders отклоняются, а старый файл остается без изменений. Кнопка `Сбросить к встроенному шаблону` удаляет override-файл и возвращает дефолтный шаблон из пакета. После правки preview и `vpn://` на этой же странице должны отражать новые параметры.
 
-Постоянные параметры клиентского AmneziaWG-конфига берутся из `.env`: `CLIENT_DNS`, `CLIENT_ALLOWED_IPS`, `CLIENT_PERSISTENT_KEEPALIVE`, `CLIENT_AWG_JC`, `CLIENT_AWG_JMIN`, `CLIENT_AWG_JMAX`, `CLIENT_AWG_S1`, `CLIENT_AWG_S2`, `CLIENT_AWG_H1`...`CLIENT_AWG_H4`. Уникальные значения `PrivateKey`, `PresharedKey`, `Address`, имя устройства и имя файла формируются при создании устройства. `PublicKey` сервера и `Endpoint` берутся из `servers.yml`.
+Постоянные параметры клиентского AmneziaWG-конфига берутся из `.env`: `CLIENT_DNS`, `CLIENT_ALLOWED_IPS`, `CLIENT_PERSISTENT_KEEPALIVE`, `CLIENT_AWG_JC`, `CLIENT_AWG_JMIN`, `CLIENT_AWG_JMAX`, `CLIENT_AWG_S1`, `CLIENT_AWG_S2`, `CLIENT_AWG_H1`...`CLIENT_AWG_H4`. `CLIENT_AWG_H1-H4` могут быть числами или диапазонами из AmneziaWG вида `1622123045-2053868572`. Уникальные значения `PrivateKey`, `PresharedKey`, `Address`, имя устройства и имя файла формируются при создании устройства. `PublicKey` сервера и `Endpoint` берутся из `servers.yml`.
 
 В карточке сервера доступна `Синхронизация peer`: read-only проверка сравнивает live peer из AmneziaWG с локальными устройствами в базе. В отчете:
 

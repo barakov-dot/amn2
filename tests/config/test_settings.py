@@ -136,6 +136,25 @@ def test_settings_reads_client_amneziawg_parameters():
     assert defaults.h4 == 404
 
 
+def test_settings_accepts_client_awg_h_range_values_from_amneziawg():
+    settings = Settings(
+        _env_file=None,
+        telegram_bot_token="CHANGE_ME",
+        app_secret_key="test-secret",
+        client_awg_h1="1622123045-2053868572",
+        client_awg_h2="2065609453-2121973747",
+        client_awg_h3="2144678566-2147363193",
+        client_awg_h4="2147478675-2147482564",
+    )
+
+    defaults = settings.client_config_defaults
+
+    assert defaults.h1 == "1622123045-2053868572"
+    assert defaults.h2 == "2065609453-2121973747"
+    assert defaults.h3 == "2144678566-2147363193"
+    assert defaults.h4 == "2147478675-2147482564"
+
+
 def test_settings_rejects_invalid_client_amneziawg_parameters():
     with pytest.raises(ValidationError, match="CLIENT_AWG_JMIN"):
         Settings(

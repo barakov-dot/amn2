@@ -49,6 +49,10 @@ class ConfigDeliveryPackage:
     qr_filename: str
     qr_png_bytes: bytes
     vpn_import_link: str
+    qr_payload_text: str = ""
+    config_secret_class: str = "client-config-secret"
+    config_content_encoding: str = "utf-8"
+    vpn_import_link_encoding: str = "base64-url-no-padding"
 
 
 def build_config_delivery(
@@ -74,6 +78,7 @@ def build_config_delivery(
         qr_filename=f"amneziya-device-{device_id}.qr.png",
         qr_png_bytes=_build_qr_png(config_text),
         vpn_import_link=vpn_import_link,
+        qr_payload_text=config_text,
     )
 
 

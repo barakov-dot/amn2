@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+AwgParameter = int | str
+
 
 @dataclass(frozen=True)
 class ClientConfigDefaults:
@@ -11,10 +13,10 @@ class ClientConfigDefaults:
     jmax: int = 70
     s1: int = 0
     s2: int = 0
-    h1: int = 1
-    h2: int = 2
-    h3: int = 3
-    h4: int = 4
+    h1: AwgParameter = 1
+    h2: AwgParameter = 2
+    h3: AwgParameter = 3
+    h4: AwgParameter = 4
 
 
 @dataclass(frozen=True)
@@ -32,10 +34,10 @@ class ClientConfigInput:
     jmax: int
     s1: int
     s2: int
-    h1: int
-    h2: int
-    h3: int
-    h4: int
+    h1: AwgParameter
+    h2: AwgParameter
+    h3: AwgParameter
+    h4: AwgParameter
 
 
 def render_client_config(config: ClientConfigInput) -> str:
