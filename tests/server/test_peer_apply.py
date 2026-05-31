@@ -188,6 +188,61 @@ def test_apply_peer_raises_redacted_error_when_remote_command_fails(tmp_path):
     assert "secret-psk" not in str(exc_info.value)
 
 
+def test_docker_config_read_failure_redacts_secret_stderr(tmp_path):
+    server = _docker_server(tmp_path)
+    peer = PeerApplyInput(
+        public_key="peer-public",
+        preshared_key="secret-psk",
+        vpn_ip="10.8.0.2",
+    )
+    ssh = RecordingSshClient(
+        result=CommandResult(
+            exit_code=1,
+            stdout="[Interface]\nPrivateKey = server-private\n[Peer]\nPresharedKey = secret-psk\n",
+            stderr=(
+                "failed with vpn://W0ludGVyZmFjZV0K and "
+                "Authorization: Bearer remote-token-value"
+            ),
+        )
+    )
+
+    with pytest.raises(PeerApplyError) as exc_info:
+        apply_peer(server, peer, ssh_client=ssh)
+
+    message = str(exc_info.value)
+    assert "server-private" not in message
+    assert "secret-psk" not in message
+    assert "vpn://" not in message
+    assert "remote-token-value" not in message
+
+
+def test_docker_restart_failure_redacts_secret_output(tmp_path):
+    server = _docker_server(tmp_path)
+    peer = PeerApplyInput(
+        public_key="peer-public",
+        preshared_key="secret-psk",
+        vpn_ip="10.8.0.2",
+    )
+    ssh = RecordingSshClient(
+        results=[
+            CommandResult(exit_code=0, stdout=_docker_config(), stderr=""),
+            CommandResult(exit_code=0, stdout="", stderr=""),
+            CommandResult(
+                exit_code=1,
+                stdout="restart failed with secret-psk",
+                stderr="Authorization: Bearer docker-restart-token",
+            ),
+        ]
+    )
+
+    with pytest.raises(PeerApplyError) as exc_info:
+        apply_peer(server, peer, ssh_client=ssh)
+
+    message = str(exc_info.value)
+    assert "secret-psk" not in message
+    assert "docker-restart-token" not in message
+
+
 def test_build_peer_revoke_dry_run_lists_remove_command(tmp_path):
     server = _server(tmp_path)
 

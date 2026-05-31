@@ -377,7 +377,8 @@ def _restart_docker_container(server: ServerConfig, *, ssh_client: SshClient) ->
             redact(
                 "Docker container restart failed "
                 f"(exit_code={result.exit_code}). "
-                f"stdout={result.stdout!r} stderr={result.stderr!r}"
+                f"stdout={_stream_status(result.stdout)} "
+                f"stderr={result.stderr!r}"
             )
         )
 
