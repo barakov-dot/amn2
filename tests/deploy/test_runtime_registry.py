@@ -119,10 +119,15 @@ def test_vps_retest_protocol_doc_lists_repeatable_test_steps():
     checklist = checklist_path.read_text(encoding="utf-8")
 
     assert "git pull origin codex-vps-test-prep" in text
+    assert "codex/vps-gate-remote-ops-integration" in text
     assert "git log -1 --oneline" in text
     assert "python -m pip install -e ." in text
     assert "python -m app.cli bot check-network" in text
     assert "python -m app.cli server check --config servers.yml --server debian-vps-1 --dry-run" in text
+    assert "python -m app.cli server apply-peer --config servers.yml --server debian-vps-1 --public-key TEST_PEER_PUBLIC_KEY --preshared-key TEST_PEER_PSK --vpn-ip TEST_VPN_IP --dry-run" in text
+    assert "python -m app.cli server revoke-peer --config servers.yml --server debian-vps-1 --public-key TEST_PEER_PUBLIC_KEY --dry-run" in text
+    assert "Operation ID: server.peer.apply" in text
+    assert "Consistency status: dry-run" in text
     assert "bash deploy/runtime/check_vps.sh" in text
     assert "AMN_RUNTIME=docker AMN_CONTAINER_NAME=amnezia-awg AMN_INTERFACE=awg0 bash deploy/runtime/collect_debug_snapshot.sh" in text
     assert "что нажимал" in text
