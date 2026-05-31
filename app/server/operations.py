@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from app.security.redaction import redact
+
 
 RiskClass = Literal[
     "read-only",
@@ -89,6 +91,21 @@ class OperationPlan:
     remote_side_effects: tuple[str, ...]
     idempotency_key: str | None = None
 
+    def to_safe_metadata(self) -> dict[str, object]:
+        return {
+            "operation_id": self.operation_id,
+            "risk_class": self.risk_class,
+            "consistency_status": self.consistency_status,
+            "audit_summary": redact(self.audit_summary),
+            "rollback_note": redact(self.rollback_note),
+            "local_side_effects": list(self.local_side_effects),
+            "remote_side_effects": list(self.remote_side_effects),
+            "idempotency_key": (
+                redact(self.idempotency_key) if self.idempotency_key is not None else None
+            ),
+            "command_count": len(self.commands),
+        }
+
 
 @dataclass(frozen=True)
 class StepExecutionResult:
@@ -132,12 +149,16 @@ _STATE_CHANGING_CONSISTENCY_STATUSES = {
 }
 
 
+def is_state_changing_risk_class(risk_class: RiskClass) -> bool:
+    return risk_class in _STATE_CHANGING_RISK_CLASSES
+
+
 def validate_operation(operation: RemoteOperation) -> None:
     if not operation.id.strip():
         raise OperationValidationError("operation id cannot be blank")
     if operation.risk_class == "destructive-remote" and not operation.confirmation_required:
         raise OperationValidationError("destructive-remote operation requires confirmation")
-    if operation.risk_class in _STATE_CHANGING_RISK_CLASSES:
+    if is_state_changing_risk_class(operation.risk_class):
         _validate_state_changing_metadata(operation)
     for key in operation.inputs:
         lowered = key.lower()
