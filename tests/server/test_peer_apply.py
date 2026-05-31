@@ -33,6 +33,26 @@ def test_build_peer_apply_dry_run_lists_commands_without_secrets(tmp_path):
     assert "No changes will be made" in report
 
 
+def test_build_peer_apply_dry_run_includes_safe_operation_metadata(tmp_path):
+    server = _server(tmp_path)
+    peer = PeerApplyInput(
+        public_key="peer-public",
+        preshared_key="secret-psk",
+        vpn_ip="10.8.0.2",
+    )
+
+    report = build_peer_apply_dry_run(server, peer)
+
+    assert "Operation ID: server.peer.apply" in report
+    assert "Risk class: remote-state-write" in report
+    assert "Consistency status: dry-run" in report
+    assert "Local side effects: none" in report
+    assert "Remote side effects: awg-peer-add, service-reload" in report
+    assert "Rollback note:" in report
+    assert "secret-psk" not in report
+    assert "PresharedKey" not in report
+
+
 def test_build_peer_apply_dry_run_marks_docker_runtime_as_pending(tmp_path):
     server = _docker_server(tmp_path)
     peer = PeerApplyInput(
@@ -252,6 +272,20 @@ def test_build_peer_revoke_dry_run_lists_remove_command(tmp_path):
     assert "awg set awg0 peer peer-public remove" in report
     assert "systemctl reload awg-quick@awg0" in report
     assert "No changes will be made" in report
+
+
+def test_build_peer_revoke_dry_run_includes_safe_operation_metadata(tmp_path):
+    server = _server(tmp_path)
+
+    report = build_peer_revoke_dry_run(server, "peer-public")
+
+    assert "Operation ID: server.peer.revoke" in report
+    assert "Risk class: remote-state-write" in report
+    assert "Consistency status: dry-run" in report
+    assert "Local side effects: none" in report
+    assert "Remote side effects: awg-peer-remove, service-reload" in report
+    assert "Rollback note:" in report
+    assert "secret" not in report.lower()
 
 
 def test_build_peer_revoke_dry_run_lists_docker_remove_command(tmp_path):

@@ -191,7 +191,7 @@ def test_runner_builds_plan_without_executing_ssh():
     assert ssh.calls == []
 
 
-def test_runner_plan_includes_state_changing_metadata_without_executing_ssh():
+def test_runner_plan_marks_state_changing_metadata_as_dry_run_without_executing_ssh():
     ssh = RecordingSshClient()
     runner = RemoteOperationRunner(ssh)
 
@@ -199,10 +199,44 @@ def test_runner_plan_includes_state_changing_metadata_without_executing_ssh():
 
     assert plan.operation_id == "server.peer.apply"
     assert plan.risk_class == "remote-state-write"
-    assert plan.consistency_status == "pending-remote"
+    assert plan.consistency_status == "dry-run"
     assert plan.local_side_effects == ("device-create", "admin-audit")
     assert plan.remote_side_effects == ("awg-peer-add", "service-reload")
     assert plan.idempotency_key == "server.peer.apply:1:7"
+    assert ssh.calls == []
+
+
+def test_runner_plan_safe_metadata_excludes_commands_and_redacts_secrets():
+    ssh = RecordingSshClient()
+    runner = RemoteOperationRunner(ssh)
+    operation = _state_changing_operation(
+        rollback_note=(
+            "Rollback with PresharedKey = secret-psk and "
+            "vpn://W0ludGVyZmFjZV0K payload if remote apply is inconsistent."
+        )
+    )
+
+    metadata = runner.plan(operation).to_safe_metadata()
+
+    assert metadata == {
+        "operation_id": "server.peer.apply",
+        "risk_class": "remote-state-write",
+        "consistency_status": "dry-run",
+        "audit_summary": "Apply peer to server",
+        "rollback_note": (
+            "Rollback with PresharedKey = [REDACTED] and [REDACTED] "
+            "payload if remote apply is inconsistent."
+        ),
+        "local_side_effects": ["device-create", "admin-audit"],
+        "remote_side_effects": ["awg-peer-add", "service-reload"],
+        "idempotency_key": "server.peer.apply:1:7",
+        "command_count": 1,
+    }
+    rendered_metadata = repr(metadata)
+    assert "commands" not in metadata
+    assert "secret-psk" not in rendered_metadata
+    assert "vpn://" not in rendered_metadata
+    assert "awg set" not in rendered_metadata
     assert ssh.calls == []
 
 

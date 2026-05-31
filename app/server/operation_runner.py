@@ -7,6 +7,7 @@ from app.server.operations import (
     OperationResult,
     RemoteOperation,
     StepExecutionResult,
+    is_state_changing_risk_class,
     validate_operation,
 )
 from app.server.ssh import SshClient
@@ -18,10 +19,15 @@ class RemoteOperationRunner:
 
     def plan(self, operation: RemoteOperation) -> OperationPlan:
         validate_operation(operation)
+        consistency_status = (
+            "dry-run"
+            if is_state_changing_risk_class(operation.risk_class)
+            else operation.consistency_status
+        )
         return OperationPlan(
             operation_id=operation.id,
             risk_class=operation.risk_class,
-            consistency_status=operation.consistency_status,
+            consistency_status=consistency_status,
             commands=tuple(step.command for step in operation.steps),
             audit_summary=operation.audit_summary,
             rollback_note=operation.rollback_note,

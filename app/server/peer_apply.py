@@ -70,6 +70,11 @@ def build_peer_apply_dry_run(server: ServerConfig, peer: PeerApplyInput) -> str:
     lines = [
         f"Dry-run peer apply: {redact(server.name)}",
         "No changes will be made.",
+        *_mutation_dry_run_metadata_lines(
+            operation_id="server.peer.apply",
+            remote_side_effects=("awg-peer-add", "service-reload"),
+            rollback_note="Remove the peer from the remote interface and reload the VPN service.",
+        ),
         f"Target: ssh {server.ssh.user}@{redact(server.ssh.host)} -p {server.ssh.port}",
         "Planned commands:",
     ]
@@ -92,6 +97,11 @@ def build_peer_revoke_dry_run(server: ServerConfig, peer_public_key: str) -> str
     lines = [
         f"Dry-run peer revoke: {redact(server.name)}",
         "No changes will be made.",
+        *_mutation_dry_run_metadata_lines(
+            operation_id="server.peer.revoke",
+            remote_side_effects=("awg-peer-remove", "service-reload"),
+            rollback_note="Re-apply the peer from local device metadata if revoke was accidental.",
+        ),
         f"Target: ssh {server.ssh.user}@{redact(server.ssh.host)} -p {server.ssh.port}",
         "Planned commands:",
     ]
@@ -175,6 +185,29 @@ def _build_revoke_command(server: ServerConfig, peer_public_key: str) -> str:
     )
 
 
+def _mutation_dry_run_metadata_lines(
+    *,
+    operation_id: str,
+    remote_side_effects: tuple[str, ...],
+    rollback_note: str,
+    local_side_effects: tuple[str, ...] = (),
+) -> list[str]:
+    return [
+        f"Operation ID: {redact(operation_id)}",
+        "Risk class: remote-state-write",
+        "Consistency status: dry-run",
+        f"Local side effects: {_format_effects(local_side_effects)}",
+        f"Remote side effects: {_format_effects(remote_side_effects)}",
+        f"Rollback note: {redact(rollback_note)}",
+    ]
+
+
+def _format_effects(effects: tuple[str, ...]) -> str:
+    if not effects:
+        return "none"
+    return ", ".join(redact(effect) for effect in effects)
+
+
 def _build_docker_peer_apply_dry_run(server: ServerConfig, peer: PeerApplyInput) -> str:
     container = server.runtime.container_name or "<missing-container>"
     config_path = server.runtime.config_path or "<missing-config-path>"
@@ -182,6 +215,13 @@ def _build_docker_peer_apply_dry_run(server: ServerConfig, peer: PeerApplyInput)
         [
             f"Dry-run peer apply: {redact(server.name)}",
             "No changes will be made.",
+            *_mutation_dry_run_metadata_lines(
+                operation_id="server.peer.apply",
+                remote_side_effects=("docker-config-peer-upsert", "container-restart"),
+                rollback_note=(
+                    "Remove the peer from the persistent config and restart the Docker container."
+                ),
+            ),
             f"Target: ssh {server.ssh.user}@{redact(server.ssh.host)} -p {server.ssh.port}",
             f"Container: {redact(container)}",
             "Peer will be written to persistent config, then the Docker container will be restarted.",
@@ -201,6 +241,13 @@ def _build_docker_peer_revoke_dry_run(server: ServerConfig, peer_public_key: str
         [
             f"Dry-run peer revoke: {redact(server.name)}",
             "No changes will be made.",
+            *_mutation_dry_run_metadata_lines(
+                operation_id="server.peer.revoke",
+                remote_side_effects=("docker-config-peer-remove", "container-restart"),
+                rollback_note=(
+                    "Re-apply the peer from local device metadata and restart the Docker container."
+                ),
+            ),
             f"Target: ssh {server.ssh.user}@{redact(server.ssh.host)} -p {server.ssh.port}",
             f"Container: {redact(container)}",
             "Peer will be removed from persistent config, then the Docker container will be restarted.",
