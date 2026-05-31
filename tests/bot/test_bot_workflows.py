@@ -8,7 +8,7 @@ from app.db.repositories import Repository
 from app.db.schema import initialize_schema
 from app.security.crypto import SecretBox
 from app.server.peer_apply import PeerApplyError
-from app.services.access import AccessService
+from app.services.access import AccessService, RemoteOperationPartialFailure
 from app.services.traffic import PeerTraffic, TrafficService
 
 SECRET = "bot-workflow-secret-value-with-more-than-32-chars"
@@ -684,6 +684,52 @@ def test_user_reset_removes_all_owned_peers_before_marking_devices_revoked(tmp_p
     assert repo.get_device(second_id)["status"] == "revoked"
 
 
+def test_user_reset_reports_partial_failure_when_one_remote_remove_succeeds_and_next_fails(tmp_path):
+    repo = _repo(tmp_path)
+    user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="alice",
+        first_name="Alice",
+        last_name=None,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    first_id = _create_encrypted_device(
+        repo,
+        user_id=user_id,
+        server_id=server_id,
+        name="phone",
+    )
+    second_id = _create_encrypted_device(
+        repo,
+        user_id=user_id,
+        server_id=server_id,
+        name="laptop",
+    )
+    peer_remover = FailingAfterFirstPeerRemover()
+    workflow = BotWorkflow(
+        repo=repo,
+        admin_telegram_ids={9001},
+        peer_remover=peer_remover,
+    )
+    with pytest.raises(RemoteOperationPartialFailure) as exc_info:
+        workflow.reset_user_devices(
+            telegram_id=1001,
+            revoked_at="2026-05-27T12:00:00Z",
+        )
+
+    failure = exc_info.value.result
+    assert failure.operation_id == "bot.reset_user_devices"
+    assert failure.consistency_status == "partial-failure"
+    assert failure.remote_applied is True
+    assert failure.local_applied is False
+    assert "manual review" in failure.recovery_note.lower()
+    assert peer_remover.calls == [
+        {"server_id": server_id, "peer_public_key": "peer-phone"}
+    ]
+    assert repo.get_device(first_id)["status"] == "active"
+    assert repo.get_device(second_id)["status"] == "active"
+
+
 def test_database_admin_role_grants_workflow_admin_access(tmp_path):
     repo = _repo(tmp_path)
     repo.upsert_user(
@@ -831,6 +877,21 @@ class RecordingPeerRemover:
         )
         if self._error is not None:
             raise self._error
+
+
+class FailingAfterFirstPeerRemover:
+    def __init__(self):
+        self.calls = []
+
+    def remove_peer(self, *, server, peer_public_key):
+        if self.calls:
+            raise PeerApplyError("remove failed after first peer")
+        self.calls.append(
+            {
+                "server_id": int(server["id"]),
+                "peer_public_key": peer_public_key,
+            }
+        )
 
 
 class RecordingPeerApplier:

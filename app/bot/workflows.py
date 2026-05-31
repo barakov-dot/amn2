@@ -15,7 +15,11 @@ from app.security.crypto import SecretBox
 from app.security.redaction import redact
 from app.server.peer_apply import PeerApplyError
 from app.services.config_delivery import build_device_config_delivery
-from app.services.access import AccessService
+from app.services.access import (
+    AccessService,
+    RemoteMutationResult,
+    RemoteOperationPartialFailure,
+)
 from app.services.traffic import DeviceTrafficView, build_device_traffic_view
 from app.vpn.amneziawg_v2.config import ClientConfigDefaults
 from app.vpn.config_versions import validate_config_version
@@ -422,11 +426,33 @@ class BotWorkflow:
             key=lambda device: int(device["id"]),
         )
         if self._peer_remover is not None:
+            remote_removed_device_ids: list[int] = []
             for device in devices:
-                self._peer_remover.remove_peer(
-                    server=self._repo.get_server(int(device["server_id"])),
-                    peer_public_key=str(device["peer_public_key"]),
-                )
+                try:
+                    self._peer_remover.remove_peer(
+                        server=self._repo.get_server(int(device["server_id"])),
+                        peer_public_key=str(device["peer_public_key"]),
+                    )
+                except Exception as exc:
+                    if remote_removed_device_ids:
+                        raise RemoteOperationPartialFailure(
+                            RemoteMutationResult(
+                                operation_id="bot.reset_user_devices",
+                                consistency_status="partial-failure",
+                                remote_applied=True,
+                                local_applied=False,
+                                recovery_note=(
+                                    "One or more remote peers were removed before "
+                                    "local device reset completed. Put affected "
+                                    "devices into manual review, verify server "
+                                    "peers, and reconcile local device statuses. "
+                                    f"Remote removed device ids: {remote_removed_device_ids}."
+                                ),
+                            ),
+                            exc,
+                        ) from exc
+                    raise
+                remote_removed_device_ids.append(int(device["id"]))
         return self._repo.revoke_user_devices(
             int(user["id"]),
             reason="user_reset",
