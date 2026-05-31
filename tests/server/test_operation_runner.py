@@ -40,6 +40,76 @@ def test_validate_operation_allows_read_only_remote_steps():
     )
 
     validate_operation(operation)
+    assert operation.consistency_status == "read-only"
+
+
+def _state_changing_operation(
+    *,
+    rollback_note: str = "Remove the peer remotely and mark local device pending review.",
+    remote_side_effects: tuple[str, ...] = ("awg-peer-add", "service-reload"),
+    idempotency_key: str | None = "server.peer.apply:1:7",
+    consistency_status: str = "pending-remote",
+) -> RemoteOperation:
+    return RemoteOperation(
+        id="server.peer.apply",
+        risk_class="remote-state-write",
+        server_id="debian-vps-1",
+        actor_id="web-admin",
+        actor_auth_method="session",
+        inputs={
+            "server_id": "1",
+            "device_id": "7",
+            "public_key_ref": "peer-public-key",
+        },
+        secret_refs=("device.preshared_key",),
+        local_side_effects=("device-create", "admin-audit"),
+        remote_side_effects=remote_side_effects,
+        command_policy="state-write",
+        steps=(
+            CommandStep(
+                id="apply-peer",
+                command="awg set awg0 peer PEER_PUBLIC_KEY allowed-ips 10.8.0.7/32",
+                command_policy_class="state-write",
+                expected_remote_effect="add awg peer",
+                allowed_exit_codes=(0,),
+                timeout_seconds=30,
+                output_policy="redact-and-store",
+                stdin_secret_ref="device.preshared_key",
+            ),
+        ),
+        consistency_policy="remote-first",
+        consistency_status=consistency_status,
+        audit_summary="Apply peer to server",
+        rollback_note=rollback_note,
+        confirmation_required=True,
+        idempotency_key=idempotency_key,
+    )
+
+
+def test_validate_operation_allows_state_changing_operation_metadata():
+    operation = _state_changing_operation()
+
+    validate_operation(operation)
+
+    assert operation.consistency_status == "pending-remote"
+    assert operation.rollback_note.startswith("Remove the peer remotely")
+    assert operation.local_side_effects == ("device-create", "admin-audit")
+    assert operation.remote_side_effects == ("awg-peer-add", "service-reload")
+    assert operation.idempotency_key == "server.peer.apply:1:7"
+
+
+def test_validate_operation_rejects_state_changing_operation_without_recovery_metadata():
+    operation = _state_changing_operation(rollback_note="", idempotency_key=None)
+
+    with pytest.raises(OperationValidationError, match="recovery metadata"):
+        validate_operation(operation)
+
+
+def test_validate_operation_rejects_state_changing_operation_without_remote_side_effects():
+    operation = _state_changing_operation(remote_side_effects=())
+
+    with pytest.raises(OperationValidationError, match="remote side effect"):
+        validate_operation(operation)
 
 
 @pytest.mark.parametrize(
@@ -118,6 +188,21 @@ def test_runner_builds_plan_without_executing_ssh():
     assert plan.operation_id == "server.health.check"
     assert plan.risk_class == "read-only-remote"
     assert plan.commands == ("cat /etc/os-release",)
+    assert ssh.calls == []
+
+
+def test_runner_plan_includes_state_changing_metadata_without_executing_ssh():
+    ssh = RecordingSshClient()
+    runner = RemoteOperationRunner(ssh)
+
+    plan = runner.plan(_state_changing_operation())
+
+    assert plan.operation_id == "server.peer.apply"
+    assert plan.risk_class == "remote-state-write"
+    assert plan.consistency_status == "pending-remote"
+    assert plan.local_side_effects == ("device-create", "admin-audit")
+    assert plan.remote_side_effects == ("awg-peer-add", "service-reload")
+    assert plan.idempotency_key == "server.peer.apply:1:7"
     assert ssh.calls == []
 
 

@@ -21,9 +21,13 @@ class RemoteOperationRunner:
         return OperationPlan(
             operation_id=operation.id,
             risk_class=operation.risk_class,
+            consistency_status=operation.consistency_status,
             commands=tuple(step.command for step in operation.steps),
             audit_summary=operation.audit_summary,
             rollback_note=operation.rollback_note,
+            local_side_effects=operation.local_side_effects,
+            remote_side_effects=operation.remote_side_effects,
+            idempotency_key=operation.idempotency_key,
         )
 
     def apply(self, operation: RemoteOperation) -> OperationResult:
