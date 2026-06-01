@@ -193,6 +193,34 @@ Scoped API tokens для будущих external integrations.
 
 В первом slice разрешены только read-only scopes `server:read` и `metrics:read`. `config:read`, write scopes и destructive scopes остаются future gates.
 
+### `config_share_tokens`
+
+Hash-only share tokens для будущей public/self-service выдачи client config artifacts.
+
+Поля:
+
+- `id` - стабильный token id для audit/revoke;
+- `token_hash` - только hash вида `sha256:<digest>`, raw share token не хранится;
+- `token_prefix` - короткий display-only prefix, недостаточный для доступа;
+- `purpose` - сейчас только `config_share`;
+- `created_by_actor` - кто создал share;
+- `owner_user_id` - ссылка на `users.id`;
+- `bound_device_ids_json` - JSON-список разрешенных devices;
+- `bound_server_ids_json` - JSON-список разрешенных servers;
+- `allowed_artifact_kinds_json` - JSON-список разрешенных artifacts;
+- `target_client`;
+- `expires_at`;
+- `revoked_at`;
+- `revoked_by_actor`;
+- `one_time`;
+- `max_downloads`;
+- `download_count`;
+- `last_used_at`;
+- `last_used_ip_hash`;
+- `created_at`.
+
+Таблица является no-route contract: public/self-service download routes, API `config:read` и Local Agent `/configs` остаются заблокированы отдельными policy gates.
+
 ## Настройки режимов
 
 Минимальные настройки в `.env`:

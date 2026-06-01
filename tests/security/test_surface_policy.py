@@ -31,6 +31,8 @@ REQUIRED_POLICY_IDS = {
     "web.email.config_send",
     "web.email.recovery_start",
     "public_token.email_recover_submit",
+    "self.device.config_download.blocked",
+    "public_token.config_share_download.blocked",
     "web.servers.create",
     "web.servers.update",
     "web.servers.disable",
@@ -142,6 +144,33 @@ def test_secret_and_public_token_policies_have_required_gates():
             assert "ttl" in gates, policy.policy_id
             assert "one-time" in gates, policy.policy_id
             assert policy.audit_required is True, policy.policy_id
+
+
+def test_future_config_download_policies_remain_blocked_without_routes():
+    for policy_id in (
+        "self.device.config_download.blocked",
+        "public_token.config_share_download.blocked",
+        "local_agent.configs.read.blocked",
+    ):
+        policy = get_surface_policy(policy_id)
+        gates = _gate_text(policy)
+
+        assert policy.implementation_mode == "blocked-future"
+        assert policy.enables_new_behavior is False
+        assert policy.live_retest_required is False
+        assert policy.secret_class == "client-config-secret"
+        assert policy.audit_required is True
+        assert "redaction" in gates
+        assert "no raw secret" in gates
+
+    share_policy = get_surface_policy("public_token.config_share_download.blocked")
+    share_gates = _gate_text(share_policy)
+    assert share_policy.risk_class == "public-token-secret-read"
+    assert "hash lookup" in share_gates
+    assert "ttl" in share_gates
+    assert "one-time" in share_gates
+    assert "resource binding" in share_gates
+    assert "rate limit" in share_gates
 
 
 def test_web_admin_post_policies_require_csrf():

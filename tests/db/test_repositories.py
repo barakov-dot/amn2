@@ -805,6 +805,95 @@ def test_api_token_rotation_lineage_is_stored_without_raw_token(tmp_path):
     assert "new-raw-token" not in dict(rotated).values()
 
 
+def test_config_share_token_lifecycle_stores_hash_policy_and_usage_state(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    user_id, server_id = _create_user_and_server(repo)
+    device_id = repo.create_device(
+        user_id=user_id,
+        server_id=server_id,
+        name="phone",
+        duration_days=7,
+        vpn_ip="10.8.0.99",
+        peer_public_key="share-public",
+        peer_private_key_encrypted="v1:share-private",
+        preshared_key_encrypted="v1:share-psk",
+        config_version="amneziawg_v2",
+    )
+
+    repo.create_config_share_token(
+        token_id="share-token-1",
+        token_hash="sha256:share-token-hash",
+        token_prefix="share-to",
+        purpose="config_share",
+        created_by_actor="web-admin:7",
+        owner_user_id=user_id,
+        bound_device_ids=[device_id],
+        bound_server_ids=[server_id],
+        allowed_artifact_kinds=["wireguard_conf", "amnezia_import_uri"],
+        target_client="amnezia_generic",
+        expires_at="2026-06-01T12:30:00Z",
+        one_time=True,
+        max_downloads=1,
+    )
+
+    token = repo.get_config_share_token_for_auth(
+        token_hash="sha256:share-token-hash",
+        now="2026-06-01T12:00:00Z",
+    )
+    assert token is not None
+    assert token["id"] == "share-token-1"
+    assert token["owner_user_id"] == user_id
+    assert token["owner_status"] == "active"
+    assert token["token_hash"] == "sha256:share-token-hash"
+    assert token["token_prefix"] == "share-to"
+    assert token["purpose"] == "config_share"
+    assert token["bound_device_ids_json"] == f"[{device_id}]"
+    assert token["bound_server_ids_json"] == f"[{server_id}]"
+    assert token["allowed_artifact_kinds_json"] == '["amnezia_import_uri", "wireguard_conf"]'
+    assert token["target_client"] == "amnezia_generic"
+    assert token["download_count"] == 0
+    assert "raw-share-token" not in dict(token).values()
+
+    assert (
+        repo.get_config_share_token_for_auth(
+            token_hash="sha256:share-token-hash",
+            now="2026-06-01T12:30:00Z",
+        )
+        is None
+    )
+    assert repo.mark_config_share_token_used(
+        "share-token-1",
+        "2026-06-01T12:05:00Z",
+        ip_hash="sha256:ip-hash",
+    )
+    used = conn.execute(
+        "SELECT * FROM config_share_tokens WHERE id = ?",
+        ("share-token-1",),
+    ).fetchone()
+    assert used["download_count"] == 1
+    assert used["last_used_at"] == "2026-06-01T12:05:00Z"
+    assert used["last_used_ip_hash"] == "sha256:ip-hash"
+    assert (
+        repo.get_config_share_token_for_auth(
+            token_hash="sha256:share-token-hash",
+            now="2026-06-01T12:06:00Z",
+        )
+        is None
+    )
+    assert repo.revoke_config_share_token(
+        "share-token-1",
+        "2026-06-01T12:07:00Z",
+        revoked_by_actor="web-admin:7",
+    )
+    assert not repo.revoke_config_share_token(
+        "share-token-1",
+        "2026-06-01T12:08:00Z",
+        revoked_by_actor="web-admin:7",
+    )
+
+
 def _create_user_and_server(repo: Repository) -> tuple[int, int]:
     user_id = repo.upsert_user(
         telegram_id=2001,

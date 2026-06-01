@@ -179,6 +179,29 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (rotated_from_token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
         );
 
+        CREATE TABLE IF NOT EXISTS config_share_tokens (
+            id TEXT PRIMARY KEY,
+            token_hash TEXT NOT NULL UNIQUE,
+            token_prefix TEXT NOT NULL,
+            purpose TEXT NOT NULL CHECK (purpose IN ('config_share')),
+            created_by_actor TEXT NOT NULL,
+            owner_user_id INTEGER NOT NULL,
+            bound_device_ids_json TEXT NOT NULL,
+            bound_server_ids_json TEXT NOT NULL,
+            allowed_artifact_kinds_json TEXT NOT NULL,
+            target_client TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            revoked_at TEXT,
+            revoked_by_actor TEXT,
+            one_time INTEGER NOT NULL DEFAULT 1,
+            max_downloads INTEGER NOT NULL CHECK (max_downloads > 0),
+            download_count INTEGER NOT NULL DEFAULT 0 CHECK (download_count >= 0),
+            last_used_at TEXT,
+            last_used_ip_hash TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS ignored_remote_peers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             server_id INTEGER NOT NULL,
@@ -208,6 +231,10 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             ON email_recovery_tokens(user_id, purpose, expires_at);
         CREATE INDEX IF NOT EXISTS idx_api_tokens_owner
             ON api_tokens(owner_user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_config_share_tokens_owner
+            ON config_share_tokens(owner_user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_config_share_tokens_expiry
+            ON config_share_tokens(expires_at);
         CREATE INDEX IF NOT EXISTS idx_ignored_remote_peers_server
             ON ignored_remote_peers(server_id, created_at DESC);
         """

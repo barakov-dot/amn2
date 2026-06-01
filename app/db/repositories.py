@@ -1617,6 +1617,150 @@ class Repository:
         self._commit()
         return cursor.rowcount > 0
 
+    def create_config_share_token(
+        self,
+        *,
+        token_id: str,
+        token_hash: str,
+        token_prefix: str,
+        purpose: str,
+        created_by_actor: str,
+        owner_user_id: int,
+        bound_device_ids: list[int],
+        bound_server_ids: list[int],
+        allowed_artifact_kinds: list[str],
+        target_client: str,
+        expires_at: str,
+        created_at: str | None = None,
+        one_time: bool = True,
+        max_downloads: int = 1,
+    ) -> None:
+        if not token_id.strip():
+            raise ValueError("token_id is required")
+        if not token_hash.strip():
+            raise ValueError("token_hash is required")
+        if not token_prefix.strip():
+            raise ValueError("token_prefix is required")
+        if purpose != "config_share":
+            raise ValueError("unsupported config share token purpose")
+        if not created_by_actor.strip():
+            raise ValueError("created_by_actor is required")
+        if owner_user_id <= 0:
+            raise ValueError("owner_user_id is required")
+        if not bound_device_ids:
+            raise ValueError("bound_device_ids are required")
+        if not bound_server_ids:
+            raise ValueError("bound_server_ids are required")
+        if not allowed_artifact_kinds:
+            raise ValueError("allowed_artifact_kinds are required")
+        if not target_client.strip():
+            raise ValueError("target_client is required")
+        if not expires_at.strip():
+            raise ValueError("expires_at is required")
+        if max_downloads <= 0:
+            raise ValueError("max_downloads must be positive")
+
+        self._conn.execute(
+            """
+            INSERT INTO config_share_tokens (
+                id,
+                token_hash,
+                token_prefix,
+                purpose,
+                created_by_actor,
+                owner_user_id,
+                bound_device_ids_json,
+                bound_server_ids_json,
+                allowed_artifact_kinds_json,
+                target_client,
+                expires_at,
+                one_time,
+                max_downloads,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(?, CURRENT_TIMESTAMP))
+            """,
+            (
+                token_id,
+                token_hash,
+                token_prefix,
+                purpose,
+                created_by_actor,
+                owner_user_id,
+                json.dumps(bound_device_ids),
+                json.dumps(bound_server_ids),
+                json.dumps(sorted(allowed_artifact_kinds)),
+                target_client,
+                expires_at,
+                int(one_time),
+                max_downloads,
+                created_at,
+            ),
+        )
+        self._commit()
+
+    def get_config_share_token_for_auth(
+        self,
+        *,
+        token_hash: str,
+        now: str,
+    ) -> sqlite3.Row | None:
+        return self._conn.execute(
+            """
+            SELECT config_share_tokens.*, users.status AS owner_status
+            FROM config_share_tokens
+            JOIN users ON users.id = config_share_tokens.owner_user_id
+            WHERE token_hash = ?
+              AND purpose = 'config_share'
+              AND revoked_at IS NULL
+              AND expires_at > ?
+              AND download_count < max_downloads
+            """,
+            (token_hash, now),
+        ).fetchone()
+
+    def mark_config_share_token_used(
+        self,
+        token_id: str,
+        used_at: str,
+        *,
+        ip_hash: str | None = None,
+    ) -> bool:
+        cursor = self._conn.execute(
+            """
+            UPDATE config_share_tokens
+            SET download_count = download_count + 1,
+                last_used_at = ?,
+                last_used_ip_hash = ?
+            WHERE id = ?
+              AND revoked_at IS NULL
+              AND download_count < max_downloads
+            """,
+            (used_at, ip_hash, token_id),
+        )
+        self._commit()
+        return cursor.rowcount > 0
+
+    def revoke_config_share_token(
+        self,
+        token_id: str,
+        revoked_at: str,
+        *,
+        revoked_by_actor: str,
+    ) -> bool:
+        cursor = self._conn.execute(
+            """
+            UPDATE config_share_tokens
+            SET revoked_at = ?,
+                revoked_by_actor = ?
+            WHERE id = ?
+              AND revoked_at IS NULL
+            """,
+            (revoked_at, revoked_by_actor, token_id),
+        )
+        self._commit()
+        return cursor.rowcount > 0
+
     def _commit(self) -> None:
         if self._transaction_depth == 0:
             self._conn.commit()
