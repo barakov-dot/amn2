@@ -287,7 +287,7 @@ def create_import_preview(
     *,
     source_summary: Mapping[str, object],
     target_summary: Mapping[str, object] | None,
-    import_kind: str,
+    import_kind: ImportKind | str,
 ) -> BackupPreview:
     if import_kind != "existing-state":
         raise BackupPolicyError(f"Unsupported import kind: {import_kind}")
