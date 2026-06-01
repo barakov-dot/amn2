@@ -33,6 +33,13 @@ REQUIRED_POLICY_IDS = {
     "public_token.email_recover_submit",
     "self.device.config_download.blocked",
     "public_token.config_share_download.blocked",
+    "backup.metadata_export.blocked",
+    "backup.redacted_create.blocked",
+    "backup.encrypted_full_create.blocked",
+    "restore.preview.blocked",
+    "restore.apply.blocked",
+    "import.existing_state_preview.blocked",
+    "import.existing_state_apply.blocked",
     "web.servers.create",
     "web.servers.update",
     "web.servers.disable",
@@ -171,6 +178,45 @@ def test_future_config_download_policies_remain_blocked_without_routes():
     assert "one-time" in share_gates
     assert "resource binding" in share_gates
     assert "rate limit" in share_gates
+
+
+def test_future_backup_import_policies_remain_blocked_without_apply():
+    preview_policy_ids = (
+        "backup.metadata_export.blocked",
+        "restore.preview.blocked",
+        "import.existing_state_preview.blocked",
+    )
+    apply_policy_ids = (
+        "backup.redacted_create.blocked",
+        "backup.encrypted_full_create.blocked",
+        "restore.apply.blocked",
+        "import.existing_state_apply.blocked",
+    )
+
+    for policy_id in preview_policy_ids + apply_policy_ids:
+        policy = get_surface_policy(policy_id)
+        gates = _gate_text(policy)
+
+        assert policy.implementation_mode == "blocked-future"
+        assert policy.enables_new_behavior is False
+        assert policy.audit_required is True
+        assert "backup/import policy" in policy.operation_contract
+        assert "no raw secret" in gates
+
+    for policy_id in preview_policy_ids:
+        policy = get_surface_policy(policy_id)
+        gates = _gate_text(policy)
+
+        assert policy.risk_class in {"read-only", "secret-adjacent-read"}
+        assert policy.live_retest_required is False
+        assert "preview-only" in gates
+
+    for policy_id in apply_policy_ids:
+        policy = get_surface_policy(policy_id)
+        gates = _gate_text(policy)
+
+        assert policy.risk_class in {"secret-read", "destructive"}
+        assert "explicit confirmation" in gates
 
 
 def test_web_admin_post_policies_require_csrf():
