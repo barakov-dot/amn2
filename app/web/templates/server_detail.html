@@ -70,12 +70,12 @@
         <form action="/servers/{{ server.id }}/health/run" method="post">
           <input name="csrf_token" type="hidden" value="{{ csrf_token }}">
           <button class="button" type="submit">Run health check</button>
-          <p class="action-note">Read-only local record: stores health status only; no VPS changes.</p>
+          <p class="action-note">Только локальная запись: сохраняет статус проверки; VPS не меняет.</p>
         </form>
         <form action="/servers/{{ server.id }}/sync/run" method="post">
           <input name="csrf_token" type="hidden" value="{{ csrf_token }}">
           <button class="button button-secondary" type="submit">Run peer sync</button>
-          <p class="action-note">Read-only compare: inventories AmneziaWG peers without adding or removing them.</p>
+          <p class="action-note">Только сравнение: инвентаризирует peer AmneziaWG без добавления или удаления.</p>
         </form>
         <form action="/servers/{{ server.id }}/disable" method="post" data-confirm="Disable this server in the admin database only? No VPS peers will be changed.">
           <input name="csrf_token" type="hidden" value="{{ csrf_token }}">

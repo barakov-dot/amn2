@@ -670,10 +670,10 @@ def test_handle_admin_template_shows_editable_template_and_reset_button():
 
     asyncio.run(handle_admin_template(callback, workflow=workflow))
 
-    assert "Config ready template" in callback.message.answers[0]["text"]
+    assert "Шаблон сообщения с конфигом" in callback.message.answers[0]["text"]
     assert "DefaultVPN" in callback.message.answers[0]["text"]
     assert _button_texts(callback.message.answers[0]["reply_markup"]) == [
-        ["Reset template"]
+        ["Сбросить шаблон"]
     ]
     assert callback.answered is True
 

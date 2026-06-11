@@ -336,7 +336,7 @@ def render_my_tariff(devices: Iterable[Mapping[str, object]], *, now: str) -> st
                 "",
                 str(device["name"]),
                 f"{text('common.status')}: {device['status']}",
-                f"{text('common.tariff')}: {duration_days} days",
+                f"{text('common.tariff')}: {_format_days_ru(duration_days)}",
                 f"{text('common.expires')}: {expires_at or 'unknown'}",
                 f"{text('common.days_left')}: {_days_left(expires_at, now) if expires_at else 'unknown'}",
             ]
@@ -359,7 +359,7 @@ def render_my_devices(devices: Iterable[Mapping[str, object]], *, now: str) -> s
                 f"#{device['id']} {device['name']}",
                 f"{text('common.config')}: {_version_label(str(device['config_version']))}",
                 f"{text('common.status')}: {device['status']}",
-                f"{text('common.tariff')}: {int(device['duration_days'])} days",
+                f"{text('common.tariff')}: {_format_days_ru(int(device['duration_days']))}",
                 f"{text('common.days_left')}: {_days_left(expires_at, now) if expires_at else 'unknown'}",
                 f"{text('common.connected')}: {text('common.yes') if connected else text('common.no')}",
             ]
@@ -372,22 +372,22 @@ def render_my_devices(devices: Iterable[Mapping[str, object]], *, now: str) -> s
 
 
 def render_admin_template(template_text: str) -> tuple[str, InlineKeyboardMarkup]:
-    text = (
-        "Config ready template\n\n"
+    body = (
+        "Шаблон сообщения с конфигом\n\n"
         f"{template_text}\n\n"
-        "Edit support is handled through the template workflow; reset is available below."
+        "Редактирование идет через workflow шаблонов; сброс доступен ниже."
     )
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Reset template",
+                    text="Сбросить шаблон",
                     callback_data=ADMIN_TEMPLATE_RESET_CALLBACK,
                 )
             ]
         ]
     )
-    return text, keyboard
+    return body, keyboard
 
 
 def _days_left(expires_at: str, now: str) -> int:
@@ -397,6 +397,16 @@ def _days_left(expires_at: str, now: str) -> int:
     if seconds_left <= 0:
         return 0
     return int((seconds_left + 86399) // 86400)
+
+
+def _format_days_ru(days: int) -> str:
+    if days % 10 == 1 and days % 100 != 11:
+        unit = "день"
+    elif 2 <= days % 10 <= 4 and not 12 <= days % 100 <= 14:
+        unit = "дня"
+    else:
+        unit = "дней"
+    return f"{days} {unit}"
 
 
 def _parse_datetime(value: str) -> datetime:

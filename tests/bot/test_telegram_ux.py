@@ -321,8 +321,9 @@ def test_render_admin_users_lists_users_and_device_counts():
 def test_render_admin_template_shows_reset_action():
     text, keyboard = render_admin_template("Hello {device_id}")
 
-    assert "Config ready template" in text
+    assert "Шаблон сообщения с конфигом" in text
     assert "Hello {device_id}" in text
+    assert _button_texts(keyboard) == [["Сбросить шаблон"]]
     assert _callback_data(keyboard) == [[ADMIN_TEMPLATE_RESET_CALLBACK]]
 
 
@@ -362,7 +363,7 @@ def test_render_my_tariff_shows_device_expiration_and_days_left():
 
     assert "Мой тариф" in text
     assert "phone" in text
-    assert "30 days" in text
+    assert "30 дней" in text
     assert "Дней осталось: 30" in text
 
 
@@ -386,7 +387,7 @@ def test_render_my_devices_lists_devices_with_tariff_and_connection_state():
     assert "Мои устройства" in text
     assert "#7 phone" in text
     assert "AmneziaWG 2.0" in text
-    assert "Тариф: 30 days" in text
+    assert "Тариф: 30 дней" in text
     assert "Дней осталось: 30" in text
     assert "Подключался: да" in text
 

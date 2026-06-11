@@ -160,9 +160,9 @@ def test_server_detail_shows_config_health_and_actions(tmp_path: Path):
     assert "45 ms" in response.text
     assert f"/servers/{server_id}/health/run" in response.text
     assert f"/servers/{server_id}/sync/run" in response.text
-    assert "Read-only local record: stores health status only; no VPS changes." in response.text
+    assert "Только локальная запись: сохраняет статус проверки; VPS не меняет." in response.text
     assert (
-        "Read-only compare: inventories AmneziaWG peers without adding or removing them."
+        "Только сравнение: инвентаризирует peer AmneziaWG без добавления или удаления."
         in response.text
     )
     assert (
