@@ -1,8 +1,15 @@
 from __future__ import annotations
 
-from aiogram.types import BufferedInputFile, FSInputFile
+from aiogram.types import (
+    BufferedInputFile,
+    CopyTextButton,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 
 from app.bot.assets import BOT_START_HEADER_IMAGE_PATH
+from app.bot.delivery import TELEGRAM_COPY_TEXT_MAX_LENGTH
 from app.bot.texts import text
 from app.bot.ux import (
     ADMIN_APPROVE_PREFIX,
@@ -557,6 +564,7 @@ async def _send_delivery(bot, result) -> None:
         await bot.send_message(
             chat_id=result.user_telegram_id,
             text=result.delivery.vpn_import_link_text,
+            reply_markup=_build_vpn_import_link_copy_markup(result.delivery),
         )
     if getattr(result.delivery, "app_links_text", ""):
         await bot.send_message(
@@ -578,6 +586,25 @@ async def _send_delivery(bot, result) -> None:
             filename=result.delivery.qr_filename,
         ),
         caption=result.delivery.qr_caption,
+    )
+
+
+def _build_vpn_import_link_copy_markup(delivery) -> InlineKeyboardMarkup | None:
+    copy_text = getattr(delivery, "vpn_import_link_copy_text", None)
+    button_text = getattr(delivery, "vpn_import_link_copy_button_text", "")
+    if not copy_text or not button_text:
+        return None
+    if len(copy_text) > TELEGRAM_COPY_TEXT_MAX_LENGTH:
+        return None
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=button_text,
+                    copy_text=CopyTextButton(text=copy_text),
+                )
+            ]
+        ]
     )
 
 

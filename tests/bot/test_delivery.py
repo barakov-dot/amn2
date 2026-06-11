@@ -10,6 +10,9 @@ from app.bot.delivery import (
 from app.security.redaction import redact
 
 
+TELEGRAM_COPY_TEXT_MAX_LENGTH = 256
+
+
 def _decode_vpn_link(link: str) -> str:
     payload = link.removeprefix("vpn://")
     padding = "=" * (-len(payload) % 4)
@@ -45,6 +48,32 @@ def test_build_config_delivery_creates_conf_and_qr_png_bytes():
     assert package.config_caption == "VPN-конфиг (.conf)"
     assert package.qr_caption == "QR-код import-ссылки vpn://"
     assert package.qr_payload_text == package.vpn_import_link
+
+
+def test_build_config_delivery_marks_short_import_link_copyable():
+    package = build_config_delivery(
+        device_id=1,
+        config_version="amneziawg_v2",
+        config_text="short",
+        template_text="VPN готов.",
+    )
+
+    assert len(package.vpn_import_link) <= TELEGRAM_COPY_TEXT_MAX_LENGTH
+    assert package.vpn_import_link_copy_button_text == "Скопировать ссылку"
+    assert package.vpn_import_link_copy_text == package.vpn_import_link
+
+
+def test_build_config_delivery_does_not_mark_long_import_link_copyable():
+    package = build_config_delivery(
+        device_id=2,
+        config_version="amneziawg_v2",
+        config_text="x" * TELEGRAM_COPY_TEXT_MAX_LENGTH,
+        template_text="VPN готов.",
+    )
+
+    assert len(package.vpn_import_link) > TELEGRAM_COPY_TEXT_MAX_LENGTH
+    assert package.vpn_import_link_copy_button_text == ""
+    assert package.vpn_import_link_copy_text is None
 
 
 def test_render_template_leaves_unknown_placeholders_visible_for_admins_to_fix():

@@ -24,6 +24,8 @@ APP_LINKS = {
 
 CONFIG_FILE_CAPTION = "VPN-конфиг (.conf)"
 QR_CODE_CAPTION = "QR-код import-ссылки vpn://"
+IMPORT_LINK_COPY_BUTTON_TEXT = "Скопировать ссылку"
+TELEGRAM_COPY_TEXT_MAX_LENGTH = 256
 
 DEFAULT_CONFIG_READY_TEMPLATE = """Ваш VPN-конфиг готов.
 
@@ -49,6 +51,8 @@ class ConfigDeliveryPackage:
     qr_png_bytes: bytes
     vpn_import_link: str
     vpn_import_link_text: str = ""
+    vpn_import_link_copy_button_text: str = ""
+    vpn_import_link_copy_text: str | None = None
     app_links_text: str = ""
     config_caption: str = CONFIG_FILE_CAPTION
     qr_caption: str = QR_CODE_CAPTION
@@ -67,6 +71,7 @@ def build_config_delivery(
     template_text: str,
 ) -> ConfigDeliveryPackage:
     vpn_import_link = build_vpn_import_link(config_text)
+    vpn_import_link_copy_text = _copyable_vpn_import_link(vpn_import_link)
     basename = _artifact_basename(device_name=device_name, device_id=device_id)
     context = {
         "device_id": str(device_id),
@@ -85,6 +90,10 @@ def build_config_delivery(
         qr_png_bytes=_build_qr_png(vpn_import_link),
         vpn_import_link=vpn_import_link,
         vpn_import_link_text=f"Ссылка для импорта:\n{vpn_import_link}",
+        vpn_import_link_copy_button_text=(
+            IMPORT_LINK_COPY_BUTTON_TEXT if vpn_import_link_copy_text else ""
+        ),
+        vpn_import_link_copy_text=vpn_import_link_copy_text,
         app_links_text=_render_app_links(),
         qr_payload_text=vpn_import_link,
     )
@@ -112,6 +121,12 @@ def _build_qr_png(config_text: str) -> bytes:
     output = io.BytesIO()
     image.save(output, format="PNG")
     return output.getvalue()
+
+
+def _copyable_vpn_import_link(vpn_import_link: str) -> str | None:
+    if 0 < len(vpn_import_link) <= TELEGRAM_COPY_TEXT_MAX_LENGTH:
+        return vpn_import_link
+    return None
 
 
 def _artifact_basename(*, device_name: str | None, device_id: int) -> str:

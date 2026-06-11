@@ -569,6 +569,12 @@ def test_handle_admin_approve_calls_workflow_and_returns_config_preview():
     assert callback.bot.sent_messages[0]["chat_id"] == 1001
     assert "VPN-конфиг" in callback.bot.sent_messages[0]["text"]
     assert callback.bot.sent_messages[1]["text"].startswith("Ссылка для импорта:")
+    assert _button_texts(callback.bot.sent_messages[1]["reply_markup"]) == [
+        ["Скопировать ссылку"]
+    ]
+    assert _copy_texts(callback.bot.sent_messages[1]["reply_markup"]) == [
+        ["vpn://import/test"]
+    ]
     assert "DefaultVPN" in callback.bot.sent_messages[2]["text"]
     assert callback.bot.sent_documents[0]["chat_id"] == 1001
     assert callback.bot.sent_documents[0]["document"].filename.endswith(".conf")
@@ -887,6 +893,8 @@ class FakeWorkflow:
             delivery=SimpleNamespace(
                 message_text="Ваш VPN-конфиг готов.",
                 vpn_import_link_text="Ссылка для импорта:\nvpn://import/test",
+                vpn_import_link_copy_button_text="Скопировать ссылку",
+                vpn_import_link_copy_text="vpn://import/test",
                 app_links_text="DefaultVPN:\nhttps://github.com/amnezia-vpn/DefaultVPN",
                 config_filename=f"Neobyatnaya-AMNZ-{device_id}.conf",
                 config_bytes=b"[Interface]\nPrivateKey = test",
@@ -1000,6 +1008,8 @@ class FakeWorkflow:
             delivery=SimpleNamespace(
                 message_text="Ваш VPN-конфиг готов.",
                 vpn_import_link_text="Ссылка для импорта:\nvpn://import/test",
+                vpn_import_link_copy_button_text="Скопировать ссылку",
+                vpn_import_link_copy_text="vpn://import/test",
                 app_links_text="DefaultVPN:\nhttps://github.com/amnezia-vpn/DefaultVPN",
                 config_filename="Neobyatnaya-AMNZ-7.conf",
                 config_bytes=b"[Interface]\nPrivateKey = test",
@@ -1032,6 +1042,8 @@ class FakeWorkflow:
             delivery=SimpleNamespace(
                 message_text="Ваш VPN-конфиг готов.",
                 vpn_import_link_text="Ссылка для импорта:\nvpn://import/test",
+                vpn_import_link_copy_button_text="Скопировать ссылку",
+                vpn_import_link_copy_text="vpn://import/test",
                 app_links_text="DefaultVPN:\nhttps://github.com/amnezia-vpn/DefaultVPN",
                 config_filename=f"Neobyatnaya-AMNZ-{device_id}.conf",
                 config_bytes=b"[Interface]\nPrivateKey = test",
@@ -1067,6 +1079,13 @@ class FakeBot:
 
 def _button_texts(markup):
     return [[button.text for button in row] for row in markup.inline_keyboard]
+
+
+def _copy_texts(markup):
+    return [
+        [button.copy_text.text if button.copy_text else None for button in row]
+        for row in markup.inline_keyboard
+    ]
 
 
 def _callback_data(markup):
