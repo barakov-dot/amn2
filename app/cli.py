@@ -89,6 +89,14 @@ def build_parser() -> argparse.ArgumentParser:
     import_external.add_argument("--revoke-reason", default=None)
     import_external.add_argument("--pretty", action="store_true")
 
+    backfill_external = device_sub.add_parser("backfill-external")
+    backfill_external.add_argument("--db-copy", required=True)
+    backfill_external.add_argument("--input", required=True)
+    backfill_mode = backfill_external.add_mutually_exclusive_group(required=True)
+    backfill_mode.add_argument("--dry-run", action="store_true")
+    backfill_mode.add_argument("--apply", action="store_true")
+    backfill_external.add_argument("--pretty", action="store_true")
+
     server = sub.add_parser("server")
     server_sub = server.add_subparsers(dest="server_command", required=True)
 
@@ -241,6 +249,15 @@ def main() -> None:
                 expires_at=args.expires_at,
                 revoked_at=args.revoked_at,
                 revoke_reason=args.revoke_reason,
+                pretty=args.pretty,
+            )
+        )
+    elif args.command == "device" and args.device_command == "backfill-external":
+        print(
+            run_device_backfill_external(
+                db_copy_path=Path(args.db_copy),
+                input_path=Path(args.input),
+                apply=args.apply,
                 pretty=args.pretty,
             )
         )
@@ -435,6 +452,187 @@ def run_device_import_external(
         return _json_dumps(payload, pretty=pretty)
     finally:
         conn.close()
+
+
+def run_device_backfill_external(
+    *,
+    db_copy_path: Path,
+    input_path: Path,
+    apply: bool,
+    pretty: bool = False,
+) -> str:
+    records = _load_external_backfill_records(input_path)
+    planned_devices = [
+        _safe_external_backfill_device(record, device_id=None)
+        for record in records
+    ]
+
+    imported_devices: list[dict[str, object]] = []
+    if apply:
+        db_copy_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = connect(db_copy_path)
+        try:
+            initialize_schema(conn)
+            repo = Repository(conn)
+            with repo.transaction():
+                for record in records:
+                    user_id = repo.upsert_user(
+                        telegram_id=int(record["telegram_id"]),
+                        username=record["username"],
+                        first_name=record["first_name"],
+                        last_name=record["last_name"],
+                    )
+                    server_id = repo.ensure_default_server(
+                        name=str(record["server_name"]),
+                        network_cidr=str(record["server_network_cidr"]),
+                    )
+                    device_id = repo.create_external_device(
+                        user_id=user_id,
+                        server_id=server_id,
+                        name=str(record["name"]),
+                        duration_days=int(record["duration_days"]),
+                        vpn_ip=str(record["vpn_ip"]),
+                        peer_public_key=str(record["peer_public_key"]),
+                        config_version=str(record["config_version"]),
+                        status=str(record["status"]),
+                        expires_at=record["expires_at"],
+                        revoked_at=record["revoked_at"],
+                        revoke_reason=record["revoke_reason"],
+                    )
+                    imported_devices.append(
+                        _safe_external_backfill_device(record, device_id=device_id)
+                    )
+        finally:
+            conn.close()
+
+    payload = {
+        "action": "device.external_backfill_rehearsal",
+        "mode": "apply" if apply else "dry-run",
+        "db_copy": str(db_copy_path),
+        "input": str(input_path),
+        "records_seen": len(records),
+        "records_planned": len(planned_devices),
+        "records_imported": len(imported_devices),
+        "devices": imported_devices if apply else planned_devices,
+        "delivery": {
+            "config_resend_available": False,
+            "reason": "external_only_material_unavailable",
+        },
+        "safety": {
+            "local_only": True,
+            "live_vps_commands": False,
+            "config_material_resurrected": False,
+            "secret_bearing_output": False,
+        },
+    }
+    return _json_dumps(payload, pretty=pretty)
+
+
+def _load_external_backfill_records(input_path: Path) -> list[dict[str, object]]:
+    try:
+        raw = json.loads(input_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON input: {input_path}") from exc
+    if not isinstance(raw, list):
+        raise ValueError("external backfill input must be a JSON array")
+
+    records: list[dict[str, object]] = []
+    for index, item in enumerate(raw, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"record #{index} must be a JSON object")
+        _reject_secret_backfill_fields(item, index=index)
+        records.append(_normalize_external_backfill_record(item, index=index))
+    return records
+
+
+def _normalize_external_backfill_record(
+    item: dict[str, object],
+    *,
+    index: int,
+) -> dict[str, object]:
+    required = ("telegram_id", "name", "vpn_ip", "peer_public_key")
+    missing = [field for field in required if field not in item]
+    if missing:
+        raise ValueError(f"record #{index} missing required fields: {', '.join(missing)}")
+
+    telegram_id = item["telegram_id"]
+    if not isinstance(telegram_id, int):
+        raise ValueError(f"record #{index} telegram_id must be an integer")
+
+    duration_days = int(item.get("duration_days", 30))
+    if duration_days <= 0:
+        raise ValueError(f"record #{index} duration_days must be positive")
+
+    status = str(item.get("status", "active"))
+    if status not in DEVICE_STATUSES:
+        raise ValueError(f"record #{index} unsupported status: {status}")
+
+    config_version = validate_config_version(str(item.get("config_version", "amneziawg_v2")))
+    return {
+        "telegram_id": telegram_id,
+        "username": _optional_str(item.get("username")),
+        "first_name": _optional_str(item.get("first_name")),
+        "last_name": _optional_str(item.get("last_name")),
+        "server_name": str(item.get("server_name", "local")),
+        "server_network_cidr": str(item.get("server_network_cidr", "10.8.0.0/24")),
+        "name": str(item["name"]),
+        "duration_days": duration_days,
+        "vpn_ip": str(item["vpn_ip"]),
+        "peer_public_key": str(item["peer_public_key"]),
+        "config_version": config_version,
+        "status": status,
+        "expires_at": _optional_str(item.get("expires_at")),
+        "revoked_at": _optional_str(item.get("revoked_at")),
+        "revoke_reason": _optional_str(item.get("revoke_reason")),
+    }
+
+
+def _reject_secret_backfill_fields(item: dict[str, object], *, index: int) -> None:
+    forbidden = {
+        "client_private_key",
+        "peer_private_key",
+        "private_key",
+        "preshared_key",
+        "peer_private_key_encrypted",
+        "preshared_key_encrypted",
+        "config",
+        "config_text",
+        "conf",
+        "qr",
+        "qr_code",
+        "vpn_uri",
+        "vpn_url",
+    }
+    found = sorted(forbidden.intersection(item))
+    if found:
+        raise ValueError(
+            f"record #{index} contains secret-bearing fields: {', '.join(found)}"
+        )
+
+
+def _safe_external_backfill_device(
+    record: dict[str, object],
+    *,
+    device_id: int | None,
+) -> dict[str, object]:
+    device: dict[str, object] = {
+        "name": record["name"],
+        "status": record["status"],
+        "vpn_ip": record["vpn_ip"],
+        "config_version": record["config_version"],
+        "config_material_status": "external_only",
+        "server_name": record["server_name"],
+        "telegram_id": record["telegram_id"],
+    }
+    if device_id is not None:
+        device["id"] = device_id
+    return device
+
+
+def _optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(value)
 
 
 def run_web_password_hash(password: str) -> str:

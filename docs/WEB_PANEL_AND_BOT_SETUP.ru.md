@@ -320,6 +320,47 @@ http://127.0.0.1:3030/login
 
 Если до перехода на AMN2 уже были выданы тестовые peer/config вне бота, их можно завести в локальную базу как `external_only`, чтобы они отображались в web-панели и в боте. Это только локальный backfill: команда не подключается к VPS, не меняет AmneziaWG и не восстанавливает client private key. Для таких устройств повторная отправка конфига будет недоступна, пока не найден исходный `.conf` или устройство не перевыпущено.
 
+Для нескольких старых тестовых устройств сначала сделать репетицию на JSON-файле и копии базы. Входной JSON должен содержать только metadata: `telegram_id`, `name`, `vpn_ip`, `peer_public_key`, `status`, `server_name`, `config_version` и необязательные даты. Не добавлять в файл client private key, preshared key, полный `.conf`, QR или `vpn://`.
+
+```json
+[
+  {
+    "telegram_id": 1001,
+    "username": "alice",
+    "server_name": "debian-vps-1",
+    "server_network_cidr": "10.8.0.0/24",
+    "name": "Neobyatnaya-AMNZ-1",
+    "duration_days": 30,
+    "vpn_ip": "10.8.0.41",
+    "peer_public_key": "PEER_PUBLIC_KEY",
+    "config_version": "amneziawg_v2",
+    "status": "active"
+  }
+]
+```
+
+Dry-run не создает и не меняет `--db-copy`:
+
+```bash
+python -m app.cli device backfill-external \
+  --db-copy data/amneziya-copy.sqlite3 \
+  --input external-devices.json \
+  --dry-run \
+  --pretty
+```
+
+Если вывод безопасен и ожидаем, применить только к копии базы:
+
+```bash
+python -m app.cli device backfill-external \
+  --db-copy data/amneziya-copy.sqlite3 \
+  --input external-devices.json \
+  --apply \
+  --pretty
+```
+
+Ожидаемый безопасный итог: `config_material_status=external_only`, `config_resend_available=false`, `live_vps_commands=false`. Команда не выводит peer public key, private/preshared key, `.conf`, QR или `vpn://`.
+
 Пример для ранее выданного активного тестового устройства:
 
 ```bash
