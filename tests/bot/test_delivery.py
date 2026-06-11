@@ -61,6 +61,22 @@ def test_default_config_ready_template_mentions_all_delivery_options():
     assert "Ссылки на приложения" in DEFAULT_CONFIG_READY_TEMPLATE
 
 
+def test_app_links_text_includes_client_compatibility_guidance():
+    package = build_config_delivery(
+        device_id=10,
+        config_version="amneziawg_v2",
+        config_text="[Interface]\nPrivateKey = test\n[Peer]",
+        template_text="VPN готов.",
+    )
+
+    assert APP_LINKS["android_amnezia"] in package.app_links_text
+    assert "Файл .conf" in package.app_links_text
+    assert "DefaultVPN" in package.app_links_text
+    assert "Android 9+" in package.app_links_text
+    assert "macOS 13+" in package.app_links_text
+    assert "PrivateKey" not in package.app_links_text
+
+
 def test_build_config_delivery_preserves_utf8_secret_artifacts():
     config_text = (
         "[Interface]\n"

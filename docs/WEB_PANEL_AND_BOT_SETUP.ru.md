@@ -559,6 +559,21 @@ python -m app.main
 - пользователь получает `.conf`, QR и текст с данными доставки;
 - ранее созданные пользователи появляются в web-панели.
 
+Матрица совместимости клиентского импорта зафиксирована в
+`app.vpn.client_compatibility` и проверяется тестами. Текущие правила:
+
+- `.conf` остается основным надежным fallback для DefaultVPN, AmneziaVPN и
+  standalone AmneziaWG-клиентов;
+- `vpn://` отправляется отдельным сообщением, чтобы его можно было открыть или
+  скопировать без выделения большого текста;
+- QR содержит `vpn://` payload, но не считается универсальным способом импорта
+  для DefaultVPN, AmneziaVPN и standalone AmneziaWG одновременно;
+- перед рекомендацией AmneziaVPN учитывать ограничения текущего release:
+  Android 9+, macOS 13+, Linux GUI dependencies, временно недоступные Android
+  7/8, macOS 10.15-12 и Debian 12 / Ubuntu 22.04.x builds;
+- native `.vpn` / Amnezia JSON artifacts не генерировать без отдельного
+  config-delivery design gate.
+
 Если бот падает при старте, смотреть:
 
 ```bash

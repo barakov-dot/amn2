@@ -8,6 +8,7 @@ from string import Formatter
 import qrcode
 
 from app.bot.ux import VERSION_LABELS
+from app.vpn.client_compatibility import render_ru_install_guidance
 from app.vpn.config_templates import build_vpn_import_link
 
 
@@ -127,5 +128,6 @@ def _render_app_links() -> str:
             f"iOS DefaultVPN:\n{APP_LINKS['ios_russia_defaultvpn']}",
             f"Windows AmneziaWG:\n{APP_LINKS['windows_amneziawg']}",
             f"DefaultVPN GitHub:\n{APP_LINKS['defaultvpn_github']}",
+            render_ru_install_guidance(),
         ]
     )
