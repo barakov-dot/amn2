@@ -126,8 +126,8 @@
                   <td>{{ device.vpn_ip }}</td>
                   <td>
                     {% if device.config_material_status == "external_only" %}
-                      <span class="muted-text">external-only</span>
-                      <p class="action-note">Config material is unavailable.</p>
+                      <span class="muted-text">external-only import</span>
+                      <p class="action-note">Imported for visibility only; original config material is unavailable.</p>
                     {% elif revealed_device_id is defined and revealed_device_id == device.id %}
                       <div class="secret-lines">
                         <span class="muted-text">PrivateKey</span>
@@ -146,7 +146,7 @@
                   <td>
                     <div class="button-row">
                       {% if device.config_material_status == "external_only" %}
-                        <span class="muted-text">Config material is unavailable.</span>
+                        <span class="muted-text">Config resend, secrets and email delivery are unavailable for this external-only record.</span>
                       {% elif user.email %}
                         <form action="/users/{{ user.id }}/devices/{{ device.id }}/email-config" method="post">
                           <input name="csrf_token" type="hidden" value="{{ csrf_token }}">

@@ -31,6 +31,14 @@ def test_integration_status_page_renders_gate_without_secret_markers(tmp_path: P
 
     assert response.status_code == 200
     assert "Integration status" in response.text
+    assert (
+        "Operator-only pilot: web/admin stays on 127.0.0.1:3030 through SSH tunnel; "
+        "API 3040 remains loopback-only/read-only."
+    ) in response.text
+    assert (
+        "Public exposure, config delivery and write routes require separate named gates."
+        in response.text
+    )
     assert "manual-prelaunch-ready" in response.text
     assert "manual-prelaunch-pass-systemd-deferred" in response.text
     assert "c92bd1a" in response.text

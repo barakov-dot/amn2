@@ -274,8 +274,12 @@ def test_user_detail_marks_external_only_device_without_config_actions(tmp_path:
 
     assert response.status_code == 200
     assert "Neobyatnaya-AMNZ-4" in response.text
-    assert "external-only" in response.text
-    assert "Config material is unavailable" in response.text
+    assert "external-only import" in response.text
+    assert "Imported for visibility only; original config material is unavailable." in response.text
+    assert (
+        "Config resend, secrets and email delivery are unavailable for this external-only record."
+        in response.text
+    )
     assert "Show secrets" not in response.text
     assert "Email config" not in response.text
 
