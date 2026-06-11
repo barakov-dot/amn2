@@ -7,6 +7,7 @@ from app.bot.ux import (
     ADMIN_TEMPLATE_RESET_CALLBACK,
     ADMIN_TRAFFIC_CALLBACK,
     ADMIN_USERS_CALLBACK,
+    LANGUAGE_CALLBACK_PREFIX,
     MY_DEVICES_CALLBACK,
     MY_TARIFF_CALLBACK,
     MY_TRAFFIC_CALLBACK,
@@ -21,12 +22,14 @@ from app.bot.ux import (
     build_admin_order_keyboard,
     build_admin_resend_keyboard,
     build_config_version_keyboard,
+    build_language_keyboard,
     build_main_menu,
     build_plan_keyboard,
     build_user_device_keyboard,
     build_user_reset_confirm_keyboard,
     build_user_revoke_confirm_keyboard,
     build_user_devices_reset_keyboard,
+    parse_language_callback,
     render_admin_approval,
     render_admin_pending_orders,
     render_admin_template,
@@ -34,6 +37,7 @@ from app.bot.ux import (
     render_admin_users,
     render_my_devices,
     render_my_tariff,
+    render_language_prompt,
     render_user_traffic,
 )
 from app.services.traffic import DeviceTrafficView
@@ -69,6 +73,19 @@ def test_main_menu_can_render_english_button_labels():
         ["My devices"],
         ["Admin"],
     ]
+
+
+def test_language_keyboard_defaults_to_russian_and_offers_english():
+    keyboard = build_language_keyboard()
+
+    assert render_language_prompt() == "🌐 Выберите язык / Choose your language:"
+    assert _button_texts(keyboard) == [["🇷🇺 Русский", "🇬🇧 English"]]
+    assert _callback_data(keyboard) == [
+        [f"{LANGUAGE_CALLBACK_PREFIX}:ru", f"{LANGUAGE_CALLBACK_PREFIX}:en"]
+    ]
+    assert parse_language_callback(f"{LANGUAGE_CALLBACK_PREFIX}:ru") == "ru"
+    assert parse_language_callback(f"{LANGUAGE_CALLBACK_PREFIX}:en") == "en"
+    assert parse_language_callback(f"{LANGUAGE_CALLBACK_PREFIX}:de") is None
 
 
 def test_config_version_keyboard_offers_amnezia_2_0_first():

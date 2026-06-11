@@ -8,6 +8,7 @@ from typing import Any
 
 DEFAULT_PLAN_DAYS = (3, 7, 10, 14, 30, 60, 90, 180)
 USER_STATUSES = {"active", "blocked", "deleted"}
+USER_LOCALES = {"ru", "en"}
 SERVER_STATUSES = {"active", "degraded", "disabled"}
 DEVICE_STATUSES = {"pending", "active", "disabled", "expired", "revoked", "failed"}
 
@@ -71,6 +72,26 @@ class Repository:
 
     def get_user(self, user_id: int) -> sqlite3.Row:
         return self._fetch_one("SELECT * FROM users WHERE id = ?", (user_id,))
+
+    def get_user_locale(self, telegram_id: int) -> str:
+        user = self.get_user_by_telegram_id(telegram_id)
+        if user is None:
+            return "ru"
+        return str(user["locale"])
+
+    def set_user_locale(self, *, telegram_id: int, locale: str) -> bool:
+        _validate_user_locale(locale)
+        cursor = self._conn.execute(
+            """
+            UPDATE users
+            SET locale = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE telegram_id = ?
+            """,
+            (locale, telegram_id),
+        )
+        self._commit()
+        return cursor.rowcount > 0
 
     def update_user_email(self, user_id: int, email: str | None) -> None:
         user = self.get_user(user_id)
@@ -1940,6 +1961,11 @@ def _host_address(value: str) -> str:
 def _validate_user_status(status: str) -> None:
     if status not in USER_STATUSES:
         raise ValueError(f"unsupported user status: {status}")
+
+
+def _validate_user_locale(locale: str) -> None:
+    if locale not in USER_LOCALES:
+        raise ValueError(f"unsupported user locale: {locale}")
 
 
 def _validate_server_status(status: str) -> None:

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from aiogram.types import BufferedInputFile
+from aiogram.types import BufferedInputFile, FSInputFile
 
+from app.bot.assets import BOT_START_HEADER_IMAGE_PATH
 from app.bot.texts import text
 from app.bot.ux import (
     ADMIN_APPROVE_PREFIX,
@@ -10,6 +11,7 @@ from app.bot.ux import (
     ADMIN_TEMPLATE_RESET_CALLBACK,
     ADMIN_TEMPLATES_CALLBACK,
     ADMIN_USERS_CALLBACK,
+    LANGUAGE_CALLBACK_PREFIX,
     MY_DEVICES_CALLBACK,
     MY_TARIFF_CALLBACK,
     MY_TRAFFIC_CALLBACK,
@@ -21,6 +23,7 @@ from app.bot.ux import (
     USER_REVOKE_CONFIRM_PREFIX,
     USER_REVOKE_PREFIX,
     build_plan_keyboard,
+    build_language_keyboard,
     build_user_device_keyboard,
     build_user_reset_confirm_keyboard,
     build_user_revoke_confirm_keyboard,
@@ -30,10 +33,12 @@ from app.bot.ux import (
     build_main_menu,
     parse_admin_approve_callback,
     parse_config_version_callback,
+    parse_language_callback,
     render_admin_template,
     render_admin_pending_orders,
     render_admin_users,
     render_config_version_prompt,
+    render_language_prompt,
     render_my_devices,
     render_my_tariff,
     render_plan_prompt,
@@ -47,13 +52,52 @@ from app.services.config_material import ConfigMaterialUnavailable
 
 async def handle_start(message, *, workflow) -> None:
     user = message.from_user
+    workflow.register_user(
+        telegram_id=int(user.id),
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name,
+    )
+    if BOT_START_HEADER_IMAGE_PATH.exists():
+        await message.answer_photo(
+            FSInputFile(str(BOT_START_HEADER_IMAGE_PATH)),
+            caption=render_language_prompt(),
+            reply_markup=build_language_keyboard(),
+        )
+        return
     await message.answer(
+        render_language_prompt(),
+        reply_markup=build_language_keyboard(),
+    )
+
+
+async def handle_language_choice(callback, *, workflow) -> None:
+    locale = parse_language_callback(str(callback.data))
+    if locale is None:
+        await callback.message.answer(text("handler.unknown_language"))
+        await callback.answer()
+        return
+
+    user = callback.from_user
+    workflow.set_user_locale(
+        telegram_id=int(user.id),
+        username=user.username,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        locale=locale,
+    )
+    await callback.message.answer(
         render_start_text(
             first_name=user.first_name,
             is_admin=workflow.is_admin(int(user.id)),
+            locale=locale,
         ),
-        reply_markup=build_main_menu(is_admin=workflow.is_admin(int(user.id))),
+        reply_markup=build_main_menu(
+            is_admin=workflow.is_admin(int(user.id)),
+            locale=locale,
+        ),
     )
+    await callback.answer()
 
 
 async def handle_request_config_prompt(callback) -> None:
@@ -434,6 +478,10 @@ async def handle_admin_create_order(message, *, workflow) -> None:
 
 def is_request_config_callback(data: str) -> bool:
     return data == REQUEST_CONFIG_PREFIX
+
+
+def is_language_callback(data: str) -> bool:
+    return data.startswith(f"{LANGUAGE_CALLBACK_PREFIX}:")
 
 
 def is_config_version_callback(data: str) -> bool:

@@ -15,6 +15,7 @@ from app.bot.handlers import (
     handle_admin_users,
     handle_config_request,
     handle_my_devices,
+    handle_language_choice,
     handle_my_tariff,
     handle_my_traffic,
     handle_plan_request,
@@ -33,6 +34,7 @@ from app.bot.ux import (
     ADMIN_TEMPLATE_RESET_CALLBACK,
     ADMIN_TEMPLATES_CALLBACK,
     ADMIN_USERS_CALLBACK,
+    LANGUAGE_CALLBACK_PREFIX,
     MY_DEVICES_CALLBACK,
     MY_TARIFF_CALLBACK,
     MY_TRAFFIC_CALLBACK,
@@ -71,6 +73,10 @@ def create_dispatcher(*, workflow=None) -> Dispatcher:
     @router.callback_query(F.data == REQUEST_CONFIG_PREFIX)
     async def request_config(callback: CallbackQuery) -> None:
         await handle_request_config_prompt(callback)
+
+    @router.callback_query(F.data.startswith(f"{LANGUAGE_CALLBACK_PREFIX}:"))
+    async def language_choice(callback: CallbackQuery) -> None:
+        await handle_language_choice(callback, workflow=workflow)
 
     @router.callback_query(F.data.startswith(f"{REQUEST_CONFIG_PREFIX}:"))
     async def request_config_version(callback: CallbackQuery) -> None:

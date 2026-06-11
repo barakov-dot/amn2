@@ -12,6 +12,7 @@ from app.bot.handlers import (
     handle_admin_grant,
     handle_config_request,
     handle_admin_users,
+    handle_language_choice,
     handle_my_devices,
     handle_my_tariff,
     handle_my_traffic,
@@ -25,6 +26,7 @@ from app.bot.handlers import (
     handle_user_revoke_device_confirm,
 )
 from app.bot.ux import (
+    LANGUAGE_CALLBACK_PREFIX,
     MY_DEVICES_CALLBACK,
     MY_TARIFF_CALLBACK,
     MY_TRAFFIC_CALLBACK,
@@ -40,14 +42,41 @@ from app.server.peer_apply import PeerApplyError
 from app.services.config_delivery import ConfigMaterialUnavailable
 
 
-def test_handle_start_renders_main_menu_for_admin():
+def test_handle_start_sends_header_and_language_choices_with_russian_default():
     message = FakeMessage(user_id=9001, first_name="Admin")
     workflow = FakeWorkflow(admin_ids={9001})
 
     asyncio.run(handle_start(message, workflow=workflow))
 
-    assert "Здравствуйте, Admin." in message.answers[0]["text"]
-    assert _button_texts(message.answers[0]["reply_markup"])[-1] == ["Админ"]
+    assert workflow.registered_users == [9001]
+    assert message.answers == []
+    assert message.photos[0]["caption"] == "🌐 Выберите язык / Choose your language:"
+    assert message.photos[0]["photo"].path.endswith("NEOBYATNAYA-AMNZ-BOT.png")
+    assert _button_texts(message.photos[0]["reply_markup"]) == [
+        ["🇷🇺 Русский", "🇬🇧 English"]
+    ]
+
+
+def test_handle_language_choice_persists_locale_and_renders_selected_menu():
+    callback = FakeCallback(
+        data=f"{LANGUAGE_CALLBACK_PREFIX}:en",
+        user_id=1001,
+        username="alice",
+        first_name="Alice",
+    )
+    workflow = FakeWorkflow(admin_ids={9001})
+
+    asyncio.run(handle_language_choice(callback, workflow=workflow))
+
+    assert workflow.locales == [(1001, "en")]
+    assert "Hello, Alice." in callback.message.answers[0]["text"]
+    assert _button_texts(callback.message.answers[0]["reply_markup"]) == [
+        ["Request config"],
+        ["My tariff"],
+        ["My traffic"],
+        ["My devices"],
+    ]
+    assert callback.answered is True
 
 
 def test_handle_request_config_prompt_shows_version_choices():
@@ -720,10 +749,16 @@ class FakeMessage:
             last_name=last_name,
         )
         self.answers = []
+        self.photos = []
         self.text = ""
 
     async def answer(self, text, reply_markup=None):
         self.answers.append({"text": text, "reply_markup": reply_markup})
+
+    async def answer_photo(self, photo, caption=None, reply_markup=None):
+        self.photos.append(
+            {"photo": photo, "caption": caption, "reply_markup": reply_markup}
+        )
 
 
 class FakeCallback:
@@ -775,9 +810,19 @@ class FakeWorkflow:
         self.grants = []
         self.manual_users = []
         self.manual_orders = []
+        self.registered_users = []
+        self.locales = []
 
     def is_admin(self, telegram_id):
         return telegram_id in self._admin_ids
+
+    def register_user(self, *, telegram_id, username, first_name, last_name):
+        self.registered_users.append(telegram_id)
+        return 1
+
+    def set_user_locale(self, *, telegram_id, username, first_name, last_name, locale):
+        self.locales.append((telegram_id, locale))
+        return True
 
     def request_access(
         self,

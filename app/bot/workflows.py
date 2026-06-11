@@ -88,6 +88,41 @@ class BotWorkflow:
         user = self._repo.get_user_by_telegram_id(telegram_id)
         return bool(user is not None and int(user["is_admin"]) == 1)
 
+    def register_user(
+        self,
+        *,
+        telegram_id: int,
+        username: str | None,
+        first_name: str | None,
+        last_name: str | None,
+    ) -> int:
+        return self._repo.upsert_user(
+            telegram_id=telegram_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+        )
+
+    def set_user_locale(
+        self,
+        *,
+        telegram_id: int,
+        username: str | None,
+        first_name: str | None,
+        last_name: str | None,
+        locale: str,
+    ) -> bool:
+        self.register_user(
+            telegram_id=telegram_id,
+            username=username,
+            first_name=first_name,
+            last_name=last_name,
+        )
+        return self._repo.set_user_locale(telegram_id=telegram_id, locale=locale)
+
+    def get_user_locale(self, *, telegram_id: int) -> str:
+        return self._repo.get_user_locale(telegram_id)
+
     def request_access(
         self,
         *,

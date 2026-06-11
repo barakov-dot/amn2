@@ -12,6 +12,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             last_name TEXT,
             status TEXT NOT NULL DEFAULT 'active'
                 CHECK (status IN ('active', 'blocked', 'deleted')),
+            locale TEXT NOT NULL DEFAULT 'ru'
+                CHECK (locale IN ('ru', 'en')),
             is_admin INTEGER NOT NULL DEFAULT 0
                 CHECK (is_admin IN (0, 1)),
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -216,6 +218,12 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     )
     _ensure_column(conn, "users", "email", "TEXT")
     _ensure_column(conn, "users", "email_verified_at", "TEXT")
+    _ensure_column(
+        conn,
+        "users",
+        "locale",
+        "TEXT NOT NULL DEFAULT 'ru' CHECK (locale IN ('ru', 'en'))",
+    )
     _ensure_column(
         conn,
         "orders",

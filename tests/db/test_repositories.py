@@ -37,6 +37,67 @@ def test_repository_creates_user_server_order_and_device(tmp_path):
     assert repo.get_device(device_id)["vpn_ip"] == "10.8.0.2"
 
 
+def test_user_locale_defaults_to_russian_and_can_be_updated(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+
+    user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="alice",
+        first_name="Alice",
+        last_name=None,
+    )
+
+    assert repo.get_user(user_id)["locale"] == "ru"
+    assert repo.get_user_locale(1001) == "ru"
+    assert repo.get_user_locale(404) == "ru"
+
+    assert repo.set_user_locale(telegram_id=1001, locale="en") is True
+    assert repo.get_user(user_id)["locale"] == "en"
+
+    repo.upsert_user(
+        telegram_id=1001,
+        username="alice2",
+        first_name="Alice",
+        last_name=None,
+    )
+
+    assert repo.get_user(user_id)["locale"] == "en"
+    assert repo.set_user_locale(telegram_id=404, locale="ru") is False
+    with pytest.raises(ValueError):
+        repo.set_user_locale(telegram_id=1001, locale="de")
+
+
+def test_schema_migrates_existing_users_table_to_locale_default(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    conn.executescript(
+        """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER NOT NULL UNIQUE,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            status TEXT NOT NULL DEFAULT 'active'
+                CHECK (status IN ('active', 'blocked', 'deleted')),
+            is_admin INTEGER NOT NULL DEFAULT 0
+                CHECK (is_admin IN (0, 1)),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO users (telegram_id, username, first_name, last_name)
+        VALUES (1001, 'alice', 'Alice', NULL);
+        """
+    )
+    conn.commit()
+
+    initialize_schema(conn)
+    repo = Repository(conn)
+
+    assert repo.get_user_locale(1001) == "ru"
+
+
 def test_upsert_server_config_updates_existing_server_for_live_vps(tmp_path):
     conn = connect(tmp_path / "test.sqlite3")
     initialize_schema(conn)

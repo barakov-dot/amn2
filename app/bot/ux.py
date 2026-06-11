@@ -12,6 +12,7 @@ from app.vpn.config_versions import SUPPORTED_CONFIG_VERSIONS
 
 REQUEST_CONFIG_PREFIX = "user:request_config"
 REQUEST_PLAN_PREFIX = "user:request_plan"
+LANGUAGE_CALLBACK_PREFIX = "user:language"
 MY_TARIFF_CALLBACK = "user:tariff"
 MY_TRAFFIC_CALLBACK = "user:traffic"
 MY_DEVICES_CALLBACK = "user:devices"
@@ -33,6 +34,28 @@ VERSION_LABELS = {
     "amneziawg_v2": "AmneziaWG 2.0",
 }
 PREFERRED_CONFIG_VERSION = "amneziawg_v2"
+SUPPORTED_LOCALES = ("ru", "en")
+
+
+def render_language_prompt() -> str:
+    return "🌐 Выберите язык / Choose your language:"
+
+
+def build_language_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text="🇷🇺 Русский",
+                    callback_data=f"{LANGUAGE_CALLBACK_PREFIX}:ru",
+                ),
+                InlineKeyboardButton(
+                    text="🇬🇧 English",
+                    callback_data=f"{LANGUAGE_CALLBACK_PREFIX}:en",
+                ),
+            ]
+        ]
+    )
 
 
 def build_main_menu(*, is_admin: bool, locale: str = DEFAULT_LOCALE) -> InlineKeyboardMarkup:
@@ -255,14 +278,23 @@ def build_admin_navigation_keyboard(
     )
 
 
-def render_start_text(*, first_name: str | None, is_admin: bool) -> str:
+def render_start_text(
+    *,
+    first_name: str | None,
+    is_admin: bool,
+    locale: str = DEFAULT_LOCALE,
+) -> str:
     greeting = (
-        text("start.hello_name", first_name=first_name)
+        text("start.hello_name", first_name=first_name, locale=locale)
         if first_name
-        else text("start.hello")
+        else text("start.hello", locale=locale)
     )
-    role = text("start.admin_role") if is_admin else text("start.user_role")
-    return f"{greeting}\n{role}\n{text('start.choose_action')}"
+    role = (
+        text("start.admin_role", locale=locale)
+        if is_admin
+        else text("start.user_role", locale=locale)
+    )
+    return f"{greeting}\n{role}\n{text('start.choose_action', locale=locale)}"
 
 
 def render_config_version_prompt() -> str:
@@ -460,6 +492,16 @@ def parse_config_version_callback(data: str, *, prefix: str) -> str | None:
     if not data.startswith(marker):
         return None
     return data.removeprefix(marker)
+
+
+def parse_language_callback(data: str) -> str | None:
+    marker = f"{LANGUAGE_CALLBACK_PREFIX}:"
+    if not data.startswith(marker):
+        return None
+    locale = data.removeprefix(marker)
+    if locale not in SUPPORTED_LOCALES:
+        return None
+    return locale
 
 
 def parse_admin_approve_callback(data: str) -> tuple[int, str] | None:
