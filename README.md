@@ -30,6 +30,7 @@
 - [Traffic collection schedule EN](docs/TRAFFIC_COLLECTION_SCHEDULE.en.md)
 - [Beginner guide RU](docs/NEXT_STAGE_BEGINNER_GUIDE.ru.md)
 - [Beginner guide EN](docs/NEXT_STAGE_BEGINNER_GUIDE.en.md)
+- [Runtime/toolchain contract RU](docs/RUNTIME_TOOLCHAIN.ru.md)
 - [Открытые вопросы](docs/OPEN_QUESTIONS.md)
 
 ## VPS Preflight
@@ -46,7 +47,7 @@ with a test peer and then enable `VPS_APPLY_ENABLED=true`.
 
 ## Рекомендуемый стек
 
-- Python 3.12+
+- CPython 3.12.x
 - aiogram 3.x
 - PostgreSQL для продакшна, SQLite для локального MVP
 - Docker Compose для бота и вспомогательных сервисов
@@ -67,9 +68,11 @@ with a test peer and then enable `VPS_APPLY_ENABLED=true`.
 
 1. Create `.env` from `.env.example`.
 2. Set `TELEGRAM_BOT_TOKEN`, `APP_SECRET_KEY`, and `ADMIN_TELEGRAM_IDS`.
-3. Install dependencies.
-4. Run tests with `pytest`.
-5. Start the bot with `python -m app.main`.
+3. Create a CPython 3.12 virtual environment.
+4. Install dependencies with `python -m pip install -e ".[dev]"`.
+5. Check the runtime with `python -m app.toolchain check`.
+6. Run tests with `python -m pytest tests -v`.
+7. Start the bot with `python -m app.main`.
 
 ## Backup
 

@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "amneziya"
 version = "0.1.0"
 description = "Telegram-managed AmneziaWG access automation"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
   "aiogram>=3.4,<4",
   "aiohttp-socks>=0.10,<1",

@@ -81,7 +81,7 @@ flowchart TD
 ### На твоем компьютере
 
 - Проект Amneziya.
-- Python 3.12+.
+- CPython 3.12.x.
 - Доступ к Telegram bot token.
 - `APP_SECRET_KEY`, который нельзя терять.
 - SSH private key или пароль от VPS.
@@ -121,7 +121,7 @@ pyproject.toml
 
 Если папка другая, замени путь в команде `cd` на свой.
 
-#### 2. Python 3.12+
+#### 2. CPython 3.12.x
 
 Официальные ссылки:
 
@@ -155,13 +155,16 @@ py --version
 Установить зависимости проекта:
 
 ```powershell
-python -m pip install -e .[dev]
+py -3.12 -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade pip
+.venv\Scripts\python.exe -m pip install -e ".[dev]"
 ```
 
 Проверить проект:
 
 ```powershell
-python -m pytest tests -v
+.venv\Scripts\python.exe -m app.toolchain check
+.venv\Scripts\python.exe -m pytest tests -v
 ```
 
 Если видишь `passed`, значит локальная часть работает.
