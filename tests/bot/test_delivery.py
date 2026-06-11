@@ -43,10 +43,12 @@ def test_build_config_delivery_creates_conf_and_qr_png_bytes():
     assert package.qr_png_bytes.startswith(b"\x89PNG\r\n\x1a\n")
     assert "AmneziaWG 2.0" in package.message_text
     assert APP_LINKS["ios_russia_defaultvpn"] in package.message_text
-    assert package.vpn_import_link_text == f"Ссылка для импорта:\n{package.vpn_import_link}"
+    assert package.vpn_import_link_text == (
+        f"Ссылка vpn:// для импорта:\n{package.vpn_import_link}"
+    )
     assert APP_LINKS["ios_russia_defaultvpn"] in package.app_links_text
-    assert package.config_caption == "VPN-конфиг (.conf)"
-    assert package.qr_caption == "QR-код import-ссылки vpn://"
+    assert package.config_caption == "Файл VPN-конфига (.conf)"
+    assert package.qr_caption == "QR-код ссылки vpn:// для импорта"
     assert package.qr_payload_text == package.vpn_import_link
 
 
@@ -87,6 +89,7 @@ def test_default_config_ready_template_mentions_all_delivery_options():
     assert "QR" in DEFAULT_CONFIG_READY_TEMPLATE
     assert "Ваш VPN-конфиг готов" in DEFAULT_CONFIG_READY_TEMPLATE
     assert "DefaultVPN" in DEFAULT_CONFIG_READY_TEMPLATE
+    assert "ссылку vpn://" in DEFAULT_CONFIG_READY_TEMPLATE
     assert "Ссылки на приложения" in DEFAULT_CONFIG_READY_TEMPLATE
 
 

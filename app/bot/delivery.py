@@ -22,8 +22,8 @@ APP_LINKS = {
     "defaultvpn_github": "https://github.com/amnezia-vpn/DefaultVPN",
 }
 
-CONFIG_FILE_CAPTION = "VPN-конфиг (.conf)"
-QR_CODE_CAPTION = "QR-код import-ссылки vpn://"
+CONFIG_FILE_CAPTION = "Файл VPN-конфига (.conf)"
+QR_CODE_CAPTION = "QR-код ссылки vpn:// для импорта"
 IMPORT_LINK_COPY_BUTTON_TEXT = "Скопировать ссылку"
 TELEGRAM_COPY_TEXT_MAX_LENGTH = 256
 
@@ -34,8 +34,8 @@ DEFAULT_CONFIG_READY_TEMPLATE = """Ваш VPN-конфиг готов.
 
 Варианты установки:
 1. Для DefaultVPN импортируйте прикрепленный .conf файл.
-2. Откройте отдельную vpn:// ссылку, которую бот пришлет следующим сообщением.
-3. QR-код тоже содержит vpn:// ссылку. Если встроенный QR-сканер приложения ее не принимает, используйте файл или отдельную ссылку.
+2. Откройте отдельную ссылку vpn://, которую бот пришлет следующим сообщением.
+3. QR-код тоже содержит ссылку vpn://. Если встроенный QR-сканер приложения ее не принимает, используйте файл или отдельную ссылку.
 
 Ссылки на приложения бот пришлет отдельным сообщением.
 """
@@ -89,7 +89,7 @@ def build_config_delivery(
         qr_filename=f"{basename}.qr.png",
         qr_png_bytes=_build_qr_png(vpn_import_link),
         vpn_import_link=vpn_import_link,
-        vpn_import_link_text=f"Ссылка для импорта:\n{vpn_import_link}",
+        vpn_import_link_text=f"Ссылка vpn:// для импорта:\n{vpn_import_link}",
         vpn_import_link_copy_button_text=(
             IMPORT_LINK_COPY_BUTTON_TEXT if vpn_import_link_copy_text else ""
         ),
