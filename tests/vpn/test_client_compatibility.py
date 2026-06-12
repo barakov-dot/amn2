@@ -40,7 +40,7 @@ def test_release_platform_constraints_are_machine_checkable():
     assert "macOS 13+" in amnezia.platform_constraints
     assert "macOS 10.15-12 temporarily unavailable" in amnezia.platform_constraints
     assert "Linux GUI dependencies required" in amnezia.platform_constraints
-    assert "Debian 12 / Ubuntu 22.04.x builds temporarily unavailable" in (
+    assert "Linux x64 tar available; distro-specific packages not promised" in (
         amnezia.platform_constraints
     )
 
@@ -61,5 +61,7 @@ def test_ru_install_guidance_mentions_constraints_without_secret_material():
     assert "QR" in guidance
     assert "Android 9+" in guidance
     assert "macOS 13+" in guidance
+    assert "Linux x64 tar" in guidance
+    assert "Debian 12 / Ubuntu 22.04.x builds temporarily unavailable" not in guidance
     assert "PrivateKey" not in guidance
     assert "vpn://" not in guidance

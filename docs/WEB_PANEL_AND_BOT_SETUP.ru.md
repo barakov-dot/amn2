@@ -610,8 +610,9 @@ python -m app.main
 - QR содержит `vpn://` payload, но не считается универсальным способом импорта
   для DefaultVPN, AmneziaVPN и standalone AmneziaWG одновременно;
 - перед рекомендацией AmneziaVPN учитывать ограничения текущего release:
-  Android 9+, macOS 13+, Linux GUI dependencies, временно недоступные Android
-  7/8, macOS 10.15-12 и Debian 12 / Ubuntu 22.04.x builds;
+  Android 9+, macOS 13+, Linux x64 tar with GUI dependencies, временно
+  недоступные Android 7/8 и macOS 10.15-12; distro-specific Linux packages не
+  обещаются;
 - native `.vpn` / Amnezia JSON artifacts не генерировать без отдельного
   config-delivery design gate.
 

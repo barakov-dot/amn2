@@ -51,7 +51,7 @@ CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
             "macOS 13+",
             "macOS 10.15-12 temporarily unavailable",
             "Linux GUI dependencies required",
-            "Debian 12 / Ubuntu 22.04.x builds temporarily unavailable",
+            "Linux x64 tar available; distro-specific packages not promised",
         ),
         artifact_support={
             "conf_file": ArtifactSupport(
@@ -205,8 +205,9 @@ def render_ru_install_guidance() -> str:
             ),
             (
                 "AmneziaVPN: перед рекомендацией приложения учитывайте ограничения "
-                "Android 9+, macOS 13+, Linux GUI dependencies required и временно "
-                "недоступные Android 7/8, macOS 10.15-12, Debian 12 / Ubuntu 22.04.x builds."
+                "Android 9+, macOS 13+, Linux x64 tar с GUI dependencies required "
+                "и временно недоступные Android 7/8, macOS 10.15-12; "
+                "distro-specific Linux packages не обещать."
             ),
         ]
     )
