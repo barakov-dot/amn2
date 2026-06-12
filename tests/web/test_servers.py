@@ -212,6 +212,50 @@ def test_server_detail_shows_vps_readiness_block(tmp_path: Path):
     assert "not run in this browser session" in response.text
 
 
+def test_server_detail_shows_phase5_read_only_status_latency_summary(tmp_path: Path):
+    settings = _settings(tmp_path)
+    with _repo(Path(settings.database_path)) as repo:
+        server_id = _seed_server(repo, name="local")
+        repo.record_server_health(
+            server_id=server_id,
+            status="online",
+            latency_ms=38,
+            ssh_ok=True,
+            awg_ok=True,
+            udp_port_ok=True,
+            error=None,
+        )
+    client = _authenticated_client(settings)
+
+    response = client.get(f"/servers/{server_id}")
+
+    assert response.status_code == 200
+    assert "Read-only server summary" in response.text
+    assert "safe internal alias" in response.text
+    assert "local" in response.text
+    assert "runtime_kind" in response.text
+    assert "host_systemd" in response.text
+    assert "service_mode" in response.text
+    assert "loopback-only" in response.text
+    assert "latest_health_status" in response.text
+    assert "online" in response.text
+    assert "latest_latency_ms" in response.text
+    assert "38 ms" in response.text
+    assert "data_source" in response.text
+    assert "cached_db" in response.text
+    assert "freshness" in response.text
+    assert "does not change VPS or peers" in response.text
+    assert "live check requires named gate" in response.text
+    summary_section = response.text.split("Read-only server summary", 1)[1].split(
+        "VPS retest bundle",
+        1,
+    )[0]
+    assert "PrivateKey" not in summary_section
+    assert "PresharedKey" not in summary_section
+    assert "vpn://" not in summary_section
+    assert ".conf" not in summary_section
+
+
 def test_server_detail_shows_vps_retest_bundle_commands(tmp_path: Path):
     server_config_path = _write_server_config(tmp_path, server_name="local")
     settings = _settings(tmp_path, server_config_path=server_config_path)

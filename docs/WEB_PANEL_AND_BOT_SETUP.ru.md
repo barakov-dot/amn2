@@ -818,7 +818,50 @@ sudo ufw status
 
 Если сервис слушает только `127.0.0.1`, использовать SSH tunnel или HTTPS reverse proxy. Не переключать web-admin на `0.0.0.0` без отдельного firewall/TLS/exposure gate.
 
-## 17. Частые ошибки Telegram-бота
+## 17. Локальные bot media assets
+
+AMN2 умеет локально проверить и поставить в registry картинки для access/support/news ботов. Это только локальная подготовка assets: команда не вызывает Telegram API, не меняет аватар бота, не отправляет сообщения и не требует Telegram token.
+
+Проверить картинку без записи registry:
+
+```bash
+python -m app.cli bot-media validate --bot-kind access --surface start_header --path /path/to/header.png --pretty
+```
+
+Скопировать валидную картинку в локальное хранилище `data/bot-media/` и записать safe metadata:
+
+```bash
+python -m app.cli bot-media stage --bot-kind support --surface start_header --path /path/to/support-header.png --pretty
+```
+
+Выбрать staged asset для runtime mapping:
+
+```bash
+python -m app.cli bot-media select --bot-kind support --surface start_header --asset-id support-start_header-... --pretty
+```
+
+Посмотреть manifest:
+
+```bash
+python -m app.cli bot-media manifest --pretty
+```
+
+`profile_icon` можно только staged/record locally. Применение иконки профиля через Bot API или BotFather остается live Telegram identity mutation и требует отдельный named gate.
+
+## 18. Read-only server summary в web-панели
+
+На странице сервера web-панель показывает блок `Read-only server summary`. Он использует только сохраненный локальный `server_health_checks` snapshot из базы и не запускает live probe.
+
+Смысл полей:
+
+- `data_source=cached_db` - данные взяты из локальной базы;
+- `freshness=fresh/not_checked` - есть ли сохраненный snapshot;
+- `latest_latency_ms` - агрегированная latency последней сохраненной проверки, без per-peer данных;
+- `action_hint` - напоминание, что блок не меняет VPS или peers, а live check требует named gate.
+
+Этот блок не показывает `.conf`, QR, `vpn://`, private key, preshared key, peer/user identifiers or raw logs.
+
+## 19. Частые ошибки Telegram-бота
 
 ### Telegram недоступен с VPS
 
@@ -876,7 +919,7 @@ python -m app.cli server check --config servers.yml --server debian-vps-1 --dry-
 python -m app.cli server check --config servers.yml --server debian-vps-1
 ```
 
-## 18. Что прислать для диагностики
+## 20. Что прислать для диагностики
 
 Если web-панель или бот не запускаются, собрать:
 

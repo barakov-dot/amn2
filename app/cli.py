@@ -38,6 +38,7 @@ from app.server_config.models import ServerConfig
 from app.services.api_tokens import create_route_api_token
 from app.services.api_tokens import revoke_api_token
 from app.services.api_smoke import validate_api_smoke_responses
+from app.services.bot_media import BotMediaRegistry
 from app.services.peer_inventory import AwgDumpPeerInventoryCollector, PeerInventoryService
 from app.services.traffic import AwgDumpTrafficCollector, TrafficService
 from app.web.auth import create_password_hash
@@ -51,6 +52,41 @@ def build_parser() -> argparse.ArgumentParser:
     bot = sub.add_parser("bot")
     bot_sub = bot.add_subparsers(dest="bot_command", required=True)
     bot_sub.add_parser("check-network")
+
+    bot_media = sub.add_parser("bot-media")
+    bot_media_sub = bot_media.add_subparsers(dest="bot_media_command", required=True)
+
+    def add_bot_media_common(media_parser: argparse.ArgumentParser) -> None:
+        media_parser.add_argument(
+            "--bot-kind",
+            choices=["access", "support", "news"],
+            required=True,
+        )
+        media_parser.add_argument(
+            "--surface",
+            choices=["start_header", "profile_icon"],
+            required=True,
+        )
+        media_parser.add_argument("--registry", default="data/bot-media-registry.json")
+        media_parser.add_argument("--media-root", default="data/bot-media")
+        media_parser.add_argument("--pretty", action="store_true")
+
+    bot_media_validate = bot_media_sub.add_parser("validate")
+    add_bot_media_common(bot_media_validate)
+    bot_media_validate.add_argument("--path", required=True)
+
+    bot_media_stage = bot_media_sub.add_parser("stage")
+    add_bot_media_common(bot_media_stage)
+    bot_media_stage.add_argument("--path", required=True)
+
+    bot_media_select = bot_media_sub.add_parser("select")
+    add_bot_media_common(bot_media_select)
+    bot_media_select.add_argument("--asset-id", required=True)
+
+    bot_media_manifest = bot_media_sub.add_parser("manifest")
+    bot_media_manifest.add_argument("--registry", default="data/bot-media-registry.json")
+    bot_media_manifest.add_argument("--media-root", default="data/bot-media")
+    bot_media_manifest.add_argument("--pretty", action="store_true")
 
     backup = sub.add_parser("backup")
     backup_sub = backup.add_subparsers(dest="backup_command", required=True)
@@ -321,6 +357,47 @@ def main() -> None:
                 )
             )
         )
+    elif args.command == "bot-media" and args.bot_media_command == "validate":
+        print(
+            run_bot_media_validate(
+                bot_kind=args.bot_kind,
+                surface=args.surface,
+                path=Path(args.path),
+                registry_path=Path(args.registry),
+                media_root=Path(args.media_root),
+                pretty=args.pretty,
+            )
+        )
+    elif args.command == "bot-media" and args.bot_media_command == "stage":
+        print(
+            run_bot_media_stage(
+                bot_kind=args.bot_kind,
+                surface=args.surface,
+                path=Path(args.path),
+                registry_path=Path(args.registry),
+                media_root=Path(args.media_root),
+                pretty=args.pretty,
+            )
+        )
+    elif args.command == "bot-media" and args.bot_media_command == "select":
+        print(
+            run_bot_media_select(
+                bot_kind=args.bot_kind,
+                surface=args.surface,
+                asset_id=args.asset_id,
+                registry_path=Path(args.registry),
+                media_root=Path(args.media_root),
+                pretty=args.pretty,
+            )
+        )
+    elif args.command == "bot-media" and args.bot_media_command == "manifest":
+        print(
+            run_bot_media_manifest(
+                registry_path=Path(args.registry),
+                media_root=Path(args.media_root),
+                pretty=args.pretty,
+            )
+        )
     elif args.command == "agent" and args.agent_command == "hash-token":
         print(run_agent_token_hash(_read_agent_token(args.token)))
     elif args.command == "agent" and args.agent_command == "serve":
@@ -526,6 +603,64 @@ def run_device_backfill_external(
         },
     }
     return _json_dumps(payload, pretty=pretty)
+
+
+def run_bot_media_validate(
+    *,
+    bot_kind: str,
+    surface: str,
+    path: Path,
+    registry_path: Path,
+    media_root: Path,
+    pretty: bool = False,
+) -> str:
+    registry = BotMediaRegistry(registry_path=registry_path, media_root=media_root)
+    return _json_dumps(
+        registry.validate(bot_kind=bot_kind, surface=surface, path=path),
+        pretty=pretty,
+    )
+
+
+def run_bot_media_stage(
+    *,
+    bot_kind: str,
+    surface: str,
+    path: Path,
+    registry_path: Path,
+    media_root: Path,
+    pretty: bool = False,
+) -> str:
+    registry = BotMediaRegistry(registry_path=registry_path, media_root=media_root)
+    return _json_dumps(
+        registry.stage(bot_kind=bot_kind, surface=surface, path=path),
+        pretty=pretty,
+    )
+
+
+def run_bot_media_select(
+    *,
+    bot_kind: str,
+    surface: str,
+    asset_id: str,
+    registry_path: Path,
+    media_root: Path,
+    pretty: bool = False,
+) -> str:
+    registry = BotMediaRegistry(registry_path=registry_path, media_root=media_root)
+    return _json_dumps(
+        registry.select(bot_kind=bot_kind, surface=surface, asset_id=asset_id),
+        pretty=pretty,
+    )
+
+
+def run_bot_media_manifest(
+    *,
+    registry_path: Path,
+    media_root: Path,
+    pretty: bool = False,
+) -> str:
+    registry = BotMediaRegistry(registry_path=registry_path, media_root=media_root)
+    return _json_dumps(registry.manifest(), pretty=pretty)
 
 
 def _load_external_backfill_records(input_path: Path) -> list[dict[str, object]]:

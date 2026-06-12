@@ -104,6 +104,59 @@
 
   <section class="panel panel-spaced">
     <div class="panel-header">
+      <h2>Read-only server summary</h2>
+    </div>
+    <p class="action-note">
+      safe internal alias; private operator panel; {{ read_only_server_summary.action_hint }}
+    </p>
+    <dl class="details">
+      <div>
+        <dt>server_label</dt>
+        <dd>{{ read_only_server_summary.server_label }}</dd>
+      </div>
+      <div>
+        <dt>runtime_kind</dt>
+        <dd>{{ read_only_server_summary.runtime_kind }}</dd>
+      </div>
+      <div>
+        <dt>service_mode</dt>
+        <dd>{{ read_only_server_summary.service_mode }}</dd>
+      </div>
+      <div>
+        <dt>latest_health_status</dt>
+        <dd>
+          <span class="status status-{{ read_only_server_summary.latest_health_status }}">
+            {{ read_only_server_summary.latest_health_status }}
+          </span>
+        </dd>
+      </div>
+      <div>
+        <dt>latest_latency_ms</dt>
+        <dd>
+          {% if read_only_server_summary.latest_latency_ms is not none %}
+            {{ read_only_server_summary.latest_latency_ms }} ms
+          {% else %}
+            -
+          {% endif %}
+        </dd>
+      </div>
+      <div>
+        <dt>last_checked_at</dt>
+        <dd>{{ read_only_server_summary.last_checked_at }}</dd>
+      </div>
+      <div>
+        <dt>data_source</dt>
+        <dd>{{ read_only_server_summary.data_source }}</dd>
+      </div>
+      <div>
+        <dt>freshness</dt>
+        <dd>{{ read_only_server_summary.freshness }}</dd>
+      </div>
+    </dl>
+  </section>
+
+  <section class="panel panel-spaced">
+    <div class="panel-header">
       <h2>VPS retest bundle</h2>
     </div>
     <ol class="command-list">

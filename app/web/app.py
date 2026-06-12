@@ -2166,6 +2166,10 @@ def _load_server_detail(settings: Settings, server_id: int) -> dict[str, Any]:
         "latest_health": (
             _row_to_dict(latest_health) if latest_health is not None else None
         ),
+        "read_only_server_summary": _read_only_server_summary(
+            server,
+            _row_to_dict(latest_health) if latest_health is not None else None,
+        ),
         "server_actions": server_actions,
         "server_managed_configs": server_managed_configs,
     }
@@ -2250,6 +2254,36 @@ def _load_vps_readiness(
     checks.append(_health_readiness(latest_health))
     checks.append(_peer_sync_readiness(peer_sync))
     return {"checks": checks}
+
+
+def _read_only_server_summary(
+    server: dict[str, Any],
+    latest_health: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if latest_health is None:
+        latest_health_status = "not_checked"
+        latest_latency_ms = None
+        last_checked_at = "-"
+        freshness = "not_checked"
+    else:
+        latest_health_status = str(latest_health["status"])
+        latest_latency_ms = latest_health.get("latency_ms")
+        last_checked_at = latest_health.get("checked_at") or "-"
+        freshness = "fresh"
+    return {
+        "server_label": server["name"],
+        "runtime_kind": server.get("runtime") or "unknown",
+        "service_mode": "loopback-only",
+        "latest_health_status": latest_health_status,
+        "latest_latency_ms": latest_latency_ms,
+        "last_checked_at": last_checked_at,
+        "data_source": "cached_db",
+        "freshness": freshness,
+        "action_hint": (
+            "read-only status; does not change VPS or peers; "
+            "live check requires named gate"
+        ),
+    }
 
 
 def _vps_retest_commands(settings: Settings, server: dict[str, Any]) -> list[str]:
