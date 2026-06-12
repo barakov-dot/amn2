@@ -3,18 +3,19 @@
 {% block content %}
   <section class="section-heading page-heading">
     <div>
-      <p class="eyebrow">User management</p>
-      <h1>Users</h1>
+      <p class="eyebrow">Управление пользователями</p>
+      <h1>Пользователи</h1>
     </div>
     <div class="button-row">
-      <a class="button button-secondary" href="/devices/disabled">Disabled devices</a>
-      <a class="button" href="/users/new">New user</a>
+      <a class="button button-secondary" href="/devices/disabled">Отключенные устройства</a>
+      <button class="button" type="button" disabled>Новый пользователь</button>
+      <span class="action-note">Создание пользователя требует named gate.</span>
     </div>
   </section>
 
   <section class="panel">
     <div class="panel-header">
-      <h2>All users</h2>
+      <h2>Все пользователи</h2>
     </div>
     {% if users %}
       <div class="table-wrap">
@@ -22,12 +23,12 @@
           <thead>
             <tr>
               <th>Telegram ID</th>
-              <th>Name</th>
+              <th>Имя</th>
               <th>Email</th>
-              <th>Status</th>
-              <th>Role</th>
-              <th>Devices</th>
-              <th>Actions</th>
+              <th>Статус</th>
+              <th>Роль</th>
+              <th>Устройства</th>
+              <th>Действия</th>
             </tr>
           </thead>
           <tbody>
@@ -35,24 +36,24 @@
               <tr>
                 <td><a href="/users/{{ user.id }}">{{ user.telegram_id }}</a></td>
                 <td>
-                  <span class="primary-text">{{ user.username or "no username" }}</span>
+                  <span class="primary-text">{{ user.username or "без username" }}</span>
                   <span class="muted-text">{{ user.first_name or "" }} {{ user.last_name or "" }}</span>
                 </td>
                 <td>
                   <span class="primary-text">{{ user.email or "-" }}</span>
-                  <span class="muted-text">{{ "verified" if user.email_verified_at else "unverified" }}</span>
+                  <span class="muted-text">{{ "подтвержден" if user.email_verified_at else "не подтвержден" }}</span>
                 </td>
                 <td><span class="status status-{{ user.status }}">{{ user.status }}</span></td>
-                <td>{{ "admin" if user.is_admin else "user" }}</td>
+                <td>{{ "админ" if user.is_admin else "пользователь" }}</td>
                 <td>{{ user.active_device_count }} / {{ user.total_device_count }}</td>
-                <td><a href="/users/{{ user.id }}">Open</a></td>
+                <td><a href="/users/{{ user.id }}">Открыть</a></td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
     {% else %}
-      <p class="empty-state">No users yet.</p>
+      <p class="empty-state">Пользователей пока нет.</p>
     {% endif %}
   </section>
 {% endblock %}

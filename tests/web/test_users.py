@@ -92,7 +92,7 @@ def test_disabled_devices_page_lists_only_disabled_devices(tmp_path: Path):
     response = client.get("/devices/disabled")
 
     assert response.status_code == 200
-    assert "Disabled devices" in response.text
+    assert "Отключенные устройства" in response.text
     assert "encrypted-device" in response.text
     assert "disabled-owner" in response.text
     assert "10.8.0.44" in response.text

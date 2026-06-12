@@ -2,13 +2,13 @@
 
 {% block content %}
   <section class="section-heading">
-    <p class="eyebrow">Order review</p>
-    <h1>Orders</h1>
+    <p class="eyebrow">Проверка заявок</p>
+    <h1>Заявки</h1>
   </section>
 
   <section class="panel">
     <div class="panel-header">
-      <h2>Recent orders</h2>
+      <h2>Последние заявки</h2>
     </div>
     {% if orders %}
       <div class="table-wrap">
@@ -16,12 +16,12 @@
           <thead>
             <tr>
               <th>ID</th>
-              <th>Status</th>
-              <th>Payment</th>
-              <th>Config</th>
-              <th>User</th>
-              <th>Device</th>
-              <th>Created</th>
+              <th>Статус</th>
+              <th>Оплата</th>
+              <th>Конфиг</th>
+              <th>Пользователь</th>
+              <th>Устройство</th>
+              <th>Создано</th>
             </tr>
           </thead>
           <tbody>
@@ -48,7 +48,7 @@
         </table>
       </div>
     {% else %}
-      <p class="empty-state">No orders yet.</p>
+      <p class="empty-state">Заявок пока нет.</p>
     {% endif %}
   </section>
 {% endblock %}

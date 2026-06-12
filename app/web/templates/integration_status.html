@@ -3,12 +3,12 @@
 {% block content %}
   <section class="section-heading">
     <p class="eyebrow">Read-only integration gate</p>
-    <h1>Integration status</h1>
+    <h1>Статус интеграции</h1>
   </section>
 
   <section class="panel panel-spaced">
     <div class="panel-header">
-      <h2>Operator-only boundary</h2>
+      <h2>Граница operator-only</h2>
     </div>
     <p class="action-note">Операторский пилот: web/admin остается на 127.0.0.1:3030 через SSH-туннель; API 3040 только loopback/read-only.</p>
     <p class="action-note">Публичный доступ, выдача конфигов и write routes требуют отдельных named gates.</p>
@@ -17,17 +17,17 @@
   <section class="settings-grid" aria-label="Integration status">
     <article class="panel">
       <div class="panel-header">
-        <h2>Current decision</h2>
+        <h2>Текущее решение</h2>
       </div>
       <div class="table-wrap">
         <table class="settings-table">
           <tbody>
             <tr>
-              <td>Status</td>
+              <td>Статус</td>
               <td>{{ report.status|replace("_", "-") }}</td>
             </tr>
             <tr>
-              <td>Controlled prod decision</td>
+              <td>Controlled prod решение</td>
               <td>{{ report.controlled_prod_readiness.decision|replace("_", "-") }}</td>
             </tr>
             <tr>
@@ -53,12 +53,12 @@
               <td><code>{{ report.api_baseline.api_web_baseline_head }}</code></td>
             </tr>
             <tr>
-              <td>Web/admin access</td>
+              <td>Web/admin доступ</td>
               <td>{{ report.controlled_prod_readiness.web_admin_access|replace("_", "-") }}</td>
             </tr>
             {% if report.controlled_prod_readiness.manual_web_check %}
               <tr>
-                <td>Manual web check</td>
+                <td>Manual web проверка</td>
                 <td>{{ report.controlled_prod_readiness.manual_web_check|replace("_", "-") }}</td>
               </tr>
             {% endif %}
@@ -77,7 +77,7 @@
               <td><code>{{ report.local_read_only_extension.head }}</code></td>
             </tr>
             <tr>
-              <td>Local head status</td>
+              <td>Статус local head</td>
               <td>{{ report.local_read_only_extension.status|replace("_", "-") }}</td>
             </tr>
             <tr>
@@ -111,21 +111,21 @@
 
     <article class="panel">
       <div class="panel-header">
-        <h2>Aggregate state</h2>
+        <h2>Агрегированное состояние</h2>
       </div>
       <div class="table-wrap">
         <table class="settings-table">
           <tbody>
             <tr>
-              <td>Servers</td>
+              <td>Серверы</td>
               <td>{{ report.aggregate_state.servers }}</td>
             </tr>
             <tr>
-              <td>Users</td>
+              <td>Пользователи</td>
               <td>{{ report.aggregate_state.users }}</td>
             </tr>
             <tr>
-              <td>Devices</td>
+              <td>Устройства</td>
               <td>{{ report.aggregate_state.devices }}</td>
             </tr>
           </tbody>
@@ -136,7 +136,7 @@
 
   <section class="panel panel-spaced">
     <div class="panel-header">
-      <h2>Allowed read scopes</h2>
+      <h2>Разрешенные read scopes</h2>
     </div>
     <div class="table-wrap">
       <table class="settings-table">
@@ -155,7 +155,7 @@
   <section class="settings-grid" aria-label="Integration lanes">
     <article class="panel">
       <div class="panel-header">
-        <h2>Allowed lanes</h2>
+        <h2>Разрешенные направления</h2>
       </div>
       <div class="table-wrap">
         <table class="settings-table">
@@ -173,7 +173,7 @@
 
     <article class="panel">
       <div class="panel-header">
-        <h2>Blocked lanes</h2>
+        <h2>Заблокированные направления</h2>
       </div>
       <div class="table-wrap">
         <table class="settings-table">
@@ -192,7 +192,7 @@
 
   <section class="panel panel-spaced">
     <div class="panel-header">
-      <h2>Next gate</h2>
+      <h2>Следующий gate</h2>
     </div>
     <p>{{ report.next_gate }}</p>
   </section>

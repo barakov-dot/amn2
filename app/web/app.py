@@ -287,7 +287,7 @@ def create_web_app(
             "orders.html",
             _template_context(
                 request,
-                title="Orders",
+                title="Заявки",
                 authenticated=True,
                 orders=orders,
             ),
@@ -309,7 +309,7 @@ def create_web_app(
             "logs.html",
             _template_context(
                 request,
-                title="Application logs",
+                title="Логи приложения",
                 authenticated=True,
                 log_enabled=actual_settings.app_log_enabled,
                 log_level=actual_settings.app_log_level,
@@ -333,7 +333,7 @@ def create_web_app(
             "settings.html",
             _template_context(
                 request,
-                title="Settings",
+                title="Настройки",
                 authenticated=True,
                 settings_sections=_load_settings_sections(actual_settings),
             ),
@@ -349,7 +349,7 @@ def create_web_app(
             "config_templates.html",
             _template_context(
                 request,
-                title="Config templates",
+                title="Шаблоны конфигурации",
                 authenticated=True,
                 template_dir_name=_display_setting_value(
                     "CLIENT_CONFIG_TEMPLATE_DIR",
@@ -413,7 +413,7 @@ def create_web_app(
             "about.html",
             _template_context(
                 request,
-                title="About",
+                title="О системе",
                 authenticated=True,
                 about=build_about_status(),
             ),
@@ -429,7 +429,7 @@ def create_web_app(
             "api_tokens.html",
             _template_context(
                 request,
-                title="API tokens",
+                title="Токены API",
                 authenticated=True,
                 allowed_scopes=API_READINESS_ALLOWED_SCOPES,
                 tokens=_load_api_tokens(actual_settings),
@@ -486,7 +486,7 @@ def create_web_app(
             "api_tokens.html",
             _template_context(
                 request,
-                title="API tokens",
+                title="Токены API",
                 authenticated=True,
                 allowed_scopes=API_READINESS_ALLOWED_SCOPES,
                 tokens=tokens,
@@ -579,7 +579,7 @@ def create_web_app(
             "users.html",
             _template_context(
                 request,
-                title="Users",
+                title="Пользователи",
                 authenticated=True,
                 users=users,
             ),
@@ -596,7 +596,7 @@ def create_web_app(
             "disabled_devices.html",
             _template_context(
                 request,
-                title="Disabled devices",
+                title="Отключенные устройства",
                 authenticated=True,
                 devices=devices,
             ),
@@ -612,7 +612,7 @@ def create_web_app(
             "user_form.html",
             _template_context(
                 request,
-                title="New user",
+                title="Новый пользователь",
                 authenticated=True,
                 action_url="/users/new",
                 submit_label="Create user",
@@ -1305,7 +1305,7 @@ def create_web_app(
             "servers.html",
             _template_context(
                 request,
-                title="Servers",
+                title="Серверы",
                 authenticated=True,
                 servers=servers,
             ),
@@ -1862,21 +1862,25 @@ def _load_dashboard(settings: Settings) -> dict[str, Any]:
             {
                 "label": "Пользователи",
                 "value": user_count,
+                "unit_label": _plural_ru_word(user_count, "пользователь", "пользователя", "пользователей"),
                 "caption": _plural_ru(user_count, "пользователь", "пользователя", "пользователей"),
             },
             {
                 "label": "Серверы",
                 "value": server_count,
+                "unit_label": _plural_ru_word(server_count, "сервер", "сервера", "серверов"),
                 "caption": _plural_ru(server_count, "сервер", "сервера", "серверов"),
             },
             {
                 "label": "Заявки",
                 "value": pending_order_count,
+                "unit_label": _plural_ru_word(pending_order_count, "заявка", "заявки", "заявок"),
                 "caption": _plural_ru(pending_order_count, "заявка", "заявки", "заявок"),
             },
             {
                 "label": "Активные устройства",
                 "value": active_device_count,
+                "unit_label": _plural_ru_word(active_device_count, "устройство", "устройства", "устройств"),
                 "caption": _plural_ru(active_device_count, "устройство", "устройства", "устройств"),
             },
         ],
@@ -3206,10 +3210,13 @@ def _row_to_dict(row: Any) -> dict[str, Any]:
 
 
 def _plural_ru(count: int, one: str, few: str, many: str) -> str:
-    if count % 10 == 1 and count % 100 != 11:
-        noun = one
-    elif 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
-        noun = few
-    else:
-        noun = many
+    noun = _plural_ru_word(count, one, few, many)
     return f"{count} {noun}"
+
+
+def _plural_ru_word(count: int, one: str, few: str, many: str) -> str:
+    if count % 10 == 1 and count % 100 != 11:
+        return one
+    elif 2 <= count % 10 <= 4 and not 12 <= count % 100 <= 14:
+        return few
+    return many

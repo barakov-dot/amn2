@@ -12,9 +12,9 @@
 
   <section class="metrics" aria-label="Сводка">
     {% for metric in metrics %}
-      <article class="metric-card">
-        <span class="metric-label">{{ metric.label }}</span>
-        <strong class="metric-value">{{ metric.caption }}</strong>
+      <article class="metric-card metric-card-centered">
+        <span class="metric-value">{{ metric.value }}</span>
+        <span class="metric-label">{{ metric.unit_label }}</span>
       </article>
     {% endfor %}
   </section>

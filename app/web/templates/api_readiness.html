@@ -3,20 +3,20 @@
 {% block content %}
   <section class="section-heading">
     <p class="eyebrow">Read-only API baseline</p>
-    <h1>API readiness</h1>
+    <h1>Готовность API</h1>
   </section>
 
   <section class="settings-grid" aria-label="API readiness">
     <article class="panel">
       <div class="panel-header">
-        <h2>Allowed read scopes</h2>
+      <h2>Разрешенные read scopes</h2>
       </div>
       <div class="table-wrap">
         <table class="settings-table">
           <thead>
             <tr>
               <th>Scope</th>
-              <th>Mode</th>
+              <th>Режим</th>
             </tr>
           </thead>
           <tbody>
@@ -33,21 +33,21 @@
 
     <article class="panel">
       <div class="panel-header">
-        <h2>Current aggregate state</h2>
+      <h2>Текущее агрегированное состояние</h2>
       </div>
       <div class="table-wrap">
         <table class="settings-table">
           <tbody>
             <tr>
-              <td>Servers</td>
+              <td>Серверы</td>
               <td>{{ metrics.servers_total }}</td>
             </tr>
             <tr>
-              <td>Users</td>
+              <td>Пользователи</td>
               <td>{{ metrics.users_total }}</td>
             </tr>
             <tr>
-              <td>Devices</td>
+              <td>Устройства</td>
               <td>{{ metrics.devices_total }}</td>
             </tr>
           </tbody>
@@ -58,7 +58,7 @@
 
   <section class="panel panel-spaced">
     <div class="panel-header">
-      <h2>Blocked in this slice</h2>
+      <h2>Заблокировано в этом slice</h2>
     </div>
     <div class="table-wrap">
       <table class="settings-table">
@@ -66,7 +66,7 @@
           {% for surface in blocked_surfaces %}
             <tr>
               <td>{{ surface }}</td>
-              <td>separate gate required</td>
+              <td>требуется отдельный gate</td>
             </tr>
           {% endfor %}
         </tbody>

@@ -2,35 +2,35 @@
 
 {% block content %}
   <section class="section-heading">
-    <p class="eyebrow">Runtime diagnostics</p>
-    <h1>Application logs</h1>
+    <p class="eyebrow">Диагностика runtime</p>
+    <h1>Логи приложения</h1>
   </section>
 
   <section class="panel">
     <div class="panel-header">
-      <h2>Log source</h2>
+      <h2>Источник логов</h2>
     </div>
     <dl class="details">
       <div>
-        <dt>Status</dt>
+        <dt>Статус</dt>
         <dd>
           {% if log_enabled %}
-            <span class="status status-active">enabled</span>
+            <span class="status status-active">включено</span>
           {% else %}
-            <span class="status status-disabled">disabled</span>
+            <span class="status status-disabled">отключено</span>
           {% endif %}
         </dd>
       </div>
       <div>
-        <dt>Level</dt>
+        <dt>Уровень</dt>
         <dd>{{ log_level }}</dd>
       </div>
       <div>
-        <dt>Path</dt>
+        <dt>Путь</dt>
         <dd class="wrap-text">{{ log_path }}</dd>
       </div>
       <div>
-        <dt>Max lines</dt>
+        <dt>Максимум строк</dt>
         <dd>{{ log_max_lines }}</dd>
       </div>
     </dl>
@@ -38,10 +38,10 @@
 
   <section class="panel panel-spaced">
     <div class="panel-header">
-      <h2>Recent lines</h2>
+      <h2>Последние строки</h2>
     </div>
     {% if not log_enabled %}
-      <p class="empty-state">Logging is disabled.</p>
+      <p class="empty-state">Логирование отключено.</p>
     {% elif log_lines %}
       <ol class="log-lines">
         {% for line in log_lines %}
@@ -49,7 +49,7 @@
         {% endfor %}
       </ol>
     {% else %}
-      <p class="empty-state">No log lines found.</p>
+      <p class="empty-state">Строк логов не найдено.</p>
     {% endif %}
   </section>
 {% endblock %}

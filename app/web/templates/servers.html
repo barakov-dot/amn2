@@ -3,31 +3,34 @@
 {% block content %}
   <section class="section-heading page-heading">
     <div>
-      <p class="eyebrow">Server management</p>
-      <h1>Servers</h1>
+      <p class="eyebrow">Управление серверами</p>
+      <h1>Серверы</h1>
     </div>
-    <a class="button" href="/servers/new">New server</a>
+    <div class="button-row">
+      <button class="button" type="button" disabled>Новый сервер</button>
+      <span class="action-note">Создание сервера требует named gate.</span>
+    </div>
   </section>
 
   <section class="panel">
     <div class="panel-header">
-      <h2>All servers</h2>
+      <h2>Все серверы</h2>
     </div>
     {% if servers %}
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Host</th>
+              <th>Имя</th>
+              <th>Хост</th>
               <th>VPN</th>
-              <th>Status</th>
+              <th>Статус</th>
               <th>Live</th>
-              <th>Latency</th>
-              <th>Checked</th>
-              <th>Error</th>
-              <th>Devices</th>
-              <th>Actions</th>
+              <th>Задержка</th>
+              <th>Проверено</th>
+              <th>Ошибка</th>
+              <th>Устройства</th>
+              <th>Действия</th>
             </tr>
           </thead>
           <tbody>
@@ -55,14 +58,14 @@
                 <td>{{ server.health_checked_at or "-" }}</td>
                 <td>{{ server.health_error or "-" }}</td>
                 <td>{{ server.active_device_count }} / {{ server.total_device_count }}</td>
-                <td><a href="/servers/{{ server.id }}">Open</a></td>
+                <td><a href="/servers/{{ server.id }}">Открыть</a></td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
     {% else %}
-      <p class="empty-state">No servers yet.</p>
+      <p class="empty-state">Серверов пока нет.</p>
     {% endif %}
   </section>
 {% endblock %}

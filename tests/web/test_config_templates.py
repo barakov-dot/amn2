@@ -45,13 +45,13 @@ def test_config_templates_page_lists_versions_placeholders_and_safe_preview(tmp_
     response = client.get("/config-templates")
 
     assert response.status_code == 200
-    assert "Config templates" in response.text
+    assert "Шаблоны конфигурации" in response.text
     assert "amneziawg_v1_5" in response.text
     assert "amneziawg_v2" in response.text
     assert "override" in response.text
     assert "default" in response.text
-    assert "Secret-bearing delivery artifacts" in response.text
-    assert "Treat real .conf, QR, and vpn:// payloads as secrets." in response.text
+    assert "Секретные delivery artifacts" in response.text
+    assert "Реальные .conf, QR и vpn:// payloads считаются секретами." in response.text
     assert "{private_key}" in response.text
     assert "{preshared_key}" in response.text
     assert "vpn://" in response.text

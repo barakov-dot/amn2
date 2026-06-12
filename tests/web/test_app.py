@@ -42,9 +42,10 @@ def test_login_success_shows_dashboard_with_repository_counts(tmp_path: Path):
     assert login_response.headers["location"] == "/"
     assert dashboard_response.status_code == 200
     assert "Панель управления" in dashboard_response.text
-    assert "1 пользователь" in dashboard_response.text
-    assert "1 сервер" in dashboard_response.text
-    assert "1 заявка" in dashboard_response.text
+    assert '<span class="metric-value">1</span>' in dashboard_response.text
+    assert '<span class="metric-label">пользователь</span>' in dashboard_response.text
+    assert '<span class="metric-label">сервер</span>' in dashboard_response.text
+    assert '<span class="metric-label">заявка</span>' in dashboard_response.text
     assert "alice" in dashboard_response.text
     assert "debian-vps-1" in dashboard_response.text
 

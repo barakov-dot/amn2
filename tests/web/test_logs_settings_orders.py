@@ -185,7 +185,7 @@ def test_logs_show_redacted_tail_and_honor_max_lines(tmp_path: Path):
     response = client.get("/logs")
 
     assert response.status_code == 200
-    assert "Application logs" in response.text
+    assert "Логи приложения" in response.text
     assert str(log_path.parent) not in response.text
     assert log_path.name in response.text
     assert "2026-05-29 info boot" not in response.text
@@ -205,7 +205,7 @@ def test_logs_note_disabled_logging_without_showing_lines(tmp_path: Path):
     response = client.get("/logs")
 
     assert response.status_code == 200
-    assert "Logging is disabled" in response.text
+    assert "Логирование отключено" in response.text
     assert "APP_SECRET_KEY" not in response.text
     assert "still-secret" not in response.text
 
@@ -237,7 +237,7 @@ def test_settings_redacts_secrets_and_shows_operational_values(tmp_path: Path):
     response = client.get("/settings")
 
     assert response.status_code == 200
-    assert "Settings" in response.text
+    assert "Настройки" in response.text
     assert "ADMIN_TELEGRAM_IDS" in response.text
     assert "ACCESS_MODE" in response.text
     assert "DATABASE_PATH" in response.text

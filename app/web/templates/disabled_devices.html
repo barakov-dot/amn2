@@ -3,29 +3,29 @@
 {% block content %}
   <section class="section-heading page-heading">
     <div>
-      <p class="eyebrow">Device management</p>
-      <h1>Disabled devices</h1>
+      <p class="eyebrow">Управление устройствами</p>
+      <h1>Отключенные устройства</h1>
     </div>
     <div class="button-row">
-      <a class="button button-secondary" href="/users">Back to users</a>
+      <a class="button button-secondary" href="/users">К пользователям</a>
     </div>
   </section>
 
   <section class="panel">
     <div class="panel-header">
-      <h2>Can be enabled</h2>
+      <h2>Можно включить</h2>
     </div>
     {% if devices %}
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Device</th>
-              <th>User</th>
-              <th>Server</th>
+              <th>Устройство</th>
+              <th>Пользователь</th>
+              <th>Сервер</th>
               <th>IP</th>
-              <th>Disabled</th>
-              <th>Actions</th>
+              <th>Отключено</th>
+              <th>Действия</th>
             </tr>
           </thead>
           <tbody>
@@ -45,14 +45,14 @@
                   <span class="primary-text">{{ device.revoked_at or "-" }}</span>
                   <span class="muted-text">{{ device.revoke_reason or "-" }}</span>
                 </td>
-                <td><a href="/users/{{ device.user_id }}">Open user</a></td>
+                <td><a href="/users/{{ device.user_id }}">Открыть пользователя</a></td>
               </tr>
             {% endfor %}
           </tbody>
         </table>
       </div>
     {% else %}
-      <p class="empty-state">No disabled devices.</p>
+      <p class="empty-state">Отключенных устройств нет.</p>
     {% endif %}
   </section>
 {% endblock %}

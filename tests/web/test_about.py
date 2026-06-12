@@ -30,14 +30,14 @@ def test_about_shows_read_only_build_status_without_secrets(tmp_path: Path):
     assert dashboard_response.status_code == 200
     assert 'href="/about"' in dashboard_response.text
     assert response.status_code == 200
-    assert "About" in response.text
-    assert "Application version" in response.text
+    assert "О системе" in response.text
+    assert "Версия приложения" in response.text
     assert _expected_package_version() in response.text
     assert "Python runtime" in response.text
-    assert "Build status" in response.text
+    assert "Статус сборки" in response.text
     assert "read-only" in response.text
     assert "No auto-update" in response.text
-    assert "Write actions" in response.text
+    assert "Write-действия" in response.text
     assert "not available" in response.text
 
     forbidden = [

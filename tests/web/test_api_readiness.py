@@ -30,12 +30,12 @@ def test_api_readiness_shows_read_only_status_without_secrets(tmp_path: Path):
     response = client.get("/api-readiness")
 
     assert response.status_code == 200
-    assert "API readiness" in response.text
+    assert "Готовность API" in response.text
     assert "server:read" in response.text
     assert "metrics:read" in response.text
-    assert "Servers" in response.text
-    assert "Users" in response.text
-    assert "Devices" in response.text
+    assert "Серверы" in response.text
+    assert "Пользователи" in response.text
+    assert "Устройства" in response.text
     assert "1" in response.text
     forbidden = [
         "PrivateKey",

@@ -2,18 +2,18 @@
 
 {% block content %}
   <section class="section-heading">
-    <p class="eyebrow">Client delivery</p>
-    <h1>Config templates</h1>
+    <p class="eyebrow">Доставка клиентских конфигов</p>
+    <h1>Шаблоны конфигурации</h1>
   </section>
 
-  <section class="panel panel-spaced" aria-label="Delivery artifact safety">
+  <section class="panel panel-spaced" aria-label="Безопасность delivery artifacts">
     <div class="panel-header">
-      <h2>Secret-bearing delivery artifacts</h2>
+      <h2>Секретные delivery artifacts</h2>
     </div>
-    <p class="empty-state">Treat real .conf, QR, and vpn:// payloads as secrets.</p>
+    <p class="empty-state">Реальные .conf, QR и vpn:// payloads считаются секретами. Редактирование шаблонов требует named gate.</p>
   </section>
 
-  <section class="template-grid" aria-label="Client config templates">
+  <section class="template-grid" aria-label="Шаблоны клиентских конфигов">
     {% for item in config_templates %}
       <article class="panel">
         <div class="panel-header">
@@ -22,11 +22,11 @@
         </div>
         <dl class="details details-compact">
           <div>
-            <dt>File</dt>
+            <dt>Файл</dt>
             <dd><code>{{ item.filename }}</code></dd>
           </div>
           <div>
-            <dt>Directory</dt>
+            <dt>Директория</dt>
             <dd>{{ template_dir_name }}</dd>
           </div>
         </dl>
@@ -36,14 +36,15 @@
         <form action="/config-templates/{{ item.version }}/save" method="post" class="form">
           <input name="csrf_token" type="hidden" value="{{ csrf_token }}">
           <label class="field">
-            Template
-            <textarea name="template_text" rows="22" spellcheck="false">{{ item.template_text }}</textarea>
+            Шаблон
+            <textarea name="template_text" rows="22" spellcheck="false" disabled>{{ item.template_text }}</textarea>
           </label>
-          <button class="button button-primary" type="submit">Сохранить шаблон</button>
+          <button class="button button-primary" type="submit" disabled>Сохранить шаблон</button>
+          <p class="action-note">Редактирование шаблонов требует named gate.</p>
         </form>
         <form action="/config-templates/{{ item.version }}/reset" method="post">
           <input name="csrf_token" type="hidden" value="{{ csrf_token }}">
-          <button class="button button-secondary" type="submit">Сбросить к встроенному шаблону</button>
+          <button class="button button-secondary" type="submit" disabled>Сбросить к встроенному шаблону</button>
         </form>
         {% if not item.error %}
           <div class="template-block">
@@ -59,9 +60,9 @@
     {% endfor %}
   </section>
 
-  <section class="panel panel-spaced" aria-label="Template placeholders">
+  <section class="panel panel-spaced" aria-label="Placeholder шаблонов">
     <div class="panel-header">
-      <h2>Client placeholders</h2>
+      <h2>Placeholder клиентского конфига</h2>
     </div>
     <div class="placeholder-list">
       {% for placeholder in config_placeholders %}
@@ -70,7 +71,7 @@
     </div>
   </section>
 
-  <section class="panel panel-spaced" aria-label="Delivery message template">
+  <section class="panel panel-spaced" aria-label="Шаблон сообщения доставки">
     <div class="panel-header">
       <h2>{{ delivery_template.key }}</h2>
     </div>

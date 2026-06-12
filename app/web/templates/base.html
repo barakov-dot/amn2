@@ -3,26 +3,26 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{ title }} | Amneziya Admin</title>
+    <title>{{ title }} | AmneziyaDA</title>
     <link rel="stylesheet" href="/static/admin.css">
   </head>
   <body>
     <header class="topbar">
-      <a class="brand" href="/">Amneziya Admin</a>
+      <a class="brand" href="/">AmneziyaDA</a>
       {% if authenticated %}
         <nav class="nav" aria-label="Основная навигация">
           <a class="nav-link" href="/">Обзор</a>
           <a class="nav-link" href="/users">Пользователи</a>
-          <a class="nav-link" href="/servers">Servers</a>
+          <a class="nav-link" href="/servers">Серверы</a>
           <a class="nav-link" href="/api-readiness">API</a>
-          <a class="nav-link" href="/integration-status">Integration</a>
-          <a class="nav-link" href="/about">About</a>
-          <a class="nav-link" href="/api-tokens">Tokens</a>
-          <a class="nav-link" href="/orders">Orders</a>
+          <a class="nav-link" href="/integration-status">Интеграция</a>
+          <a class="nav-link" href="/about">О системе</a>
+          <a class="nav-link" href="/api-tokens">Токены</a>
+          <a class="nav-link" href="/orders">Заявки</a>
           <a class="nav-link" href="/config-templates">Шаблоны</a>
-          <span class="nav-link nav-link-disabled">Email</span>
-          <a class="nav-link" href="/logs">Logs</a>
-          <a class="nav-link" href="/settings">Settings</a>
+          <span class="nav-link nav-link-disabled">Почта</span>
+          <a class="nav-link" href="/logs">Логи</a>
+          <a class="nav-link" href="/settings">Настройки</a>
         </nav>
         <form action="/logout" method="post" class="logout-form">
           <input name="csrf_token" type="hidden" value="{{ csrf_token }}">
