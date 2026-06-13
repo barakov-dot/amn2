@@ -64,6 +64,9 @@ REQUIRED_POLICY_IDS = {
     "bot.access.profile_icon.apply.blocked",
     "bot.support.profile_icon.apply.blocked",
     "bot.news.profile_icon.apply.blocked",
+    "api.health.polling.run.blocked",
+    "api.analytics.users.detail.blocked",
+    "api.analytics.peers.detail.blocked",
 }
 API_ROUTE_SHELL_POLICY_IDS = {
     "api.servers.list",
@@ -271,6 +274,27 @@ def test_telegram_profile_icon_apply_surfaces_are_identity_mutation_gated():
         assert "telegram identity mutation gate" in gates
         assert "operator approval" in gates
         assert "no live bot send" in gates
+
+
+def test_privacy_status_future_surfaces_remain_aggregate_only_gated():
+    polling = get_surface_policy("api.health.polling.run.blocked")
+    user_detail = get_surface_policy("api.analytics.users.detail.blocked")
+    peer_detail = get_surface_policy("api.analytics.peers.detail.blocked")
+
+    assert polling.implementation_mode == "blocked-future"
+    assert polling.risk_class == "remote-read"
+    assert polling.live_retest_required is True
+    assert "p6-m002" in _gate_text(polling)
+    assert "live probe gate" in _gate_text(polling)
+    assert "no raw command output" in _gate_text(polling)
+    for policy in (user_detail, peer_detail):
+        gates = _gate_text(policy)
+        assert policy.implementation_mode == "blocked-future"
+        assert policy.risk_class == "secret-adjacent-read"
+        assert policy.enables_new_behavior is False
+        assert "p6-n002" in gates
+        assert "aggregate-only" in gates
+        assert "no per-user" in gates or "no per-peer" in gates
 
 
 def test_self_service_surface_is_separate_from_admin_and_blocked_future():

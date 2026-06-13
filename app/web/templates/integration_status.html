@@ -282,6 +282,64 @@
     </div>
   </section>
 
+  <section class="settings-grid" aria-label="Privacy status boundary">
+    <article class="panel">
+      <div class="panel-header">
+        <h2>Health/status privacy</h2>
+      </div>
+      <div class="table-wrap">
+        <table class="settings-table">
+          <tbody>
+            <tr>
+              <td>Status</td>
+              <td>{{ report.privacy_status_boundary.status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>Scheduler contract</td>
+              <td>{{ report.privacy_status_boundary.health_status_scheduler.status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>live probes enabled</td>
+              <td>{{ report.privacy_status_boundary.health_status_scheduler.live_probes_enabled }}</td>
+            </tr>
+            <tr>
+              <td>Source</td>
+              <td>{{ report.privacy_status_boundary.health_status_scheduler.source|replace("_", "-") }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-header">
+        <h2>Admin analytics privacy</h2>
+      </div>
+      <div class="table-wrap">
+        <table class="settings-table">
+          <tbody>
+            <tr>
+              <td>Status</td>
+              <td>{{ report.privacy_status_boundary.admin_analytics.status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>per user breakdown enabled</td>
+              <td>{{ report.privacy_status_boundary.admin_analytics.per_user_breakdown_enabled }}</td>
+            </tr>
+            <tr>
+              <td>per peer breakdown enabled</td>
+              <td>{{ report.privacy_status_boundary.admin_analytics.per_peer_breakdown_enabled }}</td>
+            </tr>
+            <tr>
+              <td>Policy doc</td>
+              <td><code>{{ report.privacy_status_boundary.docs.policy_doc }}</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </article>
+  </section>
+
   <section class="panel panel-spaced">
     <div class="panel-header">
       <h2>Разрешенные read scopes</h2>

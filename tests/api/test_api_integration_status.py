@@ -127,11 +127,18 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
     assert payload["productization_boundary"]["telegram_profile_icon_apply"][
         "telegram_api_enabled"
     ] is False
-    assert payload["next_gate"] == "P6-M002 health/status polling scheduler"
+    assert payload["privacy_status_boundary"]["health_status_scheduler"][
+        "live_probes_enabled"
+    ] is False
+    assert payload["privacy_status_boundary"]["admin_analytics"][
+        "per_user_breakdown_enabled"
+    ] is False
+    assert payload["next_gate"] == "P6-M003 attach-existing-server reconciliation"
     assert payload["aggregate_state"]["servers"] == 1
     assert "new live peer apply/revoke without separate operator confirmation" in payload["blocked_lanes"]
     assert "payment processor integration without named gate" in payload["blocked_lanes"]
     assert "Telegram profile icon mutation without P6-I005 gate" in payload["blocked_lanes"]
+    assert "live health/status polling without P6-M002 gate" in payload["blocked_lanes"]
     assert _forbidden_markers_absent(payload)
 
     conn = connect(Path(settings.database_path))

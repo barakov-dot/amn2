@@ -65,6 +65,10 @@ def test_integration_status_page_renders_gate_without_secret_markers(tmp_path: P
     assert "identity-mutation-gate-ready" in response.text
     assert "telegram api enabled" in response.text
     assert "P6-I005 Telegram identity mutation gate" in response.text
+    assert "aggregate-privacy-boundary-ready" in response.text
+    assert "scheduler-contract-ready" in response.text
+    assert "aggregate-only-analytics-ready" in response.text
+    assert "per peer breakdown enabled" in response.text
     assert "dry-run-only-pass" in response.text
     assert "Phase 2 live write gate" in response.text
     assert "verified-live" in response.text
@@ -72,7 +76,8 @@ def test_integration_status_page_renders_gate_without_secret_markers(tmp_path: P
     assert "payment processor integration without named gate" in response.text
     assert "support/news bot runtime without separate token gate" in response.text
     assert "Telegram profile icon mutation without P6-I005 gate" in response.text
-    assert "P6-M002 health/status polling scheduler" in response.text
+    assert "live health/status polling without P6-M002 gate" in response.text
+    assert "P6-M003 attach-existing-server reconciliation" in response.text
     assert "server:read" in response.text
     forbidden = [
         "PrivateKey",

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from app.db.repositories import Repository
+from app.services.privacy_status_boundary import build_privacy_status_boundary
 from app.services.productization_boundary import build_productization_boundary
 
 
@@ -33,6 +34,8 @@ BLOCKED_LANES = (
     "automatic entitlement/config delivery on payment",
     "support/news bot runtime without separate token gate",
     "Telegram profile icon mutation without P6-I005 gate",
+    "live health/status polling without P6-M002 gate",
+    "per-peer or per-user analytics without P6-N002 gate",
     "systemd/reverse proxy deployment on validation VPS",
 )
 
@@ -127,10 +130,11 @@ def build_integration_status(repo: Repository) -> dict[str, Any]:
         },
         "capability_registry": build_capability_registry(),
         "productization_boundary": build_productization_boundary(),
+        "privacy_status_boundary": build_privacy_status_boundary(),
         "aggregate_state": _load_aggregate_state(repo),
         "allowed_lanes": list(ALLOWED_LANES),
         "blocked_lanes": list(BLOCKED_LANES),
-        "next_gate": "P6-M002 health/status polling scheduler",
+        "next_gate": "P6-M003 attach-existing-server reconciliation",
     }
 
 

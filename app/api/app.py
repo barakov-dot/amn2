@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -49,7 +50,7 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         repo: Repository = Depends(_repo),
         auth: ApiAuthContext = Depends(_require_scope("server:read")),
     ):
-        payload = build_integration_status(repo)
+        payload = _api_safe_integration_status(build_integration_status(repo))
         _record_api_read(repo, auth, path="/api/integration/status", scope="server:read")
         return payload
 
@@ -173,6 +174,25 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         return payload
 
     return app
+
+
+def _api_safe_integration_status(payload: dict) -> dict:
+    safe_payload = deepcopy(payload)
+    boundary = safe_payload.get("privacy_status_boundary")
+    if not isinstance(boundary, dict):
+        return safe_payload
+
+    scheduler = boundary.get("health_status_scheduler")
+    if isinstance(scheduler, dict):
+        blocked = scheduler.pop("blocked_without_gate", ())
+        scheduler["blocked_without_gate_count"] = len(blocked)
+
+    analytics = boundary.get("admin_analytics")
+    if isinstance(analytics, dict):
+        forbidden = analytics.pop("forbidden_fields", ())
+        analytics["forbidden_fields_count"] = len(forbidden)
+
+    return safe_payload
 
 
 async def _repo(request: Request) -> AsyncIterator[Repository]:
