@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -52,17 +53,18 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
 
     assert response.status_code == 200
     payload = response.json()
+    expected_head = _expected_git_head()
     assert payload["status"] == "phase_6_productization_planning"
-    assert payload["source_checkpoint"]["current_branch_head"] == "b676e1b"
+    assert payload["source_checkpoint"]["current_branch_head"] == expected_head
     assert payload["source_checkpoint"]["latest_vps_smoked_package_head"] == "2215761"
     assert (
         payload["source_checkpoint"]["package_status_for_branch_head"]
         == "not_package_rebuilt_not_vps_smoked"
     )
-    assert payload["api_baseline"]["stable_head"] == "b676e1b"
+    assert payload["api_baseline"]["stable_head"] == expected_head
     assert payload["api_baseline"]["previous_stable_head"] == "2215761"
-    assert payload["api_baseline"]["api_web_baseline_head"] == "b676e1b"
-    assert payload["api_baseline"]["integration_status_head"] == "b676e1b"
+    assert payload["api_baseline"]["api_web_baseline_head"] == expected_head
+    assert payload["api_baseline"]["integration_status_head"] == expected_head
     assert payload["api_baseline"]["write_routes_enabled"] is False
     assert payload["api_baseline"]["public_api_exposed"] is False
     assert payload["remote_operation_gate"]["candidate_head"] == "7281254"
@@ -78,7 +80,7 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
     assert payload["controlled_prod_readiness"]["service_deployment"] == "active_on_disposable_test_vps"
     assert payload["controlled_prod_readiness"]["api_listener"] == "absent_or_loopback_only"
     assert payload["controlled_prod_readiness"]["vps_apply_enabled_default"] is False
-    assert payload["local_read_only_extension"]["head"] == "b676e1b"
+    assert payload["local_read_only_extension"]["head"] == expected_head
     assert payload["local_read_only_extension"]["status"] == "local_only_not_vps_smoked"
     assert payload["local_read_only_extension"]["vps_smoke_status"] == "not_run_for_branch_head"
     assert payload["local_read_only_extension"]["checked_routes"] == 6
@@ -193,3 +195,13 @@ def _forbidden_markers_absent(payload: object) -> bool:
         "awg show",
     )
     return all(marker not in text for marker in forbidden)
+
+
+def _expected_git_head() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()

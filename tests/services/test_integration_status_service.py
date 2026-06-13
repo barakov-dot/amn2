@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 from app.db.connection import connect
@@ -34,8 +35,9 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
         conn.close()
 
     assert report["status"] == "phase_6_productization_planning"
+    expected_head = _expected_git_head()
     assert report["source_checkpoint"] == {
-        "current_branch_head": "b676e1b",
+        "current_branch_head": expected_head,
         "latest_vps_smoked_package_head": "2215761",
         "latest_vps_smoke_status": "live_update_smoke_pass",
         "package_status_for_branch_head": "not_package_rebuilt_not_vps_smoked",
@@ -43,10 +45,10 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
         "vps_apply_enabled_default": False,
     }
     assert report["api_baseline"]["status"] == "phase_6_planning_ready"
-    assert report["api_baseline"]["stable_head"] == "b676e1b"
+    assert report["api_baseline"]["stable_head"] == expected_head
     assert report["api_baseline"]["previous_stable_head"] == "2215761"
-    assert report["api_baseline"]["api_web_baseline_head"] == "b676e1b"
-    assert report["api_baseline"]["integration_status_head"] == "b676e1b"
+    assert report["api_baseline"]["api_web_baseline_head"] == expected_head
+    assert report["api_baseline"]["integration_status_head"] == expected_head
     assert report["api_baseline"]["write_routes_enabled"] is False
     assert report["api_baseline"]["public_api_exposed"] is False
     assert report["remote_operation_gate"]["candidate_head"] == "7281254"
@@ -65,7 +67,7 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
     assert report["controlled_prod_readiness"]["service_deployment"] == "active_on_disposable_test_vps"
     assert report["controlled_prod_readiness"]["api_listener"] == "absent_or_loopback_only"
     assert report["controlled_prod_readiness"]["vps_apply_enabled_default"] is False
-    assert report["local_read_only_extension"]["head"] == "b676e1b"
+    assert report["local_read_only_extension"]["head"] == expected_head
     assert report["local_read_only_extension"]["status"] == "local_only_not_vps_smoked"
     assert report["local_read_only_extension"]["vps_smoke_status"] == "not_run_for_branch_head"
     assert report["local_read_only_extension"]["checked_routes"] == 6
@@ -73,7 +75,7 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
     assert report["local_read_only_extension"]["token_lifecycle"] == "revoked"
     assert report["aggregate_state"]["servers"] == 1
     assert report["capability_registry"]["status"] == "policy_registry_ready"
-    assert report["capability_registry"]["current_branch_head"] == "b676e1b"
+    assert report["capability_registry"]["current_branch_head"] == expected_head
     assert report["capability_registry"]["latest_vps_smoked_package_head"] == "2215761"
     assert report["capability_registry"]["server_capabilities"] == [
         {
@@ -154,3 +156,13 @@ def _seed_server(repo: Repository) -> None:
         firewall="none",
         max_devices=100,
     )
+
+
+def _expected_git_head() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()

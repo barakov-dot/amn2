@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -41,7 +42,7 @@ def test_integration_status_page_renders_gate_without_secret_markers(tmp_path: P
     )
     assert "phase-6-productization-planning" in response.text
     assert "operator-only-pilot-accepted" in response.text
-    assert "b676e1b" in response.text
+    assert _expected_git_head() in response.text
     assert "2215761" in response.text
     assert "not-package-rebuilt-not-vps-smoked" in response.text
     assert "20260613T045107Z" in response.text
@@ -132,3 +133,13 @@ def _seed_server(db_path: Path) -> None:
         )
     finally:
         conn.close()
+
+
+def _expected_git_head() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()

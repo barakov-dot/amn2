@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import subprocess
+from pathlib import Path
 from typing import Any
 
 from app.db.repositories import Repository
@@ -28,10 +30,27 @@ BLOCKED_LANES = (
     "additional protocol managers without capability registry",
     "systemd/reverse proxy deployment on validation VPS",
 )
-CURRENT_STABLE_HEAD = "b676e1b"
+
+
+def _current_source_head() -> str:
+    repo_root = Path(__file__).resolve().parents[2]
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return result.stdout.strip() or "unknown"
+
+
+CURRENT_STABLE_HEAD = _current_source_head()
 PREVIOUS_STABLE_HEAD = "2215761"
-POST_DRY_RUN_READ_ONLY_HEAD = "b676e1b"
-API_WEB_BASELINE_HEAD = "b676e1b"
+POST_DRY_RUN_READ_ONLY_HEAD = CURRENT_STABLE_HEAD
+API_WEB_BASELINE_HEAD = CURRENT_STABLE_HEAD
 REMOTE_OPERATION_GATE_MERGE_HEAD = "708c98e"
 REMOTE_OPERATION_GATE_CANDIDATE_HEAD = "7281254"
 LATEST_VPS_SMOKED_PACKAGE_HEAD = "2215761"
