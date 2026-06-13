@@ -59,6 +59,9 @@ REQUIRED_POLICY_IDS = {
     "self_service.device_revoke.blocked",
     "api.payments.webhook.blocked",
     "api.entitlements.activate.blocked",
+    "api.entitlements.manual_review.blocked",
+    "api.config_links.issue.blocked",
+    "public_token.config_link.redeem.blocked",
     "bot.support.runtime.blocked",
     "bot.news.runtime.blocked",
     "bot.access.profile_icon.apply.blocked",
@@ -238,6 +241,7 @@ def test_api_route_shell_policies_are_read_only_scoped_and_no_live_retest():
 def test_productization_future_surfaces_remain_blocked_until_named_gates():
     payment = get_surface_policy("api.payments.webhook.blocked")
     entitlement = get_surface_policy("api.entitlements.activate.blocked")
+    manual_review = get_surface_policy("api.entitlements.manual_review.blocked")
     support_bot = get_surface_policy("bot.support.runtime.blocked")
     news_bot = get_surface_policy("bot.news.runtime.blocked")
 
@@ -247,12 +251,46 @@ def test_productization_future_surfaces_remain_blocked_until_named_gates():
     assert entitlement.implementation_mode == "blocked-future"
     assert entitlement.live_retest_required is True
     assert "config delivery stays blocked" in _gate_text(entitlement)
+    assert manual_review.implementation_mode == "blocked-future"
+    assert manual_review.live_retest_required is True
+    assert "p6-i006" in _gate_text(manual_review)
+    assert "manual review" in _gate_text(manual_review)
+    assert "no automatic activation" in _gate_text(manual_review)
     assert support_bot.implementation_mode == "blocked-future"
     assert "separate telegram token" in _gate_text(support_bot)
     assert "no config output" in _gate_text(support_bot)
     assert news_bot.implementation_mode == "blocked-future"
     assert "broadcast gate" in _gate_text(news_bot)
     assert "no user/device state" in _gate_text(news_bot)
+
+
+def test_config_link_surfaces_are_tokenized_and_blocked_until_p6_c002():
+    issue = get_surface_policy("api.config_links.issue.blocked")
+    redeem = get_surface_policy("public_token.config_link.redeem.blocked")
+
+    assert issue.surface == "api"
+    assert issue.method == "POST"
+    assert issue.implementation_mode == "blocked-future"
+    assert issue.enables_new_behavior is False
+    assert issue.secret_class == "token-raw-issue"
+    assert "p6-c002" in _gate_text(issue)
+    assert "hash-at-rest" in _gate_text(issue)
+    assert "no raw token" in _gate_text(issue)
+
+    assert redeem.surface == "public-token"
+    assert redeem.method == "GET"
+    assert redeem.risk_class == "public-token-secret-read"
+    assert redeem.secret_class == "client-config-secret"
+    assert redeem.implementation_mode == "blocked-future"
+    assert redeem.enables_new_behavior is False
+    assert redeem.audit_required is True
+    assert redeem.live_retest_required is True
+    assert "p6-c002" in _gate_text(redeem)
+    assert "purpose" in _gate_text(redeem)
+    assert "ttl" in _gate_text(redeem)
+    assert "one-time" in _gate_text(redeem)
+    assert "redaction" in _gate_text(redeem)
+    assert "no raw token" in _gate_text(redeem)
 
 
 def test_telegram_profile_icon_apply_surfaces_are_identity_mutation_gated():

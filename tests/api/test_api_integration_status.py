@@ -56,13 +56,13 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
     expected_head = _expected_git_head()
     assert payload["status"] == "phase_6_productization_planning"
     assert payload["source_checkpoint"]["current_branch_head"] == expected_head
-    assert payload["source_checkpoint"]["latest_vps_smoked_package_head"] == "2215761"
+    assert payload["source_checkpoint"]["latest_vps_smoked_package_head"] == "b3102db"
     assert (
         payload["source_checkpoint"]["package_status_for_branch_head"]
         == "not_package_rebuilt_not_vps_smoked"
     )
     assert payload["api_baseline"]["stable_head"] == expected_head
-    assert payload["api_baseline"]["previous_stable_head"] == "2215761"
+    assert payload["api_baseline"]["previous_stable_head"] == "b3102db"
     assert payload["api_baseline"]["api_web_baseline_head"] == expected_head
     assert payload["api_baseline"]["integration_status_head"] == expected_head
     assert payload["api_baseline"]["write_routes_enabled"] is False
@@ -72,9 +72,9 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
     assert payload["remote_operation_gate"]["write_operations_enabled"] is False
     assert payload["remote_operation_gate"]["phase_2"] == "verified_live"
     assert payload["controlled_prod_readiness"]["decision"] == "operator-only-pilot-accepted"
-    assert payload["controlled_prod_readiness"]["source_overlay_head"] == "2215761"
-    assert payload["controlled_prod_readiness"]["vps_smoke_run_id"] == "20260613T045107Z"
-    assert payload["controlled_prod_readiness"]["source_update_run_id"] == "20260613T045004Z"
+    assert payload["controlled_prod_readiness"]["source_overlay_head"] == "b3102db"
+    assert payload["controlled_prod_readiness"]["vps_smoke_run_id"] == "20260613T154826Z"
+    assert payload["controlled_prod_readiness"]["source_update_run_id"] == "20260613T154511Z"
     assert payload["controlled_prod_readiness"]["web_admin_access"] == "ssh_tunnel_loopback"
     assert payload["controlled_prod_readiness"]["manual_web_check"] == "passed"
     assert payload["controlled_prod_readiness"]["service_deployment"] == "active_on_disposable_test_vps"
@@ -103,6 +103,36 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
     assert (
         payload["productization_boundary"]["commercial_access"][
             "config_delivery_on_payment"
+        ]
+        is False
+    )
+    assert payload["productization_boundary"]["config_delivery_link_boundary"][
+        "status"
+    ] == "tokenized_link_boundary_ready"
+    assert (
+        payload["productization_boundary"]["config_delivery_link_boundary"][
+            "config_delivery_enabled"
+        ]
+        is False
+    )
+    assert (
+        payload["productization_boundary"]["config_delivery_link_boundary"][
+            "token_model"
+        ]["one_time_use"]
+        is True
+    )
+    assert payload["productization_boundary"]["commercial_entitlement_audit"][
+        "status"
+    ] == "entitlement_audit_boundary_ready"
+    assert (
+        payload["productization_boundary"]["commercial_entitlement_audit"][
+            "payment_provider_enabled"
+        ]
+        is False
+    )
+    assert (
+        payload["productization_boundary"]["commercial_entitlement_audit"][
+            "automatic_activation_enabled"
         ]
         is False
     )
@@ -163,7 +193,7 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
         "qr_vpn_import_link",
     ]
     assert payload["client_compatibility_boundary"]["live_client_import_verified"] is False
-    assert payload["next_gate"] == "P6-N001 public docs/API taxonomy if approved"
+    assert payload["next_gate"] == "P6-I007 interactive fresh-install wizard/bootstrap automation"
     assert payload["aggregate_state"]["servers"] == 1
     assert "new live peer apply/revoke without separate operator confirmation" in payload["blocked_lanes"]
     assert "payment processor integration without named gate" in payload["blocked_lanes"]
@@ -171,7 +201,8 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
     assert "live health/status polling without P6-M002 gate" in payload["blocked_lanes"]
     assert "attach-existing-server reconciliation apply without P6-M003 gate" in payload["blocked_lanes"]
     assert "raw telemetry export without P6-N004 retention/redaction gate" in payload["blocked_lanes"]
-    assert "short one-tap config delivery link without P6-C002 gate" in payload["blocked_lanes"]
+    assert "short tokenized config links require P6-C002 live/config delivery gate" in payload["blocked_lanes"]
+    assert "automatic commercial entitlement activation without P6-I006/P6-C003 gates" in payload["blocked_lanes"]
     assert _forbidden_markers_absent(payload)
 
     conn = connect(Path(settings.database_path))

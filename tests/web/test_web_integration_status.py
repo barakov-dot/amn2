@@ -43,9 +43,9 @@ def test_integration_status_page_renders_gate_without_secret_markers(tmp_path: P
     assert "phase-6-productization-planning" in response.text
     assert "operator-only-pilot-accepted" in response.text
     assert _expected_git_head() in response.text
-    assert "2215761" in response.text
+    assert "b3102db" in response.text
     assert "not-package-rebuilt-not-vps-smoked" in response.text
-    assert "20260613T045107Z" in response.text
+    assert "20260613T154826Z" in response.text
     assert "ssh-tunnel-loopback" in response.text
     assert "active-on-disposable-test-vps" in response.text
     assert "absent-or-loopback-only" in response.text
@@ -56,6 +56,10 @@ def test_integration_status_page_renders_gate_without_secret_markers(tmp_path: P
     assert "wireguard" in response.text
     assert "xray" in response.text
     assert "manual-approval-boundary-ready" in response.text
+    assert "tokenized-link-boundary-ready" in response.text
+    assert "short link runtime enabled" in response.text
+    assert "entitlement-audit-boundary-ready" in response.text
+    assert "automatic activation enabled" in response.text
     assert "separate-bot-boundary-ready" in response.text
     assert "payment processor enabled" in response.text
     assert "False" in response.text
@@ -92,7 +96,9 @@ def test_integration_status_page_renders_gate_without_secret_markers(tmp_path: P
     assert "live health/status polling without P6-M002 gate" in response.text
     assert "attach-existing-server reconciliation apply without P6-M003 gate" in response.text
     assert "raw telemetry export without P6-N004 retention/redaction gate" in response.text
-    assert "P6-N001 public docs/API taxonomy if approved" in response.text
+    assert "short tokenized config links require P6-C002 live/config delivery gate" in response.text
+    assert "automatic commercial entitlement activation without P6-I006/P6-C003 gates" in response.text
+    assert "P6-I007 interactive fresh-install wizard/bootstrap automation" in response.text
     assert "server:read" in response.text
     forbidden = [
         "PrivateKey",

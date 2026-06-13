@@ -2,12 +2,13 @@
 
 Дата: 2026-06-13.
 
-Статус: Phase 6 local-only policy boundary for `P6-I003 + P6-I004`.
+Статус: Phase 6 local-only policy boundary for `P6-I003 + P6-I004 +
+P6-C002-design + P6-I006`.
 
-Этот документ фиксирует productization boundary для коммерческого доступа и
-будущего разделения access/support/news bot. Он не включает payment processor,
-public launch, config delivery, write API, live VPS work or Telegram identity
-mutation.
+Этот документ фиксирует productization boundary для коммерческого доступа,
+tokenized config link, entitlement audit и будущего разделения
+access/support/news bot. Он не включает payment processor, public launch,
+real config delivery, write API, live VPS work or Telegram identity mutation.
 
 ## Safety Boundary
 
@@ -17,6 +18,8 @@ mutation.
 - payment webhook/callback route: no;
 - automatic entitlement after payment: no;
 - config delivery after payment: no;
+- short config-link runtime: no;
+- public config-link redeem route: no;
 - public exposure: no;
 - write API: no;
 - Local Agent mutation: no;
@@ -50,6 +53,71 @@ with:
 - safe audit fields only;
 - no raw provider secrets in logs or evidence;
 - explicit separation from config delivery and peer mutation gates.
+
+## Tokenized Config Link Boundary
+
+`P6-C002` закрыт только как local-only design boundary. Реальная выдача
+конфига, короткая ссылка, публичный redeem endpoint или отправка secret-bearing
+артефакта все еще требуют отдельного named config delivery gate.
+
+Будущая короткая ссылка должна быть именно tokenized config link:
+
+- token material: opaque random token;
+- storage: hash-at-rest only;
+- raw token may be returned once only at issue time;
+- purpose binding: config delivery only;
+- audience binding: order + user + device;
+- default TTL: 15 minutes;
+- one-time use: yes;
+- Telegram copy text target: short link under the one-tap copy limit, not a
+  long full import link;
+- no raw token, config body, QR or import link in audit logs/evidence.
+
+Until the named gate is opened, the following stay blocked:
+
+- issuing `/api/config-links`;
+- redeeming `/c/{token}`;
+- emitting config bodies, QR, `.conf`, `vpn://`, private key or preshared key
+  through the new tokenized path.
+
+## Commercial Entitlement Audit Boundary
+
+`P6-I006` is closed as a local-only entitlement/audit model. It does not enable
+a payment provider, write API or automatic access.
+
+The future entitlement model must keep these defaults:
+
+- payment provider enabled: no;
+- entitlement write API enabled: no;
+- automatic activation after payment: no;
+- config delivery decoupled from payment: yes;
+- manual operator review required: yes.
+
+Allowed decision records are limited to:
+
+- `manual_approved`;
+- `manual_rejected`;
+- `payment_seen_no_auto_access`;
+- `operator_support_override`.
+
+Safe audit fields:
+
+- `entitlement_id`;
+- `order_id`;
+- `operator_id`;
+- `decision`;
+- `reason_code`;
+- `created_at`.
+
+Forbidden audit/evidence fields:
+
+- raw payment payload;
+- provider secret or payment token;
+- client config body;
+- VPN import link;
+- QR code;
+- private key or preshared key;
+- Telegram ID or username.
 
 ## Support/News Bot Split
 
@@ -112,10 +180,12 @@ Safe evidence fields are limited to:
 
 ## Follow-up Candidates
 
-Candidate for the Phase 6 plan if commercial access proceeds:
+Next practical local-only candidate:
 
-- `P6-I006` Commercial entitlement/audit boundary: define entitlement records,
-  safe audit fields and manual review reason codes before any payment provider
-  integration.
+- `P6-I007` Interactive fresh-install wizard/bootstrap automation.
 
-This candidate is not active until explicitly accepted.
+Gated/deferred candidates:
+
+- live config-link issue/redeem under `P6-C002`;
+- payment provider integration under a separate named payment processor gate;
+- write API and production peer/user mutation under `P6-C003`.

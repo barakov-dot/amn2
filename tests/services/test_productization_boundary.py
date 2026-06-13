@@ -25,6 +25,47 @@ def test_productization_boundary_keeps_commercial_access_manual_and_gated():
     assert "payment_provider_secret_storage" in commercial["blocked_future_surfaces"]
 
 
+def test_productization_boundary_records_tokenized_config_link_boundary():
+    boundary = build_productization_boundary()
+
+    config_link = boundary["config_delivery_link_boundary"]
+    assert config_link["status"] == "tokenized_link_boundary_ready"
+    assert config_link["short_link_runtime_enabled"] is False
+    assert config_link["config_delivery_enabled"] is False
+    assert config_link["requires_named_gate"] == "P6-C002 Config delivery gate"
+    assert config_link["token_model"]["token_material"] == "opaque_random_token"
+    assert config_link["token_model"]["storage"] == "hash_at_rest_only"
+    assert config_link["token_model"]["one_time_use"] is True
+    assert config_link["token_model"]["ttl_minutes"] == 15
+    assert config_link["token_model"]["purpose_binding"] == "config_delivery_only"
+    assert config_link["telegram_copy_ux"]["copy_text_limit"] == 256
+    assert config_link["telegram_copy_ux"]["copy_short_link_only_after_gate"] is True
+    assert "vpn_import_link" in config_link["blocked_secret_outputs"]
+    assert "qr_code" in config_link["blocked_secret_outputs"]
+
+
+def test_productization_boundary_records_entitlement_audit_without_auto_access():
+    boundary = build_productization_boundary()
+
+    entitlement = boundary["commercial_entitlement_audit"]
+    assert entitlement["status"] == "entitlement_audit_boundary_ready"
+    assert entitlement["payment_provider_enabled"] is False
+    assert entitlement["automatic_activation_enabled"] is False
+    assert entitlement["config_delivery_decoupled"] is True
+    assert entitlement["manual_review_required"] is True
+    assert entitlement["safe_audit_fields"] == [
+        "entitlement_id",
+        "order_id",
+        "operator_id",
+        "decision",
+        "reason_code",
+        "created_at",
+    ]
+    assert "raw_payment_payload" in entitlement["forbidden_audit_fields"]
+    assert "vpn_import_link" in entitlement["forbidden_audit_fields"]
+    assert "telegram_id" in entitlement["forbidden_audit_fields"]
+
+
 def test_productization_boundary_splits_access_support_and_news_bots():
     boundary = build_productization_boundary()
 
@@ -88,6 +129,10 @@ def test_productization_boundary_doc_exists_and_records_gate_limits():
     doc_path = Path(boundary["docs"]["policy_doc"])
     text = doc_path.read_text(encoding="utf-8")
     assert "payment processor" in text
+    assert "tokenized config link" in text
+    assert "entitlement audit" in text
     assert "support/news" in text
+    assert "P6-C002" in text
+    assert "P6-I006" in text
     assert "P6-I005" in text
     assert "VPS_APPLY_ENABLED=false" in text

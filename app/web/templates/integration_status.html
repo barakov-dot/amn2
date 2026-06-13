@@ -220,6 +220,22 @@
               <td>config delivery on payment</td>
               <td>{{ report.productization_boundary.commercial_access.config_delivery_on_payment }}</td>
             </tr>
+            <tr>
+              <td>tokenized config link</td>
+              <td>{{ report.productization_boundary.config_delivery_link_boundary.status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>short link runtime enabled</td>
+              <td>{{ report.productization_boundary.config_delivery_link_boundary.short_link_runtime_enabled }}</td>
+            </tr>
+            <tr>
+              <td>entitlement audit</td>
+              <td>{{ report.productization_boundary.commercial_entitlement_audit.status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>automatic activation enabled</td>
+              <td>{{ report.productization_boundary.commercial_entitlement_audit.automatic_activation_enabled }}</td>
+            </tr>
           </tbody>
         </table>
       </div>

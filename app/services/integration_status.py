@@ -48,7 +48,8 @@ BLOCKED_LANES = (
     "release/package/public launch without P6-S001 checklist gates",
     "raw telemetry export without P6-N004 retention/redaction gate",
     "upstream refresh live actions without P6-S002 incorporation gate",
-    "short one-tap config delivery link without P6-C002 gate",
+    "short tokenized config links require P6-C002 live/config delivery gate",
+    "automatic commercial entitlement activation without P6-I006/P6-C003 gates",
     "systemd/reverse proxy deployment on validation VPS",
 )
 
@@ -69,16 +70,16 @@ def _current_source_head() -> str:
 
 
 CURRENT_STABLE_HEAD = _current_source_head()
-PREVIOUS_STABLE_HEAD = "2215761"
+PREVIOUS_STABLE_HEAD = "b3102db"
 POST_DRY_RUN_READ_ONLY_HEAD = CURRENT_STABLE_HEAD
 API_WEB_BASELINE_HEAD = CURRENT_STABLE_HEAD
 REMOTE_OPERATION_GATE_MERGE_HEAD = "708c98e"
 REMOTE_OPERATION_GATE_CANDIDATE_HEAD = "7281254"
-LATEST_VPS_SMOKED_PACKAGE_HEAD = "2215761"
+LATEST_VPS_SMOKED_PACKAGE_HEAD = "b3102db"
 LATEST_VPS_SMOKE_STATUS = "live_update_smoke_pass"
 PACKAGE_STATUS_FOR_BRANCH_HEAD = "not_package_rebuilt_not_vps_smoked"
-CONTROLLED_PROD_SMOKE_RUN_ID = "20260613T045107Z"
-CONTROLLED_PROD_SOURCE_UPDATE_RUN_ID = "20260613T045004Z"
+CONTROLLED_PROD_SMOKE_RUN_ID = "20260613T154826Z"
+CONTROLLED_PROD_SOURCE_UPDATE_RUN_ID = "20260613T154511Z"
 CURRENT_LOCAL_READ_ONLY_HEAD = CURRENT_STABLE_HEAD
 CURRENT_LOCAL_READ_ONLY_SMOKE_STATUS = "not_run_for_branch_head"
 CURRENT_LOCAL_READ_ONLY_SMOKE_CHECKED_ROUTES = 6
@@ -89,7 +90,7 @@ def build_integration_status(repo: Repository) -> dict[str, Any]:
         "status": "phase_6_productization_planning",
         "summary": (
             "Phase 6 local branch is ahead of the latest VPS-smoked package. "
-            "Public, self-service, config delivery and write gates remain closed."
+            "Public, self-service, config delivery, payment and write gates remain closed."
         ),
         "source_checkpoint": {
             "current_branch_head": CURRENT_STABLE_HEAD,
@@ -150,7 +151,7 @@ def build_integration_status(repo: Repository) -> dict[str, Any]:
         "aggregate_state": _load_aggregate_state(repo),
         "allowed_lanes": list(ALLOWED_LANES),
         "blocked_lanes": list(BLOCKED_LANES),
-        "next_gate": "P6-N001 public docs/API taxonomy if approved",
+        "next_gate": "P6-I007 interactive fresh-install wizard/bootstrap automation",
     }
 
 

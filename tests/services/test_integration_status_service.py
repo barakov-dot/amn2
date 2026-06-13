@@ -38,7 +38,7 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
     expected_head = _expected_git_head()
     assert report["source_checkpoint"] == {
         "current_branch_head": expected_head,
-        "latest_vps_smoked_package_head": "2215761",
+        "latest_vps_smoked_package_head": "b3102db",
         "latest_vps_smoke_status": "live_update_smoke_pass",
         "package_status_for_branch_head": "not_package_rebuilt_not_vps_smoked",
         "public_self_service_open": False,
@@ -46,7 +46,7 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
     }
     assert report["api_baseline"]["status"] == "phase_6_planning_ready"
     assert report["api_baseline"]["stable_head"] == expected_head
-    assert report["api_baseline"]["previous_stable_head"] == "2215761"
+    assert report["api_baseline"]["previous_stable_head"] == "b3102db"
     assert report["api_baseline"]["api_web_baseline_head"] == expected_head
     assert report["api_baseline"]["integration_status_head"] == expected_head
     assert report["api_baseline"]["write_routes_enabled"] is False
@@ -59,9 +59,9 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
     assert report["controlled_prod_readiness"]["status"] == "operator_only_pilot_accepted"
     assert report["controlled_prod_readiness"]["decision"] == "operator-only-pilot-accepted"
     assert report["controlled_prod_readiness"]["runbook"] == "docs/ROUTE_AUTH_OPERATION_POLICY.ru.md"
-    assert report["controlled_prod_readiness"]["source_overlay_head"] == "2215761"
-    assert report["controlled_prod_readiness"]["vps_smoke_run_id"] == "20260613T045107Z"
-    assert report["controlled_prod_readiness"]["source_update_run_id"] == "20260613T045004Z"
+    assert report["controlled_prod_readiness"]["source_overlay_head"] == "b3102db"
+    assert report["controlled_prod_readiness"]["vps_smoke_run_id"] == "20260613T154826Z"
+    assert report["controlled_prod_readiness"]["source_update_run_id"] == "20260613T154511Z"
     assert report["controlled_prod_readiness"]["web_admin_access"] == "ssh_tunnel_loopback"
     assert report["controlled_prod_readiness"]["manual_web_check"] == "passed"
     assert report["controlled_prod_readiness"]["service_deployment"] == "active_on_disposable_test_vps"
@@ -76,7 +76,7 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
     assert report["aggregate_state"]["servers"] == 1
     assert report["capability_registry"]["status"] == "policy_registry_ready"
     assert report["capability_registry"]["current_branch_head"] == expected_head
-    assert report["capability_registry"]["latest_vps_smoked_package_head"] == "2215761"
+    assert report["capability_registry"]["latest_vps_smoked_package_head"] == "b3102db"
     assert report["capability_registry"]["server_capabilities"] == [
         {
             "capability": "single_server_operator_control",
@@ -118,6 +118,36 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
             "automatic_entitlement_on_payment"
         ]
         is False
+    )
+    assert report["productization_boundary"]["config_delivery_link_boundary"][
+        "status"
+    ] == "tokenized_link_boundary_ready"
+    assert (
+        report["productization_boundary"]["config_delivery_link_boundary"][
+            "short_link_runtime_enabled"
+        ]
+        is False
+    )
+    assert (
+        report["productization_boundary"]["config_delivery_link_boundary"][
+            "token_model"
+        ]["storage"]
+        == "hash_at_rest_only"
+    )
+    assert report["productization_boundary"]["commercial_entitlement_audit"][
+        "status"
+    ] == "entitlement_audit_boundary_ready"
+    assert (
+        report["productization_boundary"]["commercial_entitlement_audit"][
+            "automatic_activation_enabled"
+        ]
+        is False
+    )
+    assert (
+        report["productization_boundary"]["commercial_entitlement_audit"][
+            "config_delivery_decoupled"
+        ]
+        is True
     )
     assert report["productization_boundary"]["bot_runtime_split"]["status"] == (
         "separate_bot_boundary_ready"
@@ -201,7 +231,9 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
     assert "release/package/public launch without P6-S001 checklist gates" in report["blocked_lanes"]
     assert "raw telemetry export without P6-N004 retention/redaction gate" in report["blocked_lanes"]
     assert "upstream refresh live actions without P6-S002 incorporation gate" in report["blocked_lanes"]
-    assert report["next_gate"] == "P6-N001 public docs/API taxonomy if approved"
+    assert "short tokenized config links require P6-C002 live/config delivery gate" in report["blocked_lanes"]
+    assert "automatic commercial entitlement activation without P6-I006/P6-C003 gates" in report["blocked_lanes"]
+    assert report["next_gate"] == "P6-I007 interactive fresh-install wizard/bootstrap automation"
 
 
 def test_build_integration_status_contains_no_secret_or_command_markers(tmp_path: Path):
