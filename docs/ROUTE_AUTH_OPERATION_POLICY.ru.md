@@ -46,6 +46,19 @@ Future self-service routes зарезервированы только как `b
 
 Self-service surface не использует `web-admin` actor/auth и не переиспользует текущие admin session routes. До отдельного named gate `/self-service*` должен оставаться только policy inventory, без FastAPI route binding.
 
+## Capability and checkpoint registry
+
+`P6-M001`/`P6-N003` выравнивает `/api/integration/status` и web `/integration-status` с текущим Phase 6 состоянием:
+
+- current branch head: `b676e1b`;
+- latest VPS-smoked/package head: `2215761`;
+- package status for `b676e1b`: `not_package_rebuilt_not_vps_smoked`;
+- current implemented capability: `single_server_operator_control` for `amneziawg` on `docker`;
+- future `wireguard` and `xray` protocol managers stay `blocked_future` until a separate capability implementation gate;
+- no upstream code copy is allowed.
+
+Capability registry visibility не добавляет runtime routes, protocol managers, public exposure, config delivery, write API, Local Agent mutations or live VPS actions.
+
 ## Live Retest Rule
 
 Новый live retest нужен, если меняется хотя бы одна из областей:

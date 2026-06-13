@@ -35,6 +35,18 @@
               <td><code>{{ report.api_baseline.stable_head }}</code></td>
             </tr>
             <tr>
+              <td>Branch head</td>
+              <td><code>{{ report.source_checkpoint.current_branch_head }}</code></td>
+            </tr>
+            <tr>
+              <td>Latest VPS-smoked package</td>
+              <td><code>{{ report.source_checkpoint.latest_vps_smoked_package_head }}</code></td>
+            </tr>
+            <tr>
+              <td>Branch package status</td>
+              <td>{{ report.source_checkpoint.package_status_for_branch_head|replace("_", "-") }}</td>
+            </tr>
+            <tr>
               <td>Source overlay</td>
               <td><code>{{ report.controlled_prod_readiness.source_overlay_head }}</code></td>
             </tr>
@@ -128,6 +140,52 @@
               <td>Устройства</td>
               <td>{{ report.aggregate_state.devices }}</td>
             </tr>
+          </tbody>
+        </table>
+      </div>
+    </article>
+  </section>
+
+  <section class="settings-grid" aria-label="Capability registry">
+    <article class="panel">
+      <div class="panel-header">
+        <h2>Capability registry</h2>
+      </div>
+      <div class="table-wrap">
+        <table class="settings-table">
+          <tbody>
+            <tr>
+              <td>Registry status</td>
+              <td>{{ report.capability_registry.status|replace("_", "-") }}</td>
+            </tr>
+            {% for capability in report.capability_registry.server_capabilities %}
+              <tr>
+                <td>{{ capability.capability|replace("_", "-") }}</td>
+                <td>
+                  {{ capability.status|replace("_", "-") }} /
+                  {{ capability.runtime }} /
+                  {{ capability.protocol }}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-header">
+        <h2>Future protocols</h2>
+      </div>
+      <div class="table-wrap">
+        <table class="settings-table">
+          <tbody>
+            {% for protocol in report.capability_registry.future_protocols %}
+              <tr>
+                <td>{{ protocol.protocol }}</td>
+                <td>{{ protocol.status|replace("_", "-") }}</td>
+              </tr>
+            {% endfor %}
           </tbody>
         </table>
       </div>

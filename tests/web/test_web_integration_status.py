@@ -39,19 +39,26 @@ def test_integration_status_page_renders_gate_without_secret_markers(tmp_path: P
         "Публичный доступ, выдача конфигов и write routes требуют отдельных named gates."
         in response.text
     )
-    assert "manual-prelaunch-ready" in response.text
-    assert "manual-prelaunch-pass-systemd-deferred" in response.text
-    assert "c92bd1a" in response.text
-    assert "20260607T195044Z" in response.text
-    assert "manual-loopback-validation" in response.text
-    assert "deferred-target-server" in response.text
-    assert "127.0.0.1:3040-loopback-only" in response.text
-    assert "manual-prelaunch-passed" in response.text
+    assert "phase-6-productization-planning" in response.text
+    assert "operator-only-pilot-accepted" in response.text
+    assert "b676e1b" in response.text
+    assert "2215761" in response.text
+    assert "not-package-rebuilt-not-vps-smoked" in response.text
+    assert "20260613T045107Z" in response.text
+    assert "ssh-tunnel-loopback" in response.text
+    assert "active-on-disposable-test-vps" in response.text
+    assert "absent-or-loopback-only" in response.text
+    assert "local-only-not-vps-smoked" in response.text
+    assert "policy-registry-ready" in response.text
+    assert "single-server-operator-control" in response.text
+    assert "amneziawg" in response.text
+    assert "wireguard" in response.text
+    assert "xray" in response.text
     assert "dry-run-only-pass" in response.text
     assert "Phase 2 live write gate" in response.text
     assert "verified-live" in response.text
     assert "new live peer apply/revoke without separate operator confirmation" in response.text
-    assert "Repeat gate on target server before systemd/reverse proxy" in response.text
+    assert "P6-I003 commercial/manual approval boundary" in response.text
     assert "server:read" in response.text
     forbidden = [
         "PrivateKey",
