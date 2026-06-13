@@ -13,6 +13,7 @@
 Команды:
 
 ```text
+.\scripts\test.ps1 tests\services\test_fresh_install_wizard.py -v
 python -m app.cli install wizard --pretty
 python -m app.cli install plan --answers fresh-install-answers.json --pretty
 ```
@@ -21,6 +22,22 @@ python -m app.cli install plan --answers fresh-install-answers.json --pretty
 
 `install plan` читает заранее подготовленный JSON с ответами и печатает такой
 же безопасный JSON plan.
+
+Для Codex Desktop/Windows checkout тесты запускать через `scripts/test.ps1`, а
+не через системный `python`, потому что текущий рабочий runtime - CPython
+3.12.x плюс `.codex_deps`.
+
+## Schemas
+
+Wizard output versioned:
+
+- plan schema: `fresh-install-plan.v1`;
+- question schema: `fresh-install-questions.v1`;
+- answer schema: `fresh-install-answers.v1`.
+
+`build_fresh_install_manifest()` возвращает machine-readable manifest с
+описанием questions, defaults, allowed values и gated fields. Manifest также
+указывает secret handoff policy: `docs/AMN2_SECRET_HANDOFF_PROTOCOL.ru.md`.
 
 ## Вопросы
 
@@ -76,6 +93,24 @@ Wizard собирает только безопасные operational choices:
 Wizard output must not contain raw Telegram credentials, `.conf`, QR,
 `vpn://`, private key, preshared key, SSH secret, `Authorization` header or
 token hash.
+
+Secret handoff mode по умолчанию: `operator_local`. Это значит, что wizard
+может создать только checklist для оператора, но не хранит и не печатает raw
+secret values. Подробный протокол: `docs/AMN2_SECRET_HANDOFF_PROTOCOL.ru.md`.
+
+## Rendered Plan
+
+`build_fresh_install_plan()` возвращает не только raw operator inputs, но и
+`rendered_plan`:
+
+- `local-preflight` - только локальные проверки;
+- `secret-handoff-checklist` - checklist без raw secrets;
+- `question-answer-render` - привязка к answer schema;
+- `named-gate-stop` - финальная остановка перед любым gated action.
+
+Если в ответах есть `yes` для public exposure, config delivery, write API или
+destructive cleanup, `rendered_plan.requires_named_gates` перечисляет нужные
+gate IDs и статус становится `blocked_named_gate_required`.
 
 ## Разрешенные Локальные Шаги
 

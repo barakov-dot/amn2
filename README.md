@@ -75,7 +75,8 @@ with a test peer and then enable `VPS_APPLY_ENABLED=true`.
 3. Create a CPython 3.12 virtual environment.
 4. Install dependencies with `python -m pip install -e ".[dev]"`.
 5. Check the runtime with `python -m app.toolchain check`.
-6. Run tests with `python -m pytest tests -v`.
+6. Run tests with `.\scripts\test.ps1 tests -v` on Windows/Codex Desktop, or
+   `python -m pytest tests -v` inside an activated CPython 3.12 environment.
 7. Start the bot with `python -m app.main`.
 
 ## Backup

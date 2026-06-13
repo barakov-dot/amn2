@@ -1,6 +1,6 @@
 # Runtime/toolchain contract
 
-Этот документ фиксирует локальный runtime-контракт AMN2 для Phase 5.
+Этот документ фиксирует локальный runtime-контракт AMN2 для Phase 5+.
 
 ## Поддерживаемый Python
 
@@ -24,6 +24,40 @@ python -m app.toolchain check
 ```text
 AMN2 toolchain ok: CPython 3.12.x.
 ```
+
+## Codex Desktop checkout
+
+В этом рабочем дереве Codex Desktop может запускаться без `.venv`: зависимости
+лежат в `.codex_deps`, а поддержанный интерпретатор приходит из bundled runtime:
+
+```powershell
+C:\Users\SooL\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe
+```
+
+Каноническая команда для локальных тестов в таком checkout:
+
+```powershell
+.\scripts\test.ps1 tests -v
+```
+
+Focused tests:
+
+```powershell
+.\scripts\test.ps1 tests\services\test_fresh_install_wizard.py -v
+```
+
+Wrapper сначала ищет `.venv\Scripts\python.exe`, затем bundled Codex CPython
+3.12.x, выставляет `PYTHONPATH=.codex_deps;.` и только после этого запускает
+`app.toolchain check` и `pytest`.
+
+Важно: системный `python` на Windows может указывать на CPython 3.14 или другой
+неподдержанный runtime. Для AMN2-тестов в этом checkout не использовать
+`python -m pytest` напрямую, пока явно не выбран CPython 3.12.x.
+
+Если локальные read-only команды в Codex Desktop падают с
+`CreateProcessAsUserW failed: 5`, это ошибка Windows sandbox runner, а не
+ошибка AMN2. Для read-only поиска/чтения допустимо повторить команду через
+разрешенный prefix rule (`rg`, `Get-Content`, `Get-ChildItem`, `Test-Path`).
 
 ## Windows PowerShell bootstrap
 
@@ -59,6 +93,12 @@ py -3.12 -m venv .venv
 
 ```powershell
 .venv\Scripts\python.exe -m pytest tests -v
+```
+
+Или через общий wrapper:
+
+```powershell
+.\scripts\test.ps1 tests -v
 ```
 
 ## Linux bootstrap
