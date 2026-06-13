@@ -398,6 +398,42 @@
     </article>
   </section>
 
+  <section class="panel panel-spaced">
+    <div class="panel-header">
+      <h2>Client compatibility</h2>
+    </div>
+    <div class="table-wrap">
+      <table class="settings-table">
+        <tbody>
+          <tr>
+            <td>Status</td>
+            <td>{{ report.client_compatibility_boundary.status|replace("_", "-") }}</td>
+          </tr>
+          <tr>
+            <td>iOS primary RF path</td>
+            <td>{{ report.client_compatibility_boundary.ios.primary_rf_path }}</td>
+          </tr>
+          <tr>
+            <td>iOS installed legacy path</td>
+            <td>{{ report.client_compatibility_boundary.ios.installed_legacy_path }}</td>
+          </tr>
+          <tr>
+            <td>Android supported path</td>
+            <td>{{ report.client_compatibility_boundary.android.supported_path }}</td>
+          </tr>
+          <tr>
+            <td>Fallback order</td>
+            <td>{{ report.client_compatibility_boundary.fallback_order|join(", ") }}</td>
+          </tr>
+          <tr>
+            <td>live client import verified</td>
+            <td>{{ report.client_compatibility_boundary.live_client_import_verified }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <section class="settings-grid" aria-label="Telemetry retention policy">
     <article class="panel">
       <div class="panel-header">

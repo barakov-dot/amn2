@@ -11,6 +11,10 @@ from app.services.reconciliation_release_boundary import (
     build_reconciliation_release_boundary,
 )
 from app.services.telemetry_retention_policy import build_telemetry_retention_policy
+from app.vpn.client_compatibility import (
+    CLIENT_COMPATIBILITY_MATRIX,
+    recommended_delivery_order,
+)
 
 
 ALLOWED_API_SCOPES = ("metrics:read", "server:read")
@@ -44,6 +48,7 @@ BLOCKED_LANES = (
     "release/package/public launch without P6-S001 checklist gates",
     "raw telemetry export without P6-N004 retention/redaction gate",
     "upstream refresh live actions without P6-S002 incorporation gate",
+    "short one-tap config delivery link without P6-C002 gate",
     "systemd/reverse proxy deployment on validation VPS",
 )
 
@@ -141,10 +146,33 @@ def build_integration_status(repo: Repository) -> dict[str, Any]:
         "privacy_status_boundary": build_privacy_status_boundary(),
         "reconciliation_release_boundary": build_reconciliation_release_boundary(),
         "telemetry_retention_policy": build_telemetry_retention_policy(),
+        "client_compatibility_boundary": build_client_compatibility_boundary(),
         "aggregate_state": _load_aggregate_state(repo),
         "allowed_lanes": list(ALLOWED_LANES),
         "blocked_lanes": list(BLOCKED_LANES),
         "next_gate": "P6-N001 public docs/API taxonomy if approved",
+    }
+
+
+def build_client_compatibility_boundary() -> dict[str, Any]:
+    return {
+        "status": "client-compatibility-matrix-ready",
+        "ios": {
+            "primary_rf_path": CLIENT_COMPATIBILITY_MATRIX["defaultvpn_ios_ru"].label,
+            "installed_legacy_path": CLIENT_COMPATIBILITY_MATRIX[
+                "amneziawg_apple"
+            ].label,
+        },
+        "android": {
+            "supported_path": CLIENT_COMPATIBILITY_MATRIX["amneziawg_android"].label,
+        },
+        "fallback_order": recommended_delivery_order("defaultvpn_ios_ru"),
+        "one_tap_copy": {
+            "telegram_copy_text_limit": 256,
+            "full_import_link_copy_when_too_long": False,
+            "short_delivery_link_requires_gate": "P6-C002 Config delivery gate",
+        },
+        "live_client_import_verified": False,
     }
 
 

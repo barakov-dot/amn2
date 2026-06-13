@@ -9,6 +9,11 @@ SUPPORT_UNRELIABLE = "unreliable"
 SUPPORT_UNAVAILABLE = "unavailable"
 SUPPORT_FUTURE_GATE = "future_gate"
 
+CLIENT_ROLE_PRIMARY_RF_IOS = "primary_rf_ios"
+CLIENT_ROLE_INSTALLED_LEGACY = "installed_legacy"
+CLIENT_ROLE_ANDROID_SUPPORTED = "android_supported"
+CLIENT_ROLE_GENERAL = "general"
+
 AMN2_DELIVERY_ARTIFACTS = (
     "conf_file",
     "vpn_import_link",
@@ -35,6 +40,7 @@ class ClientCompatibility:
     label: str
     platform: str
     app_url: str
+    client_role: str
     platform_constraints: tuple[str, ...]
     artifact_support: dict[str, ArtifactSupport]
     notes_ru: tuple[str, ...] = ()
@@ -45,6 +51,7 @@ CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
         label="AmneziaVPN",
         platform="Android / iOS / macOS / Windows / Linux",
         app_url="https://github.com/amnezia-vpn/amnezia-client",
+        client_role=CLIENT_ROLE_GENERAL,
         platform_constraints=(
             "Android 9+",
             "Android 7/8 temporarily unavailable",
@@ -79,8 +86,10 @@ CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
         label="DefaultVPN",
         platform="iOS",
         app_url="https://apps.apple.com/app/defaultvpn/id6473452691",
+        client_role=CLIENT_ROLE_PRIMARY_RF_IOS,
         platform_constraints=(
             "iOS App Store availability is region-specific",
+            "primary RF-available iOS path",
         ),
         artifact_support={
             "conf_file": ArtifactSupport(
@@ -105,8 +114,10 @@ CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
         label="AmneziaWG Android",
         platform="Android",
         app_url="https://play.google.com/store/apps/details?id=org.amnezia.awg",
+        client_role=CLIENT_ROLE_ANDROID_SUPPORTED,
         platform_constraints=(
             "Standalone AWG client",
+            "Android standalone AWG path",
         ),
         artifact_support={
             "conf_file": ArtifactSupport(
@@ -127,8 +138,11 @@ CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
         label="AmneziaWG Apple",
         platform="iOS / macOS",
         app_url="https://github.com/amnezia-vpn/amneziawg-apple",
+        client_role=CLIENT_ROLE_INSTALLED_LEGACY,
         platform_constraints=(
             "Standalone AWG client",
+            "not available in RF App Store by default",
+            "use only when already installed",
         ),
         artifact_support={
             "conf_file": ArtifactSupport(
@@ -149,6 +163,7 @@ CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
         label="AmneziaWG Windows",
         platform="Windows",
         app_url="https://github.com/amnezia-vpn/amneziawg-windows-client/releases",
+        client_role=CLIENT_ROLE_GENERAL,
         platform_constraints=(
             "Standalone AWG client",
         ),
@@ -196,12 +211,16 @@ def render_ru_install_guidance() -> str:
         [
             "Файл .conf остается основным надежным способом импорта.",
             (
-                "DefaultVPN: сначала используйте .conf файл или отдельную ссылку импорта. "
-                "QR содержит import-ссылку и может не приниматься встроенным сканером."
+                "iOS DefaultVPN: основной путь в РФ. Сначала используйте .conf файл "
+                "или отдельную ссылку импорта."
             ),
             (
-                "AmneziaWG Android/Apple: .conf и QR допустимы для проверки совместимости, "
-                "но QR не считается универсальным обещанием для всех клиентов."
+                "iOS AmneziaWG: используйте, если приложение уже установлено. "
+                ".conf остается первым fallback; QR/vpn link проверять на конкретной версии."
+            ),
+            (
+                "Android AmneziaWG: отдельный поддерживаемый путь. .conf и QR допустимы "
+                "для проверки совместимости, но QR не является универсальным обещанием."
             ),
             (
                 "AmneziaVPN: перед рекомендацией приложения учитывайте ограничения "

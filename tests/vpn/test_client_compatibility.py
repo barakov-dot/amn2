@@ -1,6 +1,9 @@
 from app.vpn.client_compatibility import (
     AMN2_DELIVERY_ARTIFACTS,
     CLIENT_COMPATIBILITY_MATRIX,
+    CLIENT_ROLE_ANDROID_SUPPORTED,
+    CLIENT_ROLE_INSTALLED_LEGACY,
+    CLIENT_ROLE_PRIMARY_RF_IOS,
     SUPPORT_RECOMMENDED,
     SUPPORT_SUPPORTED,
     SUPPORT_UNRELIABLE,
@@ -22,6 +25,7 @@ def test_delivery_artifacts_cover_current_bot_outputs():
 def test_defaultvpn_keeps_conf_ahead_of_qr_import():
     defaultvpn = CLIENT_COMPATIBILITY_MATRIX["defaultvpn_ios_ru"]
 
+    assert defaultvpn.client_role == CLIENT_ROLE_PRIMARY_RF_IOS
     assert defaultvpn.artifact_support["conf_file"].level == SUPPORT_RECOMMENDED
     assert defaultvpn.artifact_support["vpn_import_link"].level == SUPPORT_SUPPORTED
     assert defaultvpn.artifact_support["qr_vpn_import_link"].level == SUPPORT_UNRELIABLE
@@ -30,6 +34,26 @@ def test_defaultvpn_keeps_conf_ahead_of_qr_import():
         "vpn_import_link",
         "qr_vpn_import_link",
     ]
+
+
+def test_amneziawg_ios_is_installed_legacy_not_primary_rf_path():
+    apple = CLIENT_COMPATIBILITY_MATRIX["amneziawg_apple"]
+
+    assert apple.client_role == CLIENT_ROLE_INSTALLED_LEGACY
+    assert "not available in RF App Store by default" in apple.platform_constraints
+    assert "use only when already installed" in apple.platform_constraints
+    assert recommended_delivery_order("amneziawg_apple") == [
+        "conf_file",
+        "vpn_import_link",
+        "qr_vpn_import_link",
+    ]
+
+
+def test_amneziawg_android_is_separate_supported_path():
+    android = CLIENT_COMPATIBILITY_MATRIX["amneziawg_android"]
+
+    assert android.client_role == CLIENT_ROLE_ANDROID_SUPPORTED
+    assert "Android standalone AWG path" in android.platform_constraints
 
 
 def test_release_platform_constraints_are_machine_checkable():
@@ -57,8 +81,13 @@ def test_ru_install_guidance_mentions_constraints_without_secret_material():
     guidance = render_ru_install_guidance()
 
     assert "Файл .conf" in guidance
-    assert "DefaultVPN" in guidance
-    assert "QR" in guidance
+    assert "iOS DefaultVPN" in guidance
+    assert "основной путь в РФ" in guidance
+    assert "iOS AmneziaWG" in guidance
+    assert "если приложение уже установлено" in guidance
+    assert "Android AmneziaWG" in guidance
+    assert "отдельный поддерживаемый путь" in guidance
+    assert "QR не является универсальным" in guidance
     assert "Android 9+" in guidance
     assert "macOS 13+" in guidance
     assert "Linux x64 tar" in guidance

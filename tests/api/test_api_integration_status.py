@@ -145,6 +145,24 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
     assert payload["telemetry_retention_policy"]["upstream_refresh_incorporation"][
         "default_action"
     ] == "candidate_rows_only"
+    assert payload["client_compatibility_boundary"]["status"] == (
+        "client-compatibility-matrix-ready"
+    )
+    assert payload["client_compatibility_boundary"]["ios"]["primary_rf_path"] == (
+        "DefaultVPN"
+    )
+    assert payload["client_compatibility_boundary"]["ios"]["installed_legacy_path"] == (
+        "AmneziaWG Apple"
+    )
+    assert payload["client_compatibility_boundary"]["android"]["supported_path"] == (
+        "AmneziaWG Android"
+    )
+    assert payload["client_compatibility_boundary"]["fallback_order"] == [
+        "conf_file",
+        "vpn_import_link",
+        "qr_vpn_import_link",
+    ]
+    assert payload["client_compatibility_boundary"]["live_client_import_verified"] is False
     assert payload["next_gate"] == "P6-N001 public docs/API taxonomy if approved"
     assert payload["aggregate_state"]["servers"] == 1
     assert "new live peer apply/revoke without separate operator confirmation" in payload["blocked_lanes"]
@@ -153,6 +171,7 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
     assert "live health/status polling without P6-M002 gate" in payload["blocked_lanes"]
     assert "attach-existing-server reconciliation apply without P6-M003 gate" in payload["blocked_lanes"]
     assert "raw telemetry export without P6-N004 retention/redaction gate" in payload["blocked_lanes"]
+    assert "short one-tap config delivery link without P6-C002 gate" in payload["blocked_lanes"]
     assert _forbidden_markers_absent(payload)
 
     conn = connect(Path(settings.database_path))

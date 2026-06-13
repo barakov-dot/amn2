@@ -77,6 +77,11 @@ def test_integration_status_page_renders_gate_without_secret_markers(tmp_path: P
     assert "bounded-aggregate-retention-ready" in response.text
     assert "watcher-candidate-incorporation-ready" in response.text
     assert "candidate-rows-only" in response.text
+    assert "client-compatibility-matrix-ready" in response.text
+    assert "DefaultVPN" in response.text
+    assert "AmneziaWG Apple" in response.text
+    assert "AmneziaWG Android" in response.text
+    assert "live client import verified" in response.text
     assert "dry-run-only-pass" in response.text
     assert "Phase 2 live write gate" in response.text
     assert "verified-live" in response.text

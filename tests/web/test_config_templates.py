@@ -52,6 +52,11 @@ def test_config_templates_page_lists_versions_placeholders_and_safe_preview(tmp_
     assert "default" in response.text
     assert "Секретные delivery artifacts" in response.text
     assert "Реальные .conf, QR и vpn:// payloads считаются секретами." in response.text
+    assert "iOS DefaultVPN" in response.text
+    assert "основной путь в РФ" in response.text
+    assert "iOS AmneziaWG" in response.text
+    assert "Android AmneziaWG" in response.text
+    assert ".conf остается первым fallback" in response.text
     assert "{private_key}" in response.text
     assert "{preshared_key}" in response.text
     assert "vpn://" in response.text

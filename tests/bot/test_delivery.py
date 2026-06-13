@@ -88,7 +88,11 @@ def test_default_config_ready_template_mentions_all_delivery_options():
     assert ".conf" in DEFAULT_CONFIG_READY_TEMPLATE
     assert "QR" in DEFAULT_CONFIG_READY_TEMPLATE
     assert "Ваш VPN-конфиг готов" in DEFAULT_CONFIG_READY_TEMPLATE
-    assert "DefaultVPN" in DEFAULT_CONFIG_READY_TEMPLATE
+    assert "iOS DefaultVPN" in DEFAULT_CONFIG_READY_TEMPLATE
+    assert "основной путь в РФ" in DEFAULT_CONFIG_READY_TEMPLATE
+    assert "iOS AmneziaWG" in DEFAULT_CONFIG_READY_TEMPLATE
+    assert "если приложение уже установлено" in DEFAULT_CONFIG_READY_TEMPLATE
+    assert "Android AmneziaWG" in DEFAULT_CONFIG_READY_TEMPLATE
     assert "ссылку vpn://" in DEFAULT_CONFIG_READY_TEMPLATE
     assert "Ссылки на приложения" in DEFAULT_CONFIG_READY_TEMPLATE
 
@@ -103,7 +107,12 @@ def test_app_links_text_includes_client_compatibility_guidance():
 
     assert APP_LINKS["android_amnezia"] in package.app_links_text
     assert "Файл .conf" in package.app_links_text
-    assert "DefaultVPN" in package.app_links_text
+    assert "iOS DefaultVPN" in package.app_links_text
+    assert "основной путь в РФ" in package.app_links_text
+    assert "iOS AmneziaWG" in package.app_links_text
+    assert "если приложение уже установлено" in package.app_links_text
+    assert "Android AmneziaWG" in package.app_links_text
+    assert "отдельный поддерживаемый путь" in package.app_links_text
     assert "Android 9+" in package.app_links_text
     assert "macOS 13+" in package.app_links_text
     assert "PrivateKey" not in package.app_links_text
