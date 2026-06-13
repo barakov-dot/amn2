@@ -39,6 +39,7 @@ from app.services.email_delivery import EmailDeliveryService
 from app.services.email_delivery import EmailSender
 from app.services.email_delivery import build_smtp_sender
 from app.services.api_tokens import API_TOKEN_FIRST_SLICE_SCOPES
+from app.services.api_tokens import API_TOKEN_PRODUCTION_MAX_TTL_DAYS
 from app.services.api_tokens import create_route_api_token
 from app.services.api_tokens import revoke_api_token
 from app.services.build_status import build_about_status
@@ -167,6 +168,7 @@ PATH_SETTING_FIELDS = {
 }
 
 API_READINESS_ALLOWED_SCOPES = tuple(sorted(API_TOKEN_FIRST_SLICE_SCOPES))
+API_TOKEN_MAX_TTL_DAYS = API_TOKEN_PRODUCTION_MAX_TTL_DAYS
 
 
 def create_web_app(
@@ -432,6 +434,7 @@ def create_web_app(
                 title="Токены API",
                 authenticated=True,
                 allowed_scopes=API_READINESS_ALLOWED_SCOPES,
+                max_ttl_days=API_TOKEN_MAX_TTL_DAYS,
                 tokens=_load_api_tokens(actual_settings),
                 issue_form=_api_token_issue_form(),
                 issued_token=None,
@@ -489,6 +492,7 @@ def create_web_app(
                 title="Токены API",
                 authenticated=True,
                 allowed_scopes=API_READINESS_ALLOWED_SCOPES,
+                max_ttl_days=API_TOKEN_MAX_TTL_DAYS,
                 tokens=tokens,
                 issue_form=form,
                 issued_token=issue.safe_metadata(),
@@ -1963,8 +1967,8 @@ def _api_token_issue_form(
 
 
 def _api_token_expiry(expires_days: int) -> datetime:
-    if not 1 <= expires_days <= 365:
-        raise ValueError("expires_days must be in 1..365")
+    if not 1 <= expires_days <= API_TOKEN_MAX_TTL_DAYS:
+        raise ValueError(f"expires_days must be in 1..{API_TOKEN_MAX_TTL_DAYS}")
     return datetime.now(timezone.utc) + timedelta(days=expires_days)
 
 

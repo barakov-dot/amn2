@@ -4,9 +4,11 @@ import pytest
 
 from app.services.api_tokens import (
     API_TOKEN_FIRST_SLICE_SCOPES,
+    API_TOKEN_PRODUCTION_MAX_TTL_DAYS,
     ApiTokenAuthError,
     ApiTokenRecord,
     authenticate_api_token,
+    build_api_token_production_policy,
     create_api_token,
     create_route_api_token,
     hash_api_token,
@@ -82,6 +84,31 @@ def test_create_api_token_rejects_secret_read_or_write_scopes():
         )
 
 
+def test_api_token_production_policy_is_secret_free_and_blocks_future_surfaces():
+    policy = build_api_token_production_policy()
+    metadata = policy.safe_metadata()
+
+    assert metadata == {
+        "allowed_scopes": ["metrics:read", "server:read"],
+        "blocked_scopes": [
+            "backup:read",
+            "backup:restore",
+            "clients:write",
+            "config:read",
+            "local-agent:write",
+            "server:write",
+        ],
+        "max_ttl_days": 30,
+        "rotation_notice_days": 7,
+        "raw_token_display": "one-time",
+        "stored_secret_material": "sha256-token-hash-only",
+        "safe_backup_behavior": "credential_digest_excluded_from_safe_exports",
+        "audit_metadata": "safe-metadata-only",
+    }
+    assert "raw-api-token" not in str(metadata)
+    assert "token_hash" not in str(metadata)
+
+
 def test_create_route_api_token_requires_explicit_expiry():
     class TokenStore:
         def create_api_token(self, **kwargs):  # pragma: no cover - must not be called
@@ -97,6 +124,48 @@ def test_create_route_api_token_requires_explicit_expiry():
             scopes={"metrics:read"},
             expires_at=None,
         )
+
+
+def test_create_route_api_token_rejects_expiry_beyond_production_ttl():
+    class TokenStore:
+        def create_api_token(self, **kwargs):  # pragma: no cover - must not be called
+            raise AssertionError("overlong route-connected token must not be stored")
+
+    now = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
+    with pytest.raises(ValueError, match="expires_at exceeds production API token ttl"):
+        create_route_api_token(
+            TokenStore(),
+            token_id="api-token-1",
+            raw_token="raw-api-token",
+            name="Monitoring",
+            owner_label="ops",
+            scopes={"metrics:read"},
+            expires_at=now + timedelta(days=API_TOKEN_PRODUCTION_MAX_TTL_DAYS, seconds=1),
+            now=now,
+        )
+
+
+def test_create_route_api_token_accepts_expiry_within_production_ttl():
+    stored: dict[str, object] = {}
+
+    class TokenStore:
+        def create_api_token(self, **kwargs):
+            stored.update(kwargs)
+
+    now = datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc)
+    issue = create_route_api_token(
+        TokenStore(),
+        token_id="api-token-1",
+        raw_token="raw-api-token",
+        name="Monitoring",
+        owner_label="ops",
+        scopes={"metrics:read"},
+        expires_at=now + timedelta(days=API_TOKEN_PRODUCTION_MAX_TTL_DAYS),
+        now=now,
+    )
+
+    assert issue.safe_metadata()["expires_at"] == "2026-07-01T10:00:00+00:00"
+    assert stored["expires_at"] == "2026-07-01T10:00:00+00:00"
 
 
 def test_authenticate_api_token_accepts_matching_unexpired_scope():

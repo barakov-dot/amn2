@@ -3,11 +3,23 @@ from __future__ import annotations
 import hashlib
 import secrets
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal, Protocol
 
 
 API_TOKEN_FIRST_SLICE_SCOPES = frozenset({"server:read", "metrics:read"})
+API_TOKEN_BLOCKED_PRODUCTION_SCOPES = frozenset(
+    {
+        "backup:read",
+        "backup:restore",
+        "clients:write",
+        "config:read",
+        "local-agent:write",
+        "server:write",
+    }
+)
+API_TOKEN_PRODUCTION_MAX_TTL_DAYS = 30
+API_TOKEN_PRODUCTION_ROTATION_NOTICE_DAYS = 7
 
 ApiTokenAuthReason = Literal[
     "invalid_token",
@@ -22,6 +34,30 @@ class ApiTokenAuthError(ValueError):
     def __init__(self, message: str, *, reason: ApiTokenAuthReason) -> None:
         super().__init__(message)
         self.reason = reason
+
+
+@dataclass(frozen=True)
+class ApiTokenProductionPolicy:
+    allowed_scopes: frozenset[str]
+    blocked_scopes: frozenset[str]
+    max_ttl_days: int
+    rotation_notice_days: int
+    raw_token_display: str = "one-time"
+    stored_secret_material: str = "sha256-token-hash-only"
+    safe_backup_behavior: str = "credential_digest_excluded_from_safe_exports"
+    audit_metadata: str = "safe-metadata-only"
+
+    def safe_metadata(self) -> dict[str, object]:
+        return {
+            "allowed_scopes": sorted(self.allowed_scopes),
+            "blocked_scopes": sorted(self.blocked_scopes),
+            "max_ttl_days": self.max_ttl_days,
+            "rotation_notice_days": self.rotation_notice_days,
+            "raw_token_display": self.raw_token_display,
+            "stored_secret_material": self.stored_secret_material,
+            "safe_backup_behavior": self.safe_backup_behavior,
+            "audit_metadata": self.audit_metadata,
+        }
 
 
 class ApiTokenStore(Protocol):
@@ -135,6 +171,15 @@ def hash_api_token(raw_token: str) -> str:
     return f"sha256:{token_digest}"
 
 
+def build_api_token_production_policy() -> ApiTokenProductionPolicy:
+    return ApiTokenProductionPolicy(
+        allowed_scopes=API_TOKEN_FIRST_SLICE_SCOPES,
+        blocked_scopes=API_TOKEN_BLOCKED_PRODUCTION_SCOPES,
+        max_ttl_days=API_TOKEN_PRODUCTION_MAX_TTL_DAYS,
+        rotation_notice_days=API_TOKEN_PRODUCTION_ROTATION_NOTICE_DAYS,
+    )
+
+
 def create_api_token(
     store: ApiTokenStore,
     *,
@@ -169,9 +214,9 @@ def create_route_api_token(
     owner_user_id: int | None = None,
     token_id: str | None = None,
     raw_token: str | None = None,
+    now: datetime | None = None,
 ) -> ApiTokenIssue:
-    if expires_at is None:
-        raise ValueError("expires_at is required for route-connected API tokens")
+    validate_route_api_token_expiry(expires_at, now=now)
     return create_api_token(
         store,
         name=name,
@@ -284,6 +329,23 @@ def _validate_scope_set(scopes: set[str] | frozenset[str]) -> frozenset[str]:
             + ", ".join(sorted(unsupported or normalized))
         )
     return normalized
+
+
+def validate_route_api_token_expiry(
+    expires_at: datetime | None,
+    *,
+    now: datetime | None = None,
+) -> None:
+    if expires_at is None:
+        raise ValueError("expires_at is required for route-connected API tokens")
+
+    current_time = _as_utc(now or datetime.now(timezone.utc))
+    max_expires_at = current_time + timedelta(days=API_TOKEN_PRODUCTION_MAX_TTL_DAYS)
+    if _as_utc(expires_at) > max_expires_at:
+        raise ValueError(
+            "expires_at exceeds production API token ttl "
+            f"({API_TOKEN_PRODUCTION_MAX_TTL_DAYS} days)"
+        )
 
 
 def _create_api_token_with_rotation(

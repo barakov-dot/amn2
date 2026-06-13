@@ -36,7 +36,7 @@
       </label>
       <label>
         Срок в днях
-        <input name="expires_days" type="number" min="1" max="365" value="{{ issue_form.expires_days }}" required disabled>
+        <input name="expires_days" type="number" min="1" max="{{ max_ttl_days }}" value="{{ issue_form.expires_days }}" required disabled>
       </label>
       <fieldset class="fieldset">
         <legend>Scopes</legend>

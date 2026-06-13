@@ -52,6 +52,9 @@ Safe audit metadata содержит только `token_id`, `name`, `owner_lab
 Второй local-only slice добавляет lifecycle boundary до подключения токенов к маршрутам:
 
 - `create_route_api_token()` требует явный `expires_at` для route-connected токенов;
+- production policy задается машинно-проверяемым manifest `build_api_token_production_policy()`;
+- route-connected token TTL ограничен `API_TOKEN_PRODUCTION_MAX_TTL_DAYS=30`;
+- рекомендуемый rotation notice для операторских процедур: `API_TOKEN_PRODUCTION_ROTATION_NOTICE_DAYS=7`;
 - `revoke_api_token()` возвращает idempotent safe event: повторный revoke не раскрывает, существовал ли usable token;
 - `rotate_api_token()` использует create-new-then-revoke-old: новый token получает отдельный id и raw token показывается только один раз;
 - `rotated_from_token_id` хранит lineage без raw token и без token hash в safe metadata;
@@ -59,6 +62,15 @@ Safe audit metadata содержит только `token_id`, `name`, `owner_lab
 - user-owned token наследует статус владельца: `blocked`/`deleted` owner не проходит auth.
 
 Safe lifecycle metadata не содержит raw token, Authorization header, token hash, `.conf`, QR payload, `vpn://`, private key, PSK или remote command output.
+
+Production policy manifest фиксирует:
+
+- allowed scopes: `server:read`, `metrics:read`;
+- blocked production scopes: `config:read`, `server:write`, `clients:write`, `local-agent:write`, `backup:read`, `backup:restore`;
+- raw token display: one-time;
+- stored secret material: только `sha256` digest;
+- safe backup/export behavior: credential digest исключается из safe exports;
+- audit metadata: только safe metadata.
 
 Route-connected токены для VPS smoke предпочтительно проверяются через safe CLI cycle:
 

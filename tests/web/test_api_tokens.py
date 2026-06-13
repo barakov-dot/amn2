@@ -102,6 +102,30 @@ def test_api_token_issue_rejects_unsupported_scope_without_mutating(tmp_path: Pa
     assert _token_count(Path(settings.database_path)) == 0
 
 
+def test_api_token_issue_rejects_expiry_beyond_production_ttl_without_mutating(
+    tmp_path: Path,
+):
+    settings = _settings(tmp_path)
+    client = _authenticated_client(settings)
+    form = client.get("/api-tokens")
+
+    response = client.post(
+        "/api-tokens/issue",
+        data={
+            "csrf_token": _csrf_token(form.text),
+            "name": "Long token",
+            "owner_label": "ops",
+            "scope": ["server:read"],
+            "expires_days": "31",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 400
+    assert "expires_days must be in 1..30" in response.text
+    assert _token_count(Path(settings.database_path)) == 0
+
+
 def _settings(tmp_path: Path) -> Settings:
     return Settings(
         _env_file=None,
