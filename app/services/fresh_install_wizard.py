@@ -7,6 +7,7 @@ from typing import Any
 QUESTION_SCHEMA_VERSION = "fresh-install-questions.v1"
 ANSWER_SCHEMA_VERSION = "fresh-install-answers.v1"
 PLAN_SCHEMA_VERSION = "fresh-install-plan.v1"
+READINESS_SCHEMA_VERSION = "fresh-install-readiness.v1"
 SECRET_HANDOFF_POLICY_DOC = "docs/AMN2_SECRET_HANDOFF_PROTOCOL.ru.md"
 
 DEFAULT_FRESH_INSTALL_ANSWERS: dict[str, str] = {
@@ -169,12 +170,71 @@ _SAFETY_BOUNDARY = {
     "vps_apply_enabled_default": False,
 }
 
+_TARGET_PREFLIGHT_CHECKS: list[dict[str, Any]] = [
+    {
+        "id": "os-release",
+        "label": "Target OS release",
+        "read_only": True,
+        "expected": ["Ubuntu LTS", "Debian stable"],
+    },
+    {
+        "id": "python-runtime",
+        "label": "CPython runtime",
+        "read_only": True,
+        "expected": ["CPython 3.12.x"],
+    },
+    {
+        "id": "docker-runtime",
+        "label": "Docker runtime availability",
+        "read_only": True,
+        "expected": ["docker present when runtime=docker"],
+    },
+    {
+        "id": "network-ports",
+        "label": "Required listener and VPN ports",
+        "read_only": True,
+        "expected": ["operator-selected ports only"],
+    },
+    {
+        "id": "disk-space",
+        "label": "Disk capacity for source, data and logs",
+        "read_only": True,
+        "expected": ["enough free space before package apply"],
+    },
+    {
+        "id": "time-sync",
+        "label": "System clock synchronization",
+        "read_only": True,
+        "expected": ["time sync active"],
+    },
+    {
+        "id": "package-tools",
+        "label": "Package and archive tools",
+        "read_only": True,
+        "expected": ["shell, unzip, sha256 tooling available"],
+    },
+]
+
+_PACKAGE_HYGIENE_REQUIRED_CHECKS = [
+    "toolchain_check",
+    "full_pytest",
+    "git_diff_check",
+    "source_zip_checksum",
+    "forbidden_source_entries",
+    "shell_lf_no_bom",
+    "markdown_hygiene",
+    "commit_binding",
+]
+
 
 def build_fresh_install_manifest() -> dict[str, Any]:
     return {
         "status": "fresh_install_manifest_ready",
         "mode": "local_only_dry_run",
         "question_schema": _build_question_schema(),
+        "installer_readiness": _build_installer_readiness(
+            DEFAULT_FRESH_INSTALL_ANSWERS
+        ),
         "secret_handoff_policy": {
             "policy_doc": SECRET_HANDOFF_POLICY_DOC,
             "mode": DEFAULT_FRESH_INSTALL_ANSWERS["secret_handoff"],
@@ -227,6 +287,7 @@ def build_fresh_install_plan(answers: dict[str, str]) -> dict[str, Any]:
             "operator_local_channel_required": normalized["secret_handoff"]
             == "operator_local",
         },
+        "installer_readiness": _build_installer_readiness(normalized),
         "rendered_plan": _build_rendered_plan(normalized, required_gates, stop_lines),
         "stop_lines": stop_lines,
         "local_dry_run_steps": list(_LOCAL_DRY_RUN_STEPS),
@@ -311,6 +372,24 @@ def _build_rendered_plan(
                 "raw_secret_allowed_in_plan": False,
             },
             {
+                "id": "target-preflight-matrix",
+                "status": "local_plan_only",
+                "checks": _build_target_preflight()["checks"],
+                "live_execution": "blocked_without_named_gate",
+            },
+            {
+                "id": "runtime-mode-decision",
+                "status": "local_plan_only",
+                **_build_runtime_decision(normalized),
+            },
+            {
+                "id": "package-hygiene-checklist",
+                "status": "local_plan_only",
+                "package_rebuild_allowed": False,
+                "required_checks": list(_PACKAGE_HYGIENE_REQUIRED_CHECKS),
+                "do_not_rewrite_vps_smoked_evidence": True,
+            },
+            {
                 "id": "question-answer-render",
                 "status": "local_only",
                 "answer_schema_version": ANSWER_SCHEMA_VERSION,
@@ -323,4 +402,34 @@ def _build_rendered_plan(
                 "stop_lines": stop_lines,
             },
         ],
+    }
+
+
+def _build_installer_readiness(normalized: dict[str, str]) -> dict[str, Any]:
+    return {
+        "schema_version": READINESS_SCHEMA_VERSION,
+        "target_preflight": _build_target_preflight(),
+        "runtime_decision": _build_runtime_decision(normalized),
+        "package_hygiene": {
+            "package_rebuild_allowed_by_default": False,
+            "do_not_rewrite_vps_smoked_evidence": True,
+            "required_checks": list(_PACKAGE_HYGIENE_REQUIRED_CHECKS),
+        },
+    }
+
+
+def _build_target_preflight() -> dict[str, Any]:
+    return {
+        "mode": "local_plan_only",
+        "live_execution": "blocked_without_named_gate",
+        "checks": [dict(check) for check in _TARGET_PREFLIGHT_CHECKS],
+    }
+
+
+def _build_runtime_decision(normalized: dict[str, str]) -> dict[str, Any]:
+    return {
+        "selected": normalized["runtime"],
+        "supported_modes": ["docker", "host_systemd"],
+        "decision_source": "operator_answer",
+        "service_restart_allowed": False,
     }

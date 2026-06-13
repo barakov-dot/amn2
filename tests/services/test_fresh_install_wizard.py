@@ -131,6 +131,61 @@ def test_build_fresh_install_manifest_describes_questions_without_secrets():
     assert "PresharedKey" not in manifest_text
 
 
+def test_build_fresh_install_manifest_includes_read_only_preflight_runtime_and_package_hygiene():
+    manifest = build_fresh_install_manifest()
+    readiness = manifest["installer_readiness"]
+
+    assert readiness["schema_version"] == "fresh-install-readiness.v1"
+    assert readiness["target_preflight"]["mode"] == "local_plan_only"
+    assert readiness["target_preflight"]["live_execution"] == "blocked_without_named_gate"
+    assert [check["id"] for check in readiness["target_preflight"]["checks"]] == [
+        "os-release",
+        "python-runtime",
+        "docker-runtime",
+        "network-ports",
+        "disk-space",
+        "time-sync",
+        "package-tools",
+    ]
+    assert all(check["read_only"] is True for check in readiness["target_preflight"]["checks"])
+
+    assert readiness["runtime_decision"] == {
+        "selected": "docker",
+        "supported_modes": ["docker", "host_systemd"],
+        "decision_source": "operator_answer",
+        "service_restart_allowed": False,
+    }
+
+    assert readiness["package_hygiene"]["package_rebuild_allowed_by_default"] is False
+    assert readiness["package_hygiene"]["do_not_rewrite_vps_smoked_evidence"] is True
+    assert readiness["package_hygiene"]["required_checks"] == [
+        "toolchain_check",
+        "full_pytest",
+        "git_diff_check",
+        "source_zip_checksum",
+        "forbidden_source_entries",
+        "shell_lf_no_bom",
+        "markdown_hygiene",
+        "commit_binding",
+    ]
+
+
+def test_fresh_install_plan_renders_readiness_phases_without_live_commands():
+    plan = build_fresh_install_plan(DEFAULT_FRESH_INSTALL_ANSWERS)
+
+    phases = {phase["id"]: phase for phase in plan["rendered_plan"]["phases"]}
+
+    assert phases["target-preflight-matrix"]["status"] == "local_plan_only"
+    assert phases["runtime-mode-decision"]["selected"] == "docker"
+    assert phases["runtime-mode-decision"]["service_restart_allowed"] is False
+    assert phases["package-hygiene-checklist"]["package_rebuild_allowed"] is False
+    assert "markdown_hygiene" in phases["package-hygiene-checklist"]["required_checks"]
+
+    plan_text = json.dumps(plan, ensure_ascii=False)
+    for marker in ("ssh ", "systemctl restart", "docker restart", "VPS_APPLY_ENABLED=true"):
+        assert marker not in plan_text
+
+
 def test_fresh_install_secret_handoff_policy_doc_exists():
     manifest = build_fresh_install_manifest()
 

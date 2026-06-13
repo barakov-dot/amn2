@@ -33,11 +33,16 @@ Wizard output versioned:
 
 - plan schema: `fresh-install-plan.v1`;
 - question schema: `fresh-install-questions.v1`;
-- answer schema: `fresh-install-answers.v1`.
+- answer schema: `fresh-install-answers.v1`;
+- readiness schema: `fresh-install-readiness.v1`.
 
 `build_fresh_install_manifest()` возвращает machine-readable manifest с
 описанием questions, defaults, allowed values и gated fields. Manifest также
 указывает secret handoff policy: `docs/AMN2_SECRET_HANDOFF_PROTOCOL.ru.md`.
+
+Manifest также содержит `installer_readiness`: local-only матрицу будущего
+preflight/runtime/package hygiene. Она не запускает диагностику на VPS и не
+разрешает SSH.
 
 ## Вопросы
 
@@ -105,12 +110,52 @@ secret values. Подробный протокол: `docs/AMN2_SECRET_HANDOFF_PR
 
 - `local-preflight` - только локальные проверки;
 - `secret-handoff-checklist` - checklist без raw secrets;
+- `target-preflight-matrix` - список read-only target checks без выполнения;
+- `runtime-mode-decision` - выбранный runtime mode без restart;
+- `package-hygiene-checklist` - обязательные проверки перед будущим package gate;
 - `question-answer-render` - привязка к answer schema;
 - `named-gate-stop` - финальная остановка перед любым gated action.
 
 Если в ответах есть `yes` для public exposure, config delivery, write API или
 destructive cleanup, `rendered_plan.requires_named_gates` перечисляет нужные
 gate IDs и статус становится `blocked_named_gate_required`.
+
+## Installer Readiness
+
+`target_preflight` описывает проверки, которые должен будет пройти будущий
+target до clean install:
+
+- OS release;
+- CPython 3.12.x runtime;
+- Docker runtime availability when `runtime=docker`;
+- selected listener/VPN ports;
+- disk space;
+- time sync;
+- package/archive tools.
+
+В текущем slice это только `local_plan_only`. Живое выполнение этих проверок
+на VPS требует отдельного named diagnostic gate.
+
+`runtime_decision` берется из ответа `runtime` и поддерживает только:
+
+- `docker`;
+- `host_systemd`.
+
+Service restart/deploy по умолчанию запрещен.
+
+`package_hygiene` фиксирует обязательные проверки перед будущим package gate:
+
+- toolchain check;
+- full pytest;
+- git diff check;
+- source zip checksum;
+- forbidden source entries;
+- shell LF/no-BOM;
+- markdown hygiene;
+- commit binding.
+
+Уже VPS-smoked evidence packages нельзя перепаковывать или переписывать этим
+slice. Новый package build/apply остается отдельным named gate.
 
 ## Разрешенные Локальные Шаги
 
@@ -130,7 +175,7 @@ cleanup gate and do not turn on live deployment.
 After `P6-I007`, the safe default next planning item is:
 
 ```text
-P6-N001 Public docs/API taxonomy if public docs are approved
+FI-M001 + FI-M002 + FI-M003 target preflight/runtime/package hygiene planning
 ```
 
 Destructive cleanup/reinstall remains `P6-C007` and requires a separate named
