@@ -146,6 +146,21 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
         ]
         is False
     )
+    assert payload["public_docs_api_taxonomy_boundary"]["status"] == (
+        "public_docs_api_taxonomy_ready"
+    )
+    assert payload["public_docs_api_taxonomy_boundary"]["publication_enabled"] is False
+    assert payload["public_docs_api_taxonomy_boundary"]["public_api_exposed"] is False
+    assert payload["destructive_cleanup_gate_checklist"]["status"] == (
+        "destructive_cleanup_checklist_ready"
+    )
+    assert payload["destructive_cleanup_gate_checklist"]["mode"] == "checklist_only"
+    assert (
+        payload["destructive_cleanup_gate_checklist"][
+            "destructive_execution_enabled"
+        ]
+        is False
+    )
     assert payload["productization_boundary"]["bot_runtime_split"]["status"] == (
         "separate_bot_boundary_ready"
     )
@@ -203,7 +218,9 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
         "qr_vpn_import_link",
     ]
     assert payload["client_compatibility_boundary"]["live_client_import_verified"] is False
-    assert payload["next_gate"] == "P6-N001 public docs/API taxonomy if approved"
+    assert payload["next_gate"] == (
+        "Phase 6 default local-only queue empty; named gate required for live/public/destructive work"
+    )
     assert payload["aggregate_state"]["servers"] == 1
     assert "new live peer apply/revoke without separate operator confirmation" in payload["blocked_lanes"]
     assert "payment processor integration without named gate" in payload["blocked_lanes"]
@@ -213,6 +230,8 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
     assert "raw telemetry export without P6-N004 retention/redaction gate" in payload["blocked_lanes"]
     assert "short tokenized config links require P6-C002 live/config delivery gate" in payload["blocked_lanes"]
     assert "automatic commercial entitlement activation without P6-I006/P6-C003 gates" in payload["blocked_lanes"]
+    assert "public docs/API publication without P6-C001 public exposure gate" in payload["blocked_lanes"]
+    assert "destructive cleanup/reinstall without P6-C007 named destructive gate" in payload["blocked_lanes"]
     assert _forbidden_markers_absent(payload)
 
     conn = connect(Path(settings.database_path))

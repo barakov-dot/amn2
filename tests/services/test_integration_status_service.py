@@ -168,6 +168,27 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
     assert report["fresh_install_wizard_boundary"]["docs"]["runbook"] == (
         "docs/FRESH_INSTALL_WIZARD.ru.md"
     )
+    assert report["public_docs_api_taxonomy_boundary"]["status"] == (
+        "public_docs_api_taxonomy_ready"
+    )
+    assert report["public_docs_api_taxonomy_boundary"]["publication_enabled"] is False
+    assert report["public_docs_api_taxonomy_boundary"]["public_api_exposed"] is False
+    assert report["public_docs_api_taxonomy_boundary"]["docs"]["taxonomy_doc"] == (
+        "docs/PUBLIC_DOCS_API_TAXONOMY.ru.md"
+    )
+    assert report["destructive_cleanup_gate_checklist"]["status"] == (
+        "destructive_cleanup_checklist_ready"
+    )
+    assert report["destructive_cleanup_gate_checklist"]["mode"] == "checklist_only"
+    assert (
+        report["destructive_cleanup_gate_checklist"][
+            "destructive_execution_enabled"
+        ]
+        is False
+    )
+    assert report["destructive_cleanup_gate_checklist"]["docs"]["checklist_doc"] == (
+        "docs/DESTRUCTIVE_CLEANUP_GATE_CHECKLIST.ru.md"
+    )
     assert report["productization_boundary"]["bot_runtime_split"]["status"] == (
         "separate_bot_boundary_ready"
     )
@@ -252,7 +273,11 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
     assert "upstream refresh live actions without P6-S002 incorporation gate" in report["blocked_lanes"]
     assert "short tokenized config links require P6-C002 live/config delivery gate" in report["blocked_lanes"]
     assert "automatic commercial entitlement activation without P6-I006/P6-C003 gates" in report["blocked_lanes"]
-    assert report["next_gate"] == "P6-N001 public docs/API taxonomy if approved"
+    assert "public docs/API publication without P6-C001 public exposure gate" in report["blocked_lanes"]
+    assert "destructive cleanup/reinstall without P6-C007 named destructive gate" in report["blocked_lanes"]
+    assert report["next_gate"] == (
+        "Phase 6 default local-only queue empty; named gate required for live/public/destructive work"
+    )
 
 
 def test_build_integration_status_contains_no_secret_or_command_markers(tmp_path: Path):

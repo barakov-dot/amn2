@@ -482,6 +482,72 @@
     </div>
   </section>
 
+  <section class="settings-grid" aria-label="Public docs and cleanup gates">
+    <article class="panel">
+      <div class="panel-header">
+        <h2>Public docs/API taxonomy</h2>
+      </div>
+      <div class="table-wrap">
+        <table class="settings-table">
+          <tbody>
+            <tr>
+              <td>Status</td>
+              <td>{{ report.public_docs_api_taxonomy_boundary.status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>publication enabled</td>
+              <td>{{ report.public_docs_api_taxonomy_boundary.publication_enabled }}</td>
+            </tr>
+            <tr>
+              <td>public API exposed</td>
+              <td>{{ report.public_docs_api_taxonomy_boundary.public_api_exposed }}</td>
+            </tr>
+            <tr>
+              <td>Required gate</td>
+              <td>{{ report.public_docs_api_taxonomy_boundary.requires_public_exposure_gate }}</td>
+            </tr>
+            <tr>
+              <td>Policy doc</td>
+              <td><code>{{ report.public_docs_api_taxonomy_boundary.docs.taxonomy_doc }}</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-header">
+        <h2>Destructive cleanup checklist</h2>
+      </div>
+      <div class="table-wrap">
+        <table class="settings-table">
+          <tbody>
+            <tr>
+              <td>Status</td>
+              <td>{{ report.destructive_cleanup_gate_checklist.status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>Mode</td>
+              <td>{{ report.destructive_cleanup_gate_checklist.mode|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>destructive execution enabled</td>
+              <td>{{ report.destructive_cleanup_gate_checklist.destructive_execution_enabled }}</td>
+            </tr>
+            <tr>
+              <td>Required gate</td>
+              <td>{{ report.destructive_cleanup_gate_checklist.requires_named_gate }}</td>
+            </tr>
+            <tr>
+              <td>Checklist doc</td>
+              <td><code>{{ report.destructive_cleanup_gate_checklist.docs.checklist_doc }}</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </article>
+  </section>
+
   <section class="settings-grid" aria-label="Telemetry retention policy">
     <article class="panel">
       <div class="panel-header">

@@ -8,6 +8,10 @@ from app.db.repositories import Repository
 from app.services.fresh_install_wizard import build_fresh_install_wizard_boundary
 from app.services.privacy_status_boundary import build_privacy_status_boundary
 from app.services.productization_boundary import build_productization_boundary
+from app.services.public_productization_boundaries import (
+    build_destructive_cleanup_gate_checklist,
+    build_public_docs_api_taxonomy_boundary,
+)
 from app.services.reconciliation_release_boundary import (
     build_reconciliation_release_boundary,
 )
@@ -51,6 +55,8 @@ BLOCKED_LANES = (
     "upstream refresh live actions without P6-S002 incorporation gate",
     "short tokenized config links require P6-C002 live/config delivery gate",
     "automatic commercial entitlement activation without P6-I006/P6-C003 gates",
+    "public docs/API publication without P6-C001 public exposure gate",
+    "destructive cleanup/reinstall without P6-C007 named destructive gate",
     "systemd/reverse proxy deployment on validation VPS",
 )
 
@@ -150,10 +156,15 @@ def build_integration_status(repo: Repository) -> dict[str, Any]:
         "telemetry_retention_policy": build_telemetry_retention_policy(),
         "client_compatibility_boundary": build_client_compatibility_boundary(),
         "fresh_install_wizard_boundary": build_fresh_install_wizard_boundary(),
+        "public_docs_api_taxonomy_boundary": build_public_docs_api_taxonomy_boundary(),
+        "destructive_cleanup_gate_checklist": build_destructive_cleanup_gate_checklist(),
         "aggregate_state": _load_aggregate_state(repo),
         "allowed_lanes": list(ALLOWED_LANES),
         "blocked_lanes": list(BLOCKED_LANES),
-        "next_gate": "P6-N001 public docs/API taxonomy if approved",
+        "next_gate": (
+            "Phase 6 default local-only queue empty; named gate required "
+            "for live/public/destructive work"
+        ),
     }
 
 
