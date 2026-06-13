@@ -149,6 +149,25 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
         ]
         is True
     )
+    assert report["fresh_install_wizard_boundary"]["status"] == (
+        "fresh_install_wizard_ready"
+    )
+    assert report["fresh_install_wizard_boundary"]["mode"] == "local_only_dry_run"
+    assert (
+        report["fresh_install_wizard_boundary"]["safety"][
+            "live_vps_commands_enabled"
+        ]
+        is False
+    )
+    assert (
+        report["fresh_install_wizard_boundary"]["safety"][
+            "destructive_cleanup_enabled"
+        ]
+        is False
+    )
+    assert report["fresh_install_wizard_boundary"]["docs"]["runbook"] == (
+        "docs/FRESH_INSTALL_WIZARD.ru.md"
+    )
     assert report["productization_boundary"]["bot_runtime_split"]["status"] == (
         "separate_bot_boundary_ready"
     )
@@ -233,7 +252,7 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
     assert "upstream refresh live actions without P6-S002 incorporation gate" in report["blocked_lanes"]
     assert "short tokenized config links require P6-C002 live/config delivery gate" in report["blocked_lanes"]
     assert "automatic commercial entitlement activation without P6-I006/P6-C003 gates" in report["blocked_lanes"]
-    assert report["next_gate"] == "P6-I007 interactive fresh-install wizard/bootstrap automation"
+    assert report["next_gate"] == "P6-N001 public docs/API taxonomy if approved"
 
 
 def test_build_integration_status_contains_no_secret_or_command_markers(tmp_path: Path):

@@ -136,6 +136,16 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
         ]
         is False
     )
+    assert payload["fresh_install_wizard_boundary"]["status"] == (
+        "fresh_install_wizard_ready"
+    )
+    assert payload["fresh_install_wizard_boundary"]["mode"] == "local_only_dry_run"
+    assert (
+        payload["fresh_install_wizard_boundary"]["safety"][
+            "live_vps_commands_enabled"
+        ]
+        is False
+    )
     assert payload["productization_boundary"]["bot_runtime_split"]["status"] == (
         "separate_bot_boundary_ready"
     )
@@ -193,7 +203,7 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
         "qr_vpn_import_link",
     ]
     assert payload["client_compatibility_boundary"]["live_client_import_verified"] is False
-    assert payload["next_gate"] == "P6-I007 interactive fresh-install wizard/bootstrap automation"
+    assert payload["next_gate"] == "P6-N001 public docs/API taxonomy if approved"
     assert payload["aggregate_state"]["servers"] == 1
     assert "new live peer apply/revoke without separate operator confirmation" in payload["blocked_lanes"]
     assert "payment processor integration without named gate" in payload["blocked_lanes"]

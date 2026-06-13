@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from app.db.repositories import Repository
+from app.services.fresh_install_wizard import build_fresh_install_wizard_boundary
 from app.services.privacy_status_boundary import build_privacy_status_boundary
 from app.services.productization_boundary import build_productization_boundary
 from app.services.reconciliation_release_boundary import (
@@ -148,10 +149,11 @@ def build_integration_status(repo: Repository) -> dict[str, Any]:
         "reconciliation_release_boundary": build_reconciliation_release_boundary(),
         "telemetry_retention_policy": build_telemetry_retention_policy(),
         "client_compatibility_boundary": build_client_compatibility_boundary(),
+        "fresh_install_wizard_boundary": build_fresh_install_wizard_boundary(),
         "aggregate_state": _load_aggregate_state(repo),
         "allowed_lanes": list(ALLOWED_LANES),
         "blocked_lanes": list(BLOCKED_LANES),
-        "next_gate": "P6-I007 interactive fresh-install wizard/bootstrap automation",
+        "next_gate": "P6-N001 public docs/API taxonomy if approved",
     }
 
 

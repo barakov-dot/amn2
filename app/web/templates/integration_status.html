@@ -450,6 +450,38 @@
     </div>
   </section>
 
+  <section class="panel panel-spaced">
+    <div class="panel-header">
+      <h2>Fresh install wizard</h2>
+    </div>
+    <div class="table-wrap">
+      <table class="settings-table">
+        <tbody>
+          <tr>
+            <td>Status</td>
+            <td>{{ report.fresh_install_wizard_boundary.status|replace("_", "-") }}</td>
+          </tr>
+          <tr>
+            <td>Mode</td>
+            <td>{{ report.fresh_install_wizard_boundary.mode|replace("_", "-") }}</td>
+          </tr>
+          <tr>
+            <td>live VPS commands enabled</td>
+            <td>{{ report.fresh_install_wizard_boundary.safety.live_vps_commands_enabled }}</td>
+          </tr>
+          <tr>
+            <td>destructive cleanup enabled</td>
+            <td>{{ report.fresh_install_wizard_boundary.safety.destructive_cleanup_enabled }}</td>
+          </tr>
+          <tr>
+            <td>Runbook</td>
+            <td><code>{{ report.fresh_install_wizard_boundary.docs.runbook }}</code></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <section class="settings-grid" aria-label="Telemetry retention policy">
     <article class="panel">
       <div class="panel-header">

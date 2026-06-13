@@ -39,6 +39,10 @@ from app.services.api_tokens import create_route_api_token
 from app.services.api_tokens import revoke_api_token
 from app.services.api_smoke import validate_api_smoke_responses
 from app.services.bot_media import BotMediaRegistry
+from app.services.fresh_install_wizard import (
+    build_fresh_install_plan,
+    collect_fresh_install_answers,
+)
 from app.services.peer_inventory import AwgDumpPeerInventoryCollector, PeerInventoryService
 from app.services.traffic import AwgDumpTrafficCollector, TrafficService
 from app.web.auth import create_password_hash
@@ -181,6 +185,16 @@ def build_parser() -> argparse.ArgumentParser:
     retest_plan.add_argument("--config", default="servers.yml")
     retest_plan.add_argument("--server", required=True)
     retest_plan.add_argument("--db", default="data/amneziya.sqlite3")
+
+    install = sub.add_parser("install")
+    install_sub = install.add_subparsers(dest="install_command", required=True)
+
+    install_wizard = install_sub.add_parser("wizard")
+    install_wizard.add_argument("--pretty", action="store_true")
+
+    install_plan = install_sub.add_parser("plan")
+    install_plan.add_argument("--answers", required=True)
+    install_plan.add_argument("--pretty", action="store_true")
 
     agent = sub.add_parser("agent")
     agent_sub = agent.add_subparsers(dest="agent_command", required=True)
@@ -347,6 +361,10 @@ def main() -> None:
                 db_path=Path(args.db),
             )
         )
+    elif args.command == "install" and args.install_command == "wizard":
+        print(run_fresh_install_wizard(pretty=args.pretty))
+    elif args.command == "install" and args.install_command == "plan":
+        print(run_fresh_install_plan(answers_path=Path(args.answers), pretty=args.pretty))
     elif args.command == "bot" and args.bot_command == "check-network":
         settings = Settings()
         print(
@@ -1328,6 +1346,18 @@ def run_server_retest_plan(
         "Do not send tokens, APP_SECRET_KEY, SSH secrets, PrivateKey, or PresharedKey.",
     ]
     return "\n".join(lines)
+
+
+def run_fresh_install_wizard(*, pretty: bool = False) -> str:
+    answers = collect_fresh_install_answers()
+    return _json_dumps(build_fresh_install_plan(answers), pretty=pretty)
+
+
+def run_fresh_install_plan(*, answers_path: Path, pretty: bool = False) -> str:
+    answers = json.loads(answers_path.read_text(encoding="utf-8"))
+    if not isinstance(answers, dict):
+        raise ValueError("answers file must contain a JSON object")
+    return _json_dumps(build_fresh_install_plan(answers), pretty=pretty)
 
 
 def _runtime_check_command(server: ServerConfig) -> str:

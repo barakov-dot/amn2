@@ -60,6 +60,8 @@ def test_integration_status_page_renders_gate_without_secret_markers(tmp_path: P
     assert "short link runtime enabled" in response.text
     assert "entitlement-audit-boundary-ready" in response.text
     assert "automatic activation enabled" in response.text
+    assert "fresh-install-wizard-ready" in response.text
+    assert "local-only-dry-run" in response.text
     assert "separate-bot-boundary-ready" in response.text
     assert "payment processor enabled" in response.text
     assert "False" in response.text
@@ -98,7 +100,7 @@ def test_integration_status_page_renders_gate_without_secret_markers(tmp_path: P
     assert "raw telemetry export without P6-N004 retention/redaction gate" in response.text
     assert "short tokenized config links require P6-C002 live/config delivery gate" in response.text
     assert "automatic commercial entitlement activation without P6-I006/P6-C003 gates" in response.text
-    assert "P6-I007 interactive fresh-install wizard/bootstrap automation" in response.text
+    assert "P6-N001 public docs/API taxonomy if approved" in response.text
     assert "server:read" in response.text
     forbidden = [
         "PrivateKey",
