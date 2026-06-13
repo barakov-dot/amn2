@@ -73,6 +73,10 @@ def test_integration_status_page_renders_gate_without_secret_markers(tmp_path: P
     assert "report-only-plan-ready" in response.text
     assert "release-checklist-ready" in response.text
     assert "live reconciliation enabled" in response.text
+    assert "telemetry-retention-policy-ready" in response.text
+    assert "bounded-aggregate-retention-ready" in response.text
+    assert "watcher-candidate-incorporation-ready" in response.text
+    assert "candidate-rows-only" in response.text
     assert "dry-run-only-pass" in response.text
     assert "Phase 2 live write gate" in response.text
     assert "verified-live" in response.text
@@ -82,7 +86,8 @@ def test_integration_status_page_renders_gate_without_secret_markers(tmp_path: P
     assert "Telegram profile icon mutation without P6-I005 gate" in response.text
     assert "live health/status polling without P6-M002 gate" in response.text
     assert "attach-existing-server reconciliation apply without P6-M003 gate" in response.text
-    assert "P6-N004 aggregate telemetry retention/redaction policy" in response.text
+    assert "raw telemetry export without P6-N004 retention/redaction gate" in response.text
+    assert "P6-N001 public docs/API taxonomy if approved" in response.text
     assert "server:read" in response.text
     forbidden = [
         "PrivateKey",

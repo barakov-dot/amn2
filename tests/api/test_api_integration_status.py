@@ -139,13 +139,20 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
     assert payload["reconciliation_release_boundary"]["release_checklist"][
         "default_release_action"
     ] == "planning_only"
-    assert payload["next_gate"] == "P6-N004 aggregate telemetry retention/redaction policy"
+    assert payload["telemetry_retention_policy"]["aggregate_retention"][
+        "raw_export_enabled"
+    ] is False
+    assert payload["telemetry_retention_policy"]["upstream_refresh_incorporation"][
+        "default_action"
+    ] == "candidate_rows_only"
+    assert payload["next_gate"] == "P6-N001 public docs/API taxonomy if approved"
     assert payload["aggregate_state"]["servers"] == 1
     assert "new live peer apply/revoke without separate operator confirmation" in payload["blocked_lanes"]
     assert "payment processor integration without named gate" in payload["blocked_lanes"]
     assert "Telegram profile icon mutation without P6-I005 gate" in payload["blocked_lanes"]
     assert "live health/status polling without P6-M002 gate" in payload["blocked_lanes"]
     assert "attach-existing-server reconciliation apply without P6-M003 gate" in payload["blocked_lanes"]
+    assert "raw telemetry export without P6-N004 retention/redaction gate" in payload["blocked_lanes"]
     assert _forbidden_markers_absent(payload)
 
     conn = connect(Path(settings.database_path))

@@ -180,6 +180,15 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
     assert report["reconciliation_release_boundary"]["release_checklist"][
         "default_release_action"
     ] == "planning_only"
+    assert report["telemetry_retention_policy"]["status"] == (
+        "telemetry_retention_policy_ready"
+    )
+    assert report["telemetry_retention_policy"]["aggregate_retention"][
+        "raw_export_enabled"
+    ] is False
+    assert report["telemetry_retention_policy"]["upstream_refresh_incorporation"][
+        "default_action"
+    ] == "candidate_rows_only"
     assert "new live peer apply/revoke without separate operator confirmation" in report["blocked_lanes"]
     assert "/api/clients write CRUD" in report["blocked_lanes"]
     assert "additional protocol managers without capability registry" in report["blocked_lanes"]
@@ -190,7 +199,9 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
     assert "per-peer or per-user analytics without P6-N002 gate" in report["blocked_lanes"]
     assert "attach-existing-server reconciliation apply without P6-M003 gate" in report["blocked_lanes"]
     assert "release/package/public launch without P6-S001 checklist gates" in report["blocked_lanes"]
-    assert report["next_gate"] == "P6-N004 aggregate telemetry retention/redaction policy"
+    assert "raw telemetry export without P6-N004 retention/redaction gate" in report["blocked_lanes"]
+    assert "upstream refresh live actions without P6-S002 incorporation gate" in report["blocked_lanes"]
+    assert report["next_gate"] == "P6-N001 public docs/API taxonomy if approved"
 
 
 def test_build_integration_status_contains_no_secret_or_command_markers(tmp_path: Path):

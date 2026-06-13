@@ -10,6 +10,7 @@ from app.services.productization_boundary import build_productization_boundary
 from app.services.reconciliation_release_boundary import (
     build_reconciliation_release_boundary,
 )
+from app.services.telemetry_retention_policy import build_telemetry_retention_policy
 
 
 ALLOWED_API_SCOPES = ("metrics:read", "server:read")
@@ -41,6 +42,8 @@ BLOCKED_LANES = (
     "per-peer or per-user analytics without P6-N002 gate",
     "attach-existing-server reconciliation apply without P6-M003 gate",
     "release/package/public launch without P6-S001 checklist gates",
+    "raw telemetry export without P6-N004 retention/redaction gate",
+    "upstream refresh live actions without P6-S002 incorporation gate",
     "systemd/reverse proxy deployment on validation VPS",
 )
 
@@ -137,10 +140,11 @@ def build_integration_status(repo: Repository) -> dict[str, Any]:
         "productization_boundary": build_productization_boundary(),
         "privacy_status_boundary": build_privacy_status_boundary(),
         "reconciliation_release_boundary": build_reconciliation_release_boundary(),
+        "telemetry_retention_policy": build_telemetry_retention_policy(),
         "aggregate_state": _load_aggregate_state(repo),
         "allowed_lanes": list(ALLOWED_LANES),
         "blocked_lanes": list(BLOCKED_LANES),
-        "next_gate": "P6-N004 aggregate telemetry retention/redaction policy",
+        "next_gate": "P6-N001 public docs/API taxonomy if approved",
     }
 
 

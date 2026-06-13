@@ -398,6 +398,64 @@
     </article>
   </section>
 
+  <section class="settings-grid" aria-label="Telemetry retention policy">
+    <article class="panel">
+      <div class="panel-header">
+        <h2>Telemetry retention</h2>
+      </div>
+      <div class="table-wrap">
+        <table class="settings-table">
+          <tbody>
+            <tr>
+              <td>Status</td>
+              <td>{{ report.telemetry_retention_policy.status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>Retention status</td>
+              <td>{{ report.telemetry_retention_policy.aggregate_retention.status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>Raw export enabled</td>
+              <td>{{ report.telemetry_retention_policy.aggregate_retention.raw_export_enabled }}</td>
+            </tr>
+            <tr>
+              <td>Aggregate retention days</td>
+              <td>{{ report.telemetry_retention_policy.aggregate_retention.aggregate_retention_days }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-header">
+        <h2>Upstream refresh</h2>
+      </div>
+      <div class="table-wrap">
+        <table class="settings-table">
+          <tbody>
+            <tr>
+              <td>Status</td>
+              <td>{{ report.telemetry_retention_policy.upstream_refresh_incorporation.status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>Default action</td>
+              <td>{{ report.telemetry_retention_policy.upstream_refresh_incorporation.default_action|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>Live actions enabled</td>
+              <td>{{ report.telemetry_retention_policy.upstream_refresh_incorporation.live_actions_enabled }}</td>
+            </tr>
+            <tr>
+              <td>Code copy enabled</td>
+              <td>{{ report.telemetry_retention_policy.upstream_refresh_incorporation.code_copy_enabled }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </article>
+  </section>
+
   <section class="panel panel-spaced">
     <div class="panel-header">
       <h2>Разрешенные read scopes</h2>
