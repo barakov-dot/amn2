@@ -113,6 +113,9 @@ secret values. Подробный протокол: `docs/AMN2_SECRET_HANDOFF_PR
 - `target-preflight-matrix` - список read-only target checks без выполнения;
 - `runtime-mode-decision` - выбранный runtime mode без restart;
 - `package-hygiene-checklist` - обязательные проверки перед будущим package gate;
+- `smoke-evidence-template` - шаблон будущего smoke evidence без секретов;
+- `existing-server-reconciliation-input` - report-only input для existing server;
+- `installer-docs-index` - индекс операторских документов;
 - `question-answer-render` - привязка к answer schema;
 - `named-gate-stop` - финальная остановка перед любым gated action.
 
@@ -157,6 +160,39 @@ Service restart/deploy по умолчанию запрещен.
 Уже VPS-smoked evidence packages нельзя перепаковывать или переписывать этим
 slice. Новый package build/apply остается отдельным named gate.
 
+## Installer Evidence
+
+`installer_evidence` описывает только шаблоны будущих доказательств. Он не
+запускает smoke на VPS и не собирает secret-bearing payloads.
+
+Smoke evidence template содержит только safe summary sections:
+
+- selected commit;
+- loopback HTTP codes;
+- auth/scope status;
+- listener summary;
+- audit summary;
+- external closed probe status;
+- forbidden marker result;
+- final verdict.
+
+Existing-server reconciliation input остается `report_only`. Разрешенные input:
+
+- server inventory summary;
+- read-only peer counts;
+- runtime mode observation;
+- operator notes.
+
+Запрещенные outputs:
+
+- auto-fix;
+- peer import;
+- config overwrite;
+- peer creation;
+- peer removal.
+
+Операторский индекс: `docs/FRESH_INSTALLER_OPERATOR_INDEX.ru.md`.
+
 ## Разрешенные Локальные Шаги
 
 Wizard may recommend only local/dry-run steps such as:
@@ -175,7 +211,7 @@ cleanup gate and do not turn on live deployment.
 After `P6-I007`, the safe default next planning item is:
 
 ```text
-FI-M001 + FI-M002 + FI-M003 target preflight/runtime/package hygiene planning
+FI-N001 + FI-N002 + FI-S001 docs/test evidence readiness
 ```
 
 Destructive cleanup/reinstall remains `P6-C007` and requires a separate named

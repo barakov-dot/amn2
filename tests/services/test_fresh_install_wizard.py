@@ -186,6 +186,68 @@ def test_fresh_install_plan_renders_readiness_phases_without_live_commands():
         assert marker not in plan_text
 
 
+def test_manifest_includes_docs_test_evidence_readiness_without_secret_payloads():
+    manifest = build_fresh_install_manifest()
+    evidence = manifest["installer_evidence"]
+
+    assert evidence["schema_version"] == "fresh-install-evidence.v1"
+    assert evidence["smoke_evidence_template"]["mode"] == "local_template_only"
+    assert evidence["smoke_evidence_template"]["live_smoke_allowed_by_default"] is False
+    assert evidence["smoke_evidence_template"]["secret_payload_allowed"] is False
+    assert evidence["smoke_evidence_template"]["required_sections"] == [
+        "selected_commit",
+        "loopback_http_codes",
+        "auth_scope_status",
+        "listener_summary",
+        "audit_summary",
+        "external_closed_probe_status",
+        "forbidden_marker_result",
+        "final_verdict",
+    ]
+
+    reconciliation = evidence["existing_server_reconciliation_input"]
+    assert reconciliation["mode"] == "report_only"
+    assert reconciliation["apply_allowed_by_default"] is False
+    assert reconciliation["allowed_inputs"] == [
+        "server_inventory_summary",
+        "read_only_peer_counts",
+        "runtime_mode_observation",
+        "operator_notes",
+    ]
+    assert reconciliation["blocked_outputs"] == [
+        "auto_fix",
+        "peer_import",
+        "config_overwrite",
+        "peer_creation",
+        "peer_removal",
+    ]
+
+    assert evidence["docs_index"]["path"] == "docs/FRESH_INSTALLER_OPERATOR_INDEX.ru.md"
+
+
+def test_fresh_install_plan_renders_docs_test_evidence_phases():
+    plan = build_fresh_install_plan(DEFAULT_FRESH_INSTALL_ANSWERS)
+    phases = {phase["id"]: phase for phase in plan["rendered_plan"]["phases"]}
+
+    assert phases["smoke-evidence-template"]["status"] == "local_template_only"
+    assert phases["smoke-evidence-template"]["secret_payload_allowed"] is False
+    assert phases["existing-server-reconciliation-input"]["mode"] == "report_only"
+    assert phases["existing-server-reconciliation-input"]["apply_allowed"] is False
+    assert phases["installer-docs-index"]["path"] == "docs/FRESH_INSTALLER_OPERATOR_INDEX.ru.md"
+
+    plan_text = json.dumps(plan, ensure_ascii=False)
+    for marker in ("PrivateKey", "PresharedKey", "vpn://", ".conf", "ssh "):
+        assert marker not in plan_text
+
+
+def test_fresh_installer_operator_index_doc_exists():
+    manifest = build_fresh_install_manifest()
+
+    index_doc = ROOT / manifest["installer_evidence"]["docs_index"]["path"]
+
+    assert index_doc.exists()
+
+
 def test_fresh_install_secret_handoff_policy_doc_exists():
     manifest = build_fresh_install_manifest()
 

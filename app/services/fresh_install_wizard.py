@@ -8,7 +8,9 @@ QUESTION_SCHEMA_VERSION = "fresh-install-questions.v1"
 ANSWER_SCHEMA_VERSION = "fresh-install-answers.v1"
 PLAN_SCHEMA_VERSION = "fresh-install-plan.v1"
 READINESS_SCHEMA_VERSION = "fresh-install-readiness.v1"
+EVIDENCE_SCHEMA_VERSION = "fresh-install-evidence.v1"
 SECRET_HANDOFF_POLICY_DOC = "docs/AMN2_SECRET_HANDOFF_PROTOCOL.ru.md"
+FRESH_INSTALLER_OPERATOR_INDEX_DOC = "docs/FRESH_INSTALLER_OPERATOR_INDEX.ru.md"
 
 DEFAULT_FRESH_INSTALL_ANSWERS: dict[str, str] = {
     "project_name": "AMN2",
@@ -226,6 +228,32 @@ _PACKAGE_HYGIENE_REQUIRED_CHECKS = [
     "commit_binding",
 ]
 
+_SMOKE_EVIDENCE_REQUIRED_SECTIONS = [
+    "selected_commit",
+    "loopback_http_codes",
+    "auth_scope_status",
+    "listener_summary",
+    "audit_summary",
+    "external_closed_probe_status",
+    "forbidden_marker_result",
+    "final_verdict",
+]
+
+_RECONCILIATION_ALLOWED_INPUTS = [
+    "server_inventory_summary",
+    "read_only_peer_counts",
+    "runtime_mode_observation",
+    "operator_notes",
+]
+
+_RECONCILIATION_BLOCKED_OUTPUTS = [
+    "auto_fix",
+    "peer_import",
+    "config_overwrite",
+    "peer_creation",
+    "peer_removal",
+]
+
 
 def build_fresh_install_manifest() -> dict[str, Any]:
     return {
@@ -235,6 +263,7 @@ def build_fresh_install_manifest() -> dict[str, Any]:
         "installer_readiness": _build_installer_readiness(
             DEFAULT_FRESH_INSTALL_ANSWERS
         ),
+        "installer_evidence": _build_installer_evidence(),
         "secret_handoff_policy": {
             "policy_doc": SECRET_HANDOFF_POLICY_DOC,
             "mode": DEFAULT_FRESH_INSTALL_ANSWERS["secret_handoff"],
@@ -288,6 +317,7 @@ def build_fresh_install_plan(answers: dict[str, str]) -> dict[str, Any]:
             == "operator_local",
         },
         "installer_readiness": _build_installer_readiness(normalized),
+        "installer_evidence": _build_installer_evidence(),
         "rendered_plan": _build_rendered_plan(normalized, required_gates, stop_lines),
         "stop_lines": stop_lines,
         "local_dry_run_steps": list(_LOCAL_DRY_RUN_STEPS),
@@ -300,6 +330,7 @@ def build_fresh_install_plan(answers: dict[str, str]) -> dict[str, Any]:
         "docs": {
             "runbook": "docs/FRESH_INSTALL_WIZARD.ru.md",
             "secret_handoff": SECRET_HANDOFF_POLICY_DOC,
+            "operator_index": FRESH_INSTALLER_OPERATOR_INDEX_DOC,
         },
     }
 
@@ -390,6 +421,25 @@ def _build_rendered_plan(
                 "do_not_rewrite_vps_smoked_evidence": True,
             },
             {
+                "id": "smoke-evidence-template",
+                "status": "local_template_only",
+                "secret_payload_allowed": False,
+                "required_sections": list(_SMOKE_EVIDENCE_REQUIRED_SECTIONS),
+            },
+            {
+                "id": "existing-server-reconciliation-input",
+                "status": "local_template_only",
+                "mode": "report_only",
+                "apply_allowed": False,
+                "allowed_inputs": list(_RECONCILIATION_ALLOWED_INPUTS),
+                "blocked_outputs": list(_RECONCILIATION_BLOCKED_OUTPUTS),
+            },
+            {
+                "id": "installer-docs-index",
+                "status": "local_docs_only",
+                "path": FRESH_INSTALLER_OPERATOR_INDEX_DOC,
+            },
+            {
                 "id": "question-answer-render",
                 "status": "local_only",
                 "answer_schema_version": ANSWER_SCHEMA_VERSION,
@@ -414,6 +464,28 @@ def _build_installer_readiness(normalized: dict[str, str]) -> dict[str, Any]:
             "package_rebuild_allowed_by_default": False,
             "do_not_rewrite_vps_smoked_evidence": True,
             "required_checks": list(_PACKAGE_HYGIENE_REQUIRED_CHECKS),
+        },
+    }
+
+
+def _build_installer_evidence() -> dict[str, Any]:
+    return {
+        "schema_version": EVIDENCE_SCHEMA_VERSION,
+        "smoke_evidence_template": {
+            "mode": "local_template_only",
+            "live_smoke_allowed_by_default": False,
+            "secret_payload_allowed": False,
+            "required_sections": list(_SMOKE_EVIDENCE_REQUIRED_SECTIONS),
+        },
+        "existing_server_reconciliation_input": {
+            "mode": "report_only",
+            "apply_allowed_by_default": False,
+            "allowed_inputs": list(_RECONCILIATION_ALLOWED_INPUTS),
+            "blocked_outputs": list(_RECONCILIATION_BLOCKED_OUTPUTS),
+        },
+        "docs_index": {
+            "path": FRESH_INSTALLER_OPERATOR_INDEX_DOC,
+            "status": "local_docs_only",
         },
     }
 
