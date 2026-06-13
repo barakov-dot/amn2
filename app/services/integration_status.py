@@ -7,6 +7,9 @@ from typing import Any
 from app.db.repositories import Repository
 from app.services.privacy_status_boundary import build_privacy_status_boundary
 from app.services.productization_boundary import build_productization_boundary
+from app.services.reconciliation_release_boundary import (
+    build_reconciliation_release_boundary,
+)
 
 
 ALLOWED_API_SCOPES = ("metrics:read", "server:read")
@@ -36,6 +39,8 @@ BLOCKED_LANES = (
     "Telegram profile icon mutation without P6-I005 gate",
     "live health/status polling without P6-M002 gate",
     "per-peer or per-user analytics without P6-N002 gate",
+    "attach-existing-server reconciliation apply without P6-M003 gate",
+    "release/package/public launch without P6-S001 checklist gates",
     "systemd/reverse proxy deployment on validation VPS",
 )
 
@@ -131,10 +136,11 @@ def build_integration_status(repo: Repository) -> dict[str, Any]:
         "capability_registry": build_capability_registry(),
         "productization_boundary": build_productization_boundary(),
         "privacy_status_boundary": build_privacy_status_boundary(),
+        "reconciliation_release_boundary": build_reconciliation_release_boundary(),
         "aggregate_state": _load_aggregate_state(repo),
         "allowed_lanes": list(ALLOWED_LANES),
         "blocked_lanes": list(BLOCKED_LANES),
-        "next_gate": "P6-M003 attach-existing-server reconciliation",
+        "next_gate": "P6-N004 aggregate telemetry retention/redaction policy",
     }
 
 

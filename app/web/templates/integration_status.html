@@ -340,6 +340,64 @@
     </article>
   </section>
 
+  <section class="settings-grid" aria-label="Reconciliation release boundary">
+    <article class="panel">
+      <div class="panel-header">
+        <h2>Attach-existing reconciliation</h2>
+      </div>
+      <div class="table-wrap">
+        <table class="settings-table">
+          <tbody>
+            <tr>
+              <td>Status</td>
+              <td>{{ report.reconciliation_release_boundary.status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>Plan status</td>
+              <td>{{ report.reconciliation_release_boundary.attach_existing_server_reconciliation.status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>live reconciliation enabled</td>
+              <td>{{ report.reconciliation_release_boundary.attach_existing_server_reconciliation.live_reconciliation_enabled }}</td>
+            </tr>
+            <tr>
+              <td>Enabled by default</td>
+              <td>{{ report.reconciliation_release_boundary.attach_existing_server_reconciliation.enabled_by_default }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-header">
+        <h2>Release checklist</h2>
+      </div>
+      <div class="table-wrap">
+        <table class="settings-table">
+          <tbody>
+            <tr>
+              <td>Status</td>
+              <td>{{ report.reconciliation_release_boundary.release_checklist.status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>Default action</td>
+              <td>{{ report.reconciliation_release_boundary.release_checklist.default_release_action|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>Branch package status</td>
+              <td>{{ report.reconciliation_release_boundary.release_checklist.branch_head_package_status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>Policy doc</td>
+              <td><code>{{ report.reconciliation_release_boundary.docs.policy_doc }}</code></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </article>
+  </section>
+
   <section class="panel panel-spaced">
     <div class="panel-header">
       <h2>Разрешенные read scopes</h2>

@@ -69,6 +69,10 @@ def test_integration_status_page_renders_gate_without_secret_markers(tmp_path: P
     assert "scheduler-contract-ready" in response.text
     assert "aggregate-only-analytics-ready" in response.text
     assert "per peer breakdown enabled" in response.text
+    assert "reconciliation-release-boundary-ready" in response.text
+    assert "report-only-plan-ready" in response.text
+    assert "release-checklist-ready" in response.text
+    assert "live reconciliation enabled" in response.text
     assert "dry-run-only-pass" in response.text
     assert "Phase 2 live write gate" in response.text
     assert "verified-live" in response.text
@@ -77,7 +81,8 @@ def test_integration_status_page_renders_gate_without_secret_markers(tmp_path: P
     assert "support/news bot runtime without separate token gate" in response.text
     assert "Telegram profile icon mutation without P6-I005 gate" in response.text
     assert "live health/status polling without P6-M002 gate" in response.text
-    assert "P6-M003 attach-existing-server reconciliation" in response.text
+    assert "attach-existing-server reconciliation apply without P6-M003 gate" in response.text
+    assert "P6-N004 aggregate telemetry retention/redaction policy" in response.text
     assert "server:read" in response.text
     forbidden = [
         "PrivateKey",

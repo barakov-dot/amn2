@@ -162,6 +162,24 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
         ]
         is False
     )
+    assert report["reconciliation_release_boundary"]["status"] == (
+        "reconciliation_release_boundary_ready"
+    )
+    assert report["reconciliation_release_boundary"][
+        "attach_existing_server_reconciliation"
+    ]["status"] == "report_only_plan_ready"
+    assert (
+        report["reconciliation_release_boundary"][
+            "attach_existing_server_reconciliation"
+        ]["live_reconciliation_enabled"]
+        is False
+    )
+    assert report["reconciliation_release_boundary"]["release_checklist"][
+        "status"
+    ] == "release_checklist_ready"
+    assert report["reconciliation_release_boundary"]["release_checklist"][
+        "default_release_action"
+    ] == "planning_only"
     assert "new live peer apply/revoke without separate operator confirmation" in report["blocked_lanes"]
     assert "/api/clients write CRUD" in report["blocked_lanes"]
     assert "additional protocol managers without capability registry" in report["blocked_lanes"]
@@ -170,7 +188,9 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
     assert "Telegram profile icon mutation without P6-I005 gate" in report["blocked_lanes"]
     assert "live health/status polling without P6-M002 gate" in report["blocked_lanes"]
     assert "per-peer or per-user analytics without P6-N002 gate" in report["blocked_lanes"]
-    assert report["next_gate"] == "P6-M003 attach-existing-server reconciliation"
+    assert "attach-existing-server reconciliation apply without P6-M003 gate" in report["blocked_lanes"]
+    assert "release/package/public launch without P6-S001 checklist gates" in report["blocked_lanes"]
+    assert report["next_gate"] == "P6-N004 aggregate telemetry retention/redaction policy"
 
 
 def test_build_integration_status_contains_no_secret_or_command_markers(tmp_path: Path):
