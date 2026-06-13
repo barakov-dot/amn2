@@ -54,6 +54,9 @@ REQUIRED_POLICY_IDS = {
     "api.local_agent.runtime_summary",
     "api.metrics.summary",
     "api.users.summary",
+    "self_service.dashboard.blocked",
+    "self_service.config_delivery.blocked",
+    "self_service.device_revoke.blocked",
 }
 API_ROUTE_SHELL_POLICY_IDS = {
     "api.servers.list",
@@ -105,7 +108,16 @@ def test_policy_ids_are_unique():
 
 @pytest.mark.parametrize(
     "surface",
-    ("web", "public-token", "bot", "local-agent", "cli", "remote-operation", "api"),
+    (
+        "web",
+        "public-token",
+        "self-service",
+        "bot",
+        "local-agent",
+        "cli",
+        "remote-operation",
+        "api",
+    ),
 )
 def test_each_surface_has_policy_entries(surface):
     assert policies_by_surface(surface)
@@ -211,3 +223,25 @@ def test_api_route_shell_policies_are_read_only_scoped_and_no_live_retest():
         assert policy.implementation_mode == "implemented"
         assert "aggregate-only" in _gate_text(policy)
         assert "no raw secret" in _gate_text(policy)
+
+
+def test_self_service_surface_is_separate_from_admin_and_blocked_future():
+    policies = policies_by_surface("self-service")
+
+    assert {policy.policy_id for policy in policies} == {
+        "self_service.dashboard.blocked",
+        "self_service.config_delivery.blocked",
+        "self_service.device_revoke.blocked",
+    }
+    for policy in policies:
+        gates = _gate_text(policy)
+
+        assert policy.path.startswith("/self-service"), policy.policy_id
+        assert policy.actor == "self-service-user", policy.policy_id
+        assert "web-admin" not in policy.auth_method, policy.policy_id
+        assert "session" not in policy.auth_method, policy.policy_id
+        assert "separate self-service auth" in policy.auth_method, policy.policy_id
+        assert policy.implementation_mode == "blocked-future", policy.policy_id
+        assert policy.enables_new_behavior is False, policy.policy_id
+        assert "P6-C001" in policy.gates, policy.policy_id
+        assert "admin surface separated" in gates, policy.policy_id

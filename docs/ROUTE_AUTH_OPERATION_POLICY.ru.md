@@ -26,12 +26,25 @@
 ## Запреты первого slice
 
 - Не включать `GET /agent/clients`.
-- Не добавлять config/self-service API.
+- Не добавлять runtime config/self-service API.
 - Не добавлять `/api/*` routes поверх scoped tokens до storage/auth/local tests.
 - Не выдавать `config:read` или write scopes в первом API-token slice.
 - Не добавлять backup, restore, reboot или generic write API.
 - Не трогать live VPS.
 - Не копировать upstream code.
+
+## Self-service separation boundary
+
+`P6-I002` добавляет только policy inventory для будущего user self-service surface.
+Runtime routes не смонтированы, public exposure не открыт, config delivery не открыт и write/live gates не открыты.
+
+Future self-service routes зарезервированы только как `blocked-future` entries:
+
+- `GET /self-service` - будущий own-account dashboard, отдельный auth от web-admin;
+- `POST /self-service/devices/{device_id}/config` - future secret-bearing config delivery, требует `P6-C001` и `P6-C002`;
+- `POST /self-service/devices/{device_id}/revoke` - future production mutation, требует `P6-C001` и `P6-C003`.
+
+Self-service surface не использует `web-admin` actor/auth и не переиспользует текущие admin session routes. До отдельного named gate `/self-service*` должен оставаться только policy inventory, без FastAPI route binding.
 
 ## Live Retest Rule
 

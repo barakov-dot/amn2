@@ -105,6 +105,23 @@ def test_secret_and_destructive_future_routes_remain_blocked():
     )
 
 
+def test_self_service_future_routes_are_policy_only_and_not_mounted(tmp_path: Path):
+    blocked_self_service_routes = {
+        (policy.method, policy.path)
+        for policy in SURFACE_POLICIES
+        if policy.surface == "self-service"
+        and policy.implementation_mode == "blocked-future"
+    }
+    actual_routes = _route_keys(create_web_app(_settings(tmp_path)))
+
+    assert blocked_self_service_routes
+    assert actual_routes.isdisjoint(blocked_self_service_routes)
+    assert all(
+        not path.startswith("/self-service")
+        for _method, path in actual_routes
+    )
+
+
 def test_surface_policy_test_references_exist():
     missing_refs = [
         (policy.policy_id, test_ref)
