@@ -256,6 +256,34 @@
 
   <section class="panel panel-spaced">
     <div class="panel-header">
+      <h2>Telegram profile icon gate</h2>
+    </div>
+    <div class="table-wrap">
+      <table class="settings-table">
+        <tbody>
+          <tr>
+            <td>Status</td>
+            <td>{{ report.productization_boundary.telegram_profile_icon_apply.status|replace("_", "-") }}</td>
+          </tr>
+          <tr>
+            <td>telegram api enabled</td>
+            <td>{{ report.productization_boundary.telegram_profile_icon_apply.telegram_api_enabled }}</td>
+          </tr>
+          <tr>
+            <td>Codex apply allowed</td>
+            <td>{{ report.productization_boundary.telegram_profile_icon_apply.codex_apply_allowed }}</td>
+          </tr>
+          <tr>
+            <td>Required gate</td>
+            <td>{{ report.productization_boundary.telegram_profile_icon_apply.requires_named_gate }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel panel-spaced">
+    <div class="panel-header">
       <h2>Разрешенные read scopes</h2>
     </div>
     <div class="table-wrap">

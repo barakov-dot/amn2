@@ -80,6 +80,36 @@ Shared negative controls:
 - no config artifact output;
 - no production peer or user mutation.
 
+## Telegram Profile Icon Apply Gate
+
+`P6-I005` is closed as a local-only gate definition only.
+
+Default allowed work:
+
+- local image validation;
+- local registry metadata;
+- operator checklist drafting;
+- safe evidence summary.
+
+Blocked without a separate named Telegram identity mutation gate:
+
+- Telegram Bot API `setMyProfilePhoto`;
+- Telegram Bot API `deleteMyProfilePhoto`;
+- BotFather/manual profile mutation by Codex;
+- live bot send;
+- Telegram token use.
+
+Safe evidence fields are limited to:
+
+- `bot_kind`;
+- `asset_id`;
+- `content_sha256`;
+- `mime_type`;
+- `width_px`;
+- `height_px`;
+- `byte_size`;
+- `operator_decision`.
+
 ## Follow-up Candidates
 
 Candidate for the Phase 6 plan if commercial access proceeds:

@@ -134,12 +134,22 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
         ]
         is False
     )
+    assert report["productization_boundary"]["telegram_profile_icon_apply"][
+        "status"
+    ] == "identity_mutation_gate_ready"
+    assert report["productization_boundary"]["telegram_profile_icon_apply"][
+        "telegram_api_enabled"
+    ] is False
+    assert report["productization_boundary"]["telegram_profile_icon_apply"][
+        "codex_apply_allowed"
+    ] is False
     assert "new live peer apply/revoke without separate operator confirmation" in report["blocked_lanes"]
     assert "/api/clients write CRUD" in report["blocked_lanes"]
     assert "additional protocol managers without capability registry" in report["blocked_lanes"]
     assert "payment processor integration without named gate" in report["blocked_lanes"]
     assert "support/news bot runtime without separate token gate" in report["blocked_lanes"]
-    assert report["next_gate"] == "P6-I005 Telegram bot profile/icon apply gates"
+    assert "Telegram profile icon mutation without P6-I005 gate" in report["blocked_lanes"]
+    assert report["next_gate"] == "P6-M002 health/status polling scheduler"
 
 
 def test_build_integration_status_contains_no_secret_or_command_markers(tmp_path: Path):

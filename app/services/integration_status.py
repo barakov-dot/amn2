@@ -32,6 +32,7 @@ BLOCKED_LANES = (
     "payment processor integration without named gate",
     "automatic entitlement/config delivery on payment",
     "support/news bot runtime without separate token gate",
+    "Telegram profile icon mutation without P6-I005 gate",
     "systemd/reverse proxy deployment on validation VPS",
 )
 
@@ -129,7 +130,7 @@ def build_integration_status(repo: Repository) -> dict[str, Any]:
         "aggregate_state": _load_aggregate_state(repo),
         "allowed_lanes": list(ALLOWED_LANES),
         "blocked_lanes": list(BLOCKED_LANES),
-        "next_gate": "P6-I005 Telegram bot profile/icon apply gates",
+        "next_gate": "P6-M002 health/status polling scheduler",
     }
 
 

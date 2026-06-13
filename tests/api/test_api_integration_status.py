@@ -121,10 +121,17 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
         ]
         is True
     )
-    assert payload["next_gate"] == "P6-I005 Telegram bot profile/icon apply gates"
+    assert payload["productization_boundary"]["telegram_profile_icon_apply"][
+        "requires_named_gate"
+    ] == "P6-I005 Telegram identity mutation gate"
+    assert payload["productization_boundary"]["telegram_profile_icon_apply"][
+        "telegram_api_enabled"
+    ] is False
+    assert payload["next_gate"] == "P6-M002 health/status polling scheduler"
     assert payload["aggregate_state"]["servers"] == 1
     assert "new live peer apply/revoke without separate operator confirmation" in payload["blocked_lanes"]
     assert "payment processor integration without named gate" in payload["blocked_lanes"]
+    assert "Telegram profile icon mutation without P6-I005 gate" in payload["blocked_lanes"]
     assert _forbidden_markers_absent(payload)
 
     conn = connect(Path(settings.database_path))

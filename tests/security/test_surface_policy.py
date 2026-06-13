@@ -61,6 +61,9 @@ REQUIRED_POLICY_IDS = {
     "api.entitlements.activate.blocked",
     "bot.support.runtime.blocked",
     "bot.news.runtime.blocked",
+    "bot.access.profile_icon.apply.blocked",
+    "bot.support.profile_icon.apply.blocked",
+    "bot.news.profile_icon.apply.blocked",
 }
 API_ROUTE_SHELL_POLICY_IDS = {
     "api.servers.list",
@@ -247,6 +250,27 @@ def test_productization_future_surfaces_remain_blocked_until_named_gates():
     assert news_bot.implementation_mode == "blocked-future"
     assert "broadcast gate" in _gate_text(news_bot)
     assert "no user/device state" in _gate_text(news_bot)
+
+
+def test_telegram_profile_icon_apply_surfaces_are_identity_mutation_gated():
+    for policy_id in (
+        "bot.access.profile_icon.apply.blocked",
+        "bot.support.profile_icon.apply.blocked",
+        "bot.news.profile_icon.apply.blocked",
+    ):
+        policy = get_surface_policy(policy_id)
+        gates = _gate_text(policy)
+
+        assert policy.surface == "bot"
+        assert policy.risk_class == "state-write"
+        assert policy.secret_class == "token-raw-issue"
+        assert policy.implementation_mode == "blocked-future"
+        assert policy.enables_new_behavior is False
+        assert policy.live_retest_required is True
+        assert "p6-i005" in gates
+        assert "telegram identity mutation gate" in gates
+        assert "operator approval" in gates
+        assert "no live bot send" in gates
 
 
 def test_self_service_surface_is_separate_from_admin_and_blocked_future():

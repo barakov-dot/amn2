@@ -47,6 +47,41 @@ def test_productization_boundary_splits_access_support_and_news_bots():
     ]
 
 
+def test_productization_boundary_records_profile_icon_apply_gates():
+    boundary = build_productization_boundary()
+
+    gates = boundary["telegram_profile_icon_apply"]
+    assert gates["status"] == "identity_mutation_gate_ready"
+    assert gates["telegram_api_enabled"] is False
+    assert gates["operator_manual_apply_allowed"] is False
+    assert gates["codex_apply_allowed"] is False
+    assert gates["requires_named_gate"] == "P6-I005 Telegram identity mutation gate"
+    assert gates["bot_kinds"] == ["access", "support", "news"]
+    assert gates["allowed_default_work"] == [
+        "local image validation",
+        "local registry metadata",
+        "operator checklist drafting",
+        "safe evidence summary",
+    ]
+    assert gates["blocked_without_gate"] == [
+        "Telegram Bot API setMyProfilePhoto",
+        "Telegram Bot API deleteMyProfilePhoto",
+        "BotFather/manual profile mutation by Codex",
+        "live bot send",
+        "Telegram token use",
+    ]
+    assert gates["safe_evidence_fields"] == [
+        "bot_kind",
+        "asset_id",
+        "content_sha256",
+        "mime_type",
+        "width_px",
+        "height_px",
+        "byte_size",
+        "operator_decision",
+    ]
+
+
 def test_productization_boundary_doc_exists_and_records_gate_limits():
     boundary = build_productization_boundary()
 
