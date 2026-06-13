@@ -57,6 +57,10 @@ REQUIRED_POLICY_IDS = {
     "self_service.dashboard.blocked",
     "self_service.config_delivery.blocked",
     "self_service.device_revoke.blocked",
+    "api.payments.webhook.blocked",
+    "api.entitlements.activate.blocked",
+    "bot.support.runtime.blocked",
+    "bot.news.runtime.blocked",
 }
 API_ROUTE_SHELL_POLICY_IDS = {
     "api.servers.list",
@@ -223,6 +227,26 @@ def test_api_route_shell_policies_are_read_only_scoped_and_no_live_retest():
         assert policy.implementation_mode == "implemented"
         assert "aggregate-only" in _gate_text(policy)
         assert "no raw secret" in _gate_text(policy)
+
+
+def test_productization_future_surfaces_remain_blocked_until_named_gates():
+    payment = get_surface_policy("api.payments.webhook.blocked")
+    entitlement = get_surface_policy("api.entitlements.activate.blocked")
+    support_bot = get_surface_policy("bot.support.runtime.blocked")
+    news_bot = get_surface_policy("bot.news.runtime.blocked")
+
+    assert payment.implementation_mode == "blocked-future"
+    assert payment.enables_new_behavior is False
+    assert "payment processor gate" in _gate_text(payment)
+    assert entitlement.implementation_mode == "blocked-future"
+    assert entitlement.live_retest_required is True
+    assert "config delivery stays blocked" in _gate_text(entitlement)
+    assert support_bot.implementation_mode == "blocked-future"
+    assert "separate telegram token" in _gate_text(support_bot)
+    assert "no config output" in _gate_text(support_bot)
+    assert news_bot.implementation_mode == "blocked-future"
+    assert "broadcast gate" in _gate_text(news_bot)
+    assert "no user/device state" in _gate_text(news_bot)
 
 
 def test_self_service_surface_is_separate_from_admin_and_blocked_future():

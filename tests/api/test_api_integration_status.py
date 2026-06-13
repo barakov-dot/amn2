@@ -91,9 +91,40 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
     assert payload["capability_registry"]["server_capabilities"][0]["runtime"] == "docker"
     assert payload["capability_registry"]["future_protocols"][0]["protocol"] == "wireguard"
     assert payload["capability_registry"]["future_protocols"][1]["protocol"] == "xray"
-    assert payload["next_gate"] == "P6-I003 commercial/manual approval boundary"
+    assert payload["productization_boundary"]["commercial_access"]["status"] == (
+        "manual_approval_boundary_ready"
+    )
+    assert (
+        payload["productization_boundary"]["commercial_access"][
+            "payment_processor_enabled"
+        ]
+        is False
+    )
+    assert (
+        payload["productization_boundary"]["commercial_access"][
+            "config_delivery_on_payment"
+        ]
+        is False
+    )
+    assert payload["productization_boundary"]["bot_runtime_split"]["status"] == (
+        "separate_bot_boundary_ready"
+    )
+    assert (
+        payload["productization_boundary"]["bot_runtime_split"]["support_bot"][
+            "may_issue_configs"
+        ]
+        is False
+    )
+    assert (
+        payload["productization_boundary"]["bot_runtime_split"]["news_bot"][
+            "requires_separate_token"
+        ]
+        is True
+    )
+    assert payload["next_gate"] == "P6-I005 Telegram bot profile/icon apply gates"
     assert payload["aggregate_state"]["servers"] == 1
     assert "new live peer apply/revoke without separate operator confirmation" in payload["blocked_lanes"]
+    assert "payment processor integration without named gate" in payload["blocked_lanes"]
     assert _forbidden_markers_absent(payload)
 
     conn = connect(Path(settings.database_path))

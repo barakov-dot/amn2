@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from app.db.repositories import Repository
+from app.services.productization_boundary import build_productization_boundary
 
 
 ALLOWED_API_SCOPES = ("metrics:read", "server:read")
@@ -28,6 +29,9 @@ BLOCKED_LANES = (
     "public API 3040 exposure",
     "self-service runtime routes",
     "additional protocol managers without capability registry",
+    "payment processor integration without named gate",
+    "automatic entitlement/config delivery on payment",
+    "support/news bot runtime without separate token gate",
     "systemd/reverse proxy deployment on validation VPS",
 )
 
@@ -121,10 +125,11 @@ def build_integration_status(repo: Repository) -> dict[str, Any]:
             ],
         },
         "capability_registry": build_capability_registry(),
+        "productization_boundary": build_productization_boundary(),
         "aggregate_state": _load_aggregate_state(repo),
         "allowed_lanes": list(ALLOWED_LANES),
         "blocked_lanes": list(BLOCKED_LANES),
-        "next_gate": "P6-I003 commercial/manual approval boundary",
+        "next_gate": "P6-I005 Telegram bot profile/icon apply gates",
     }
 
 

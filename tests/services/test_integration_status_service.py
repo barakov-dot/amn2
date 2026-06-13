@@ -104,10 +104,42 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
             "license_boundary": "no upstream code copy",
         },
     ]
+    assert report["productization_boundary"]["commercial_access"]["status"] == (
+        "manual_approval_boundary_ready"
+    )
+    assert (
+        report["productization_boundary"]["commercial_access"][
+            "payment_processor_enabled"
+        ]
+        is False
+    )
+    assert (
+        report["productization_boundary"]["commercial_access"][
+            "automatic_entitlement_on_payment"
+        ]
+        is False
+    )
+    assert report["productization_boundary"]["bot_runtime_split"]["status"] == (
+        "separate_bot_boundary_ready"
+    )
+    assert (
+        report["productization_boundary"]["bot_runtime_split"]["support_bot"][
+            "requires_separate_token"
+        ]
+        is True
+    )
+    assert (
+        report["productization_boundary"]["bot_runtime_split"]["news_bot"][
+            "may_touch_user_devices"
+        ]
+        is False
+    )
     assert "new live peer apply/revoke without separate operator confirmation" in report["blocked_lanes"]
     assert "/api/clients write CRUD" in report["blocked_lanes"]
     assert "additional protocol managers without capability registry" in report["blocked_lanes"]
-    assert report["next_gate"] == "P6-I003 commercial/manual approval boundary"
+    assert "payment processor integration without named gate" in report["blocked_lanes"]
+    assert "support/news bot runtime without separate token gate" in report["blocked_lanes"]
+    assert report["next_gate"] == "P6-I005 Telegram bot profile/icon apply gates"
 
 
 def test_build_integration_status_contains_no_secret_or_command_markers(tmp_path: Path):

@@ -192,6 +192,68 @@
     </article>
   </section>
 
+  <section class="settings-grid" aria-label="Productization boundary">
+    <article class="panel">
+      <div class="panel-header">
+        <h2>Commercial boundary</h2>
+      </div>
+      <div class="table-wrap">
+        <table class="settings-table">
+          <tbody>
+            <tr>
+              <td>Status</td>
+              <td>{{ report.productization_boundary.commercial_access.status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>payment processor enabled</td>
+              <td>{{ report.productization_boundary.commercial_access.payment_processor_enabled }}</td>
+            </tr>
+            <tr>
+              <td>manual approval required</td>
+              <td>{{ report.productization_boundary.commercial_access.manual_approval_required }}</td>
+            </tr>
+            <tr>
+              <td>automatic entitlement on payment</td>
+              <td>{{ report.productization_boundary.commercial_access.automatic_entitlement_on_payment }}</td>
+            </tr>
+            <tr>
+              <td>config delivery on payment</td>
+              <td>{{ report.productization_boundary.commercial_access.config_delivery_on_payment }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="panel">
+      <div class="panel-header">
+        <h2>Bot runtime split</h2>
+      </div>
+      <div class="table-wrap">
+        <table class="settings-table">
+          <tbody>
+            <tr>
+              <td>Status</td>
+              <td>{{ report.productization_boundary.bot_runtime_split.status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>access bot</td>
+              <td>{{ report.productization_boundary.bot_runtime_split.access_bot.status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>support bot</td>
+              <td>{{ report.productization_boundary.bot_runtime_split.support_bot.status|replace("_", "-") }}</td>
+            </tr>
+            <tr>
+              <td>news bot</td>
+              <td>{{ report.productization_boundary.bot_runtime_split.news_bot.status|replace("_", "-") }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </article>
+  </section>
+
   <section class="panel panel-spaced">
     <div class="panel-header">
       <h2>Разрешенные read scopes</h2>
