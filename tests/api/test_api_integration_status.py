@@ -91,6 +91,18 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
     assert payload["capability_registry"]["server_capabilities"][0]["runtime"] == "docker"
     assert payload["capability_registry"]["future_protocols"][0]["protocol"] == "wireguard"
     assert payload["capability_registry"]["future_protocols"][1]["protocol"] == "xray"
+    assert payload["capability_registry"]["multi_instance_conflict_model"]["status"] == (
+        "local_conflict_model_ready"
+    )
+    assert (
+        payload["capability_registry"]["multi_instance_conflict_model"][
+            "live_multi_instance_apply_allowed"
+        ]
+        is False
+    )
+    assert "runtime_config_write" in payload["capability_registry"][
+        "multi_instance_conflict_model"
+    ]["blocked_outputs"]
     assert payload["productization_boundary"]["commercial_access"]["status"] == (
         "manual_approval_boundary_ready"
     )

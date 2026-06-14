@@ -104,6 +104,27 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
             "license_boundary": "no upstream code copy",
         },
     ]
+    conflict_model = report["capability_registry"]["multi_instance_conflict_model"]
+    assert conflict_model["status"] == "local_conflict_model_ready"
+    assert conflict_model["gate"] == "local-only/docs/tests"
+    assert conflict_model["live_multi_instance_apply_allowed"] is False
+    assert conflict_model["write_api_required_before_apply"] == "P6-C003"
+    assert conflict_model["config_delivery_required_before_user_output"] == "P6-C002"
+    assert conflict_model["required_checks"] == [
+        "unique_runtime_instance_id",
+        "unique_listen_port_per_instance",
+        "non_overlapping_vpn_cidr",
+        "unique_interface_name",
+        "endpoint_pair_review",
+        "dns_ipv6_policy_review",
+    ]
+    assert conflict_model["safe_outputs"] == [
+        "conflict_report",
+        "operator_notes",
+        "blocked_gate_summary",
+    ]
+    assert "runtime_config_write" in conflict_model["blocked_outputs"]
+    assert "firewall_change" in conflict_model["blocked_outputs"]
     assert report["productization_boundary"]["commercial_access"]["status"] == (
         "manual_approval_boundary_ready"
     )
@@ -278,6 +299,25 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
     assert report["next_gate"] == (
         "Phase 6 default local-only queue empty; named gate required for live/public/destructive work"
     )
+
+
+def test_capability_registry_multi_instance_conflict_model_is_secret_free(tmp_path: Path):
+    db_path = tmp_path / "amneziya.sqlite3"
+    conn = connect(db_path)
+    try:
+        initialize_schema(conn)
+        repo = Repository(conn)
+
+        model_text = repr(
+            build_integration_status(repo)["capability_registry"][
+                "multi_instance_conflict_model"
+            ]
+        )
+    finally:
+        conn.close()
+
+    for marker in FORBIDDEN_MARKERS + ["10.8.", "endpoint_host", "PrivateKey"]:
+        assert marker not in model_text
 
 
 def test_build_integration_status_contains_no_secret_or_command_markers(tmp_path: Path):

@@ -222,6 +222,33 @@ def build_capability_registry() -> dict[str, Any]:
                 "license_boundary": "no upstream code copy",
             },
         ],
+        "multi_instance_conflict_model": {
+            "status": "local_conflict_model_ready",
+            "gate": "local-only/docs/tests",
+            "live_multi_instance_apply_allowed": False,
+            "write_api_required_before_apply": "P6-C003",
+            "config_delivery_required_before_user_output": "P6-C002",
+            "required_checks": [
+                "unique_runtime_instance_id",
+                "unique_listen_port_per_instance",
+                "non_overlapping_vpn_cidr",
+                "unique_interface_name",
+                "endpoint_pair_review",
+                "dns_ipv6_policy_review",
+            ],
+            "safe_outputs": [
+                "conflict_report",
+                "operator_notes",
+                "blocked_gate_summary",
+            ],
+            "blocked_outputs": [
+                "runtime_config_write",
+                "firewall_change",
+                "peer_migration",
+                "config_delivery",
+                "service_restart",
+            ],
+        },
     }
 
 
