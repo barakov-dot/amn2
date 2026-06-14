@@ -58,6 +58,61 @@ def build_public_docs_api_taxonomy_boundary() -> dict[str, Any]:
     }
 
 
+def build_public_config_gate_checklist() -> dict[str, Any]:
+    return {
+        "status": "public_config_gate_checklist_ready",
+        "mode": "docs_only_checklist",
+        "public_exposure_enabled": False,
+        "config_delivery_enabled": False,
+        "requires_public_gate": "P6-C001 Public exposure gate",
+        "requires_config_gate": "P6-C002 Config delivery gate",
+        "safe_default_work": [
+            "checklist drafting",
+            "threat model review",
+            "client compatibility notes",
+            "operator decision evidence",
+        ],
+        "public_exposure_preconditions": [
+            "operator opens P6-C001 by name",
+            "domain and listener plan reviewed",
+            "TLS and firewall plan reviewed",
+            "auth/session/rate-limit plan reviewed",
+            "rollback and incident plan recorded",
+            "external probe scope approved",
+        ],
+        "config_delivery_preconditions": [
+            "operator opens P6-C002 by name",
+            "token hash-at-rest model reviewed",
+            "raw token return-once policy reviewed",
+            "TTL and one-time-use policy reviewed",
+            "audit redaction reviewed",
+            "client import matrix reviewed",
+        ],
+        "blocked_without_gate": [
+            "public listener exposure",
+            "public OpenAPI publication",
+            "short config-link issue",
+            "public config-link redeem",
+            "QR code output",
+            "vpn_import_link output",
+            "client .conf output",
+            "Telegram live config send",
+            "Local Agent config mutation",
+        ],
+        "safe_evidence_fields": [
+            "gate_id",
+            "decision",
+            "operator",
+            "timestamp",
+            "approved_scope",
+            "stop_conditions",
+        ],
+        "docs": {
+            "checklist_doc": "docs/PUBLIC_CONFIG_GATE_CHECKLIST.ru.md",
+        },
+    }
+
+
 def build_destructive_cleanup_gate_checklist() -> dict[str, Any]:
     return {
         "status": "destructive_cleanup_checklist_ready",
