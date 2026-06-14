@@ -206,10 +206,32 @@ def test_manifest_includes_current_head_package_preflight_plan_without_live_appl
         "markdown_hygiene",
         "commit_binding",
         "named_live_gate_checklist",
+        "asset_path_preflight",
     ]
     assert package_preflight["requires_named_gate_for_live_apply"] == (
         "current-head live apply/smoke gate for ff77d4c"
     )
+
+
+def test_current_head_package_preflight_includes_asset_path_checks():
+    manifest = build_fresh_install_manifest()
+    package_preflight = manifest["current_head_package_preflight"]
+
+    assert package_preflight["asset_path_preflight"]["status"] == (
+        "asset_path_preflight_ready"
+    )
+    assert package_preflight["asset_path_preflight"]["gate"] == (
+        "package/preflight only"
+    )
+    assert package_preflight["asset_path_preflight"]["live_apply_allowed"] is False
+    assert package_preflight["asset_path_preflight"]["required_checks"] == [
+        "operator_kit_required_files_exist",
+        "operator_runbook_paths_resolve",
+        "package_manifest_paths_match_archive",
+        "source_zip_paths_match_manifest",
+        "no_secret_material_in_asset_manifest",
+    ]
+    assert "asset_path_preflight" in package_preflight["required_checks"]
 
 
 def test_fresh_install_plan_renders_readiness_phases_without_live_commands():
@@ -226,6 +248,8 @@ def test_fresh_install_plan_renders_readiness_phases_without_live_commands():
     assert phases["current-head-package-preflight"]["target_head"] == "ff77d4c"
     assert phases["current-head-package-preflight"]["live_apply_allowed"] is False
     assert phases["current-head-package-preflight"]["live_smoke_allowed"] is False
+    assert phases["package-asset-path-preflight"]["status"] == "local_plan_only"
+    assert phases["package-asset-path-preflight"]["live_apply_allowed"] is False
 
     plan_text = json.dumps(plan, ensure_ascii=False)
     for marker in ("ssh ", "systemctl restart", "docker restart", "VPS_APPLY_ENABLED=true"):

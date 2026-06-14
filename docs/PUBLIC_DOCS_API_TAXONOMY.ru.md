@@ -67,3 +67,23 @@ firewall, auth/session/rate-limit, rollback and incident plan review.
 
 This slice only names categories and safe fields. It does not publish OpenAPI,
 public docs, public API, public web/admin, config delivery or write routes.
+
+## P6-N005 Route Order Drift Guard
+
+Status: `route_order_guard_ready`.
+
+Gate: `local-only/docs/tests`.
+
+The taxonomy can be used for deterministic route grouping/order checks if AMN2
+later generates operator or public API documentation. The order source is the
+surface-policy registration order.
+
+Required checks:
+
+- route groups match taxonomy;
+- route order is deterministic;
+- blocked routes stay out of public docs;
+- publication flags remain false.
+
+This guard does not publish OpenAPI, expose public API routes, enable public
+docs or open config delivery. Public publication still requires `P6-C001`.

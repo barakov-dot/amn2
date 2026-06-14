@@ -36,7 +36,8 @@ Wizard output versioned:
 - answer schema: `fresh-install-answers.v1`;
 - readiness schema: `fresh-install-readiness.v1`;
 - evidence schema: `fresh-install-evidence.v1`;
-- current-head package preflight schema: `fresh-install-package-preflight.v1`.
+- current-head package preflight schema: `fresh-install-package-preflight.v1`;
+- package asset path preflight: `package/preflight only`, без live apply.
 
 `build_fresh_install_manifest()` возвращает machine-readable manifest с
 описанием questions, defaults, allowed values и gated fields. Manifest также
@@ -118,6 +119,9 @@ secret values. Подробный протокол: `docs/AMN2_SECRET_HANDOFF_PR
 - `package-hygiene-checklist` - обязательные проверки перед будущим package gate;
 - `current-head-package-preflight` - local-only package preflight planning для
   текущего head;
+- `package-asset-path-preflight` - local-only проверка referenced operator-kit
+  assets, runbook paths, archive manifests and source zip paths before any
+  future package apply;
 - `smoke-evidence-template` - шаблон будущего smoke evidence без секретов;
 - `existing-server-reconciliation-input` - report-only input для existing server;
 - `installer-docs-index` - индекс операторских документов;
@@ -188,11 +192,17 @@ Required checks before any future package/live gate:
 - shell LF/no-BOM plan;
 - markdown hygiene;
 - commit binding;
-- named live gate checklist.
+- named live gate checklist;
+- asset path preflight.
 
 Live apply/smoke для `ff77d4c` требует отдельной named gate phrase. Этот
 preflight planning сам не строит пакет, не загружает пакет на VPS, не
 перезапускает сервисы и не меняет already-smoked package evidence для `c46f664`.
+
+Asset path preflight checks that required operator-kit files exist, generated
+runbook paths resolve, package manifest paths match the archive, source zip
+paths match the manifest and no secret material appears in the asset manifest.
+It is `package/preflight only`; it does not build, upload or apply a package.
 
 ## Installer Evidence
 

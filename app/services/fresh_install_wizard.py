@@ -241,6 +241,15 @@ _CURRENT_HEAD_PACKAGE_PREFLIGHT_REQUIRED_CHECKS = [
     "markdown_hygiene",
     "commit_binding",
     "named_live_gate_checklist",
+    "asset_path_preflight",
+]
+
+_ASSET_PATH_PREFLIGHT_REQUIRED_CHECKS = [
+    "operator_kit_required_files_exist",
+    "operator_runbook_paths_resolve",
+    "package_manifest_paths_match_archive",
+    "source_zip_paths_match_manifest",
+    "no_secret_material_in_asset_manifest",
 ]
 
 _SMOKE_EVIDENCE_REQUIRED_SECTIONS = [
@@ -448,6 +457,13 @@ def _build_rendered_plan(
                 "required_checks": list(_CURRENT_HEAD_PACKAGE_PREFLIGHT_REQUIRED_CHECKS),
             },
             {
+                "id": "package-asset-path-preflight",
+                "status": "local_plan_only",
+                "gate": "package/preflight only",
+                "live_apply_allowed": False,
+                "required_checks": list(_ASSET_PATH_PREFLIGHT_REQUIRED_CHECKS),
+            },
+            {
                 "id": "smoke-evidence-template",
                 "status": "local_template_only",
                 "secret_payload_allowed": False,
@@ -528,9 +544,19 @@ def _build_current_head_package_preflight() -> dict[str, Any]:
         "live_smoke_allowed_by_default": False,
         "do_not_rewrite_vps_smoked_evidence": True,
         "required_checks": list(_CURRENT_HEAD_PACKAGE_PREFLIGHT_REQUIRED_CHECKS),
+        "asset_path_preflight": _build_asset_path_preflight(),
         "requires_named_gate_for_live_apply": (
             f"current-head live apply/smoke gate for {CURRENT_PACKAGE_PREFLIGHT_HEAD}"
         ),
+    }
+
+
+def _build_asset_path_preflight() -> dict[str, Any]:
+    return {
+        "status": "asset_path_preflight_ready",
+        "gate": "package/preflight only",
+        "live_apply_allowed": False,
+        "required_checks": list(_ASSET_PATH_PREFLIGHT_REQUIRED_CHECKS),
     }
 
 

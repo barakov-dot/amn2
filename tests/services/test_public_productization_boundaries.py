@@ -31,6 +31,23 @@ def test_public_docs_api_taxonomy_is_ready_without_publication_or_public_api():
         assert marker not in text
 
 
+def test_public_docs_api_taxonomy_includes_route_order_drift_guard():
+    boundary = build_public_docs_api_taxonomy_boundary()
+
+    guard = boundary["route_order_drift_guard"]
+
+    assert guard["status"] == "route_order_guard_ready"
+    assert guard["gate"] == "local-only/docs/tests"
+    assert guard["public_openapi_publication_allowed"] is False
+    assert guard["deterministic_order_source"] == "surface_policy_registration_order"
+    assert guard["required_checks"] == [
+        "route_groups_match_taxonomy",
+        "route_order_is_deterministic",
+        "blocked_routes_stay_out_of_public_docs",
+        "publication_flags_remain_false",
+    ]
+
+
 def test_destructive_cleanup_gate_checklist_is_checklist_only():
     checklist = build_destructive_cleanup_gate_checklist()
 

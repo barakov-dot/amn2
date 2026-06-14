@@ -55,6 +55,18 @@ def build_public_docs_api_taxonomy_boundary() -> dict[str, Any]:
         "docs": {
             "taxonomy_doc": "docs/PUBLIC_DOCS_API_TAXONOMY.ru.md",
         },
+        "route_order_drift_guard": {
+            "status": "route_order_guard_ready",
+            "gate": "local-only/docs/tests",
+            "public_openapi_publication_allowed": False,
+            "deterministic_order_source": "surface_policy_registration_order",
+            "required_checks": [
+                "route_groups_match_taxonomy",
+                "route_order_is_deterministic",
+                "blocked_routes_stay_out_of_public_docs",
+                "publication_flags_remain_false",
+            ],
+        },
     }
 
 
