@@ -9,8 +9,11 @@ ANSWER_SCHEMA_VERSION = "fresh-install-answers.v1"
 PLAN_SCHEMA_VERSION = "fresh-install-plan.v1"
 READINESS_SCHEMA_VERSION = "fresh-install-readiness.v1"
 EVIDENCE_SCHEMA_VERSION = "fresh-install-evidence.v1"
+PACKAGE_PREFLIGHT_SCHEMA_VERSION = "fresh-install-package-preflight.v1"
 SECRET_HANDOFF_POLICY_DOC = "docs/AMN2_SECRET_HANDOFF_PROTOCOL.ru.md"
 FRESH_INSTALLER_OPERATOR_INDEX_DOC = "docs/FRESH_INSTALLER_OPERATOR_INDEX.ru.md"
+CURRENT_PACKAGE_PREFLIGHT_HEAD = "ff77d4c"
+LATEST_VPS_SMOKED_PACKAGE_HEAD = "c46f664"
 
 DEFAULT_FRESH_INSTALL_ANSWERS: dict[str, str] = {
     "project_name": "AMN2",
@@ -28,70 +31,70 @@ DEFAULT_FRESH_INSTALL_ANSWERS: dict[str, str] = {
 _QUESTION_FIELDS: tuple[dict[str, Any], ...] = (
     {
         "key": "project_name",
-        "prompt": "Project name",
+        "prompt": "Название проекта",
         "required": True,
         "allowed_values": None,
         "gate": None,
     },
     {
         "key": "server_name",
-        "prompt": "Server name",
+        "prompt": "Имя сервера",
         "required": True,
         "allowed_values": None,
         "gate": None,
     },
     {
         "key": "runtime",
-        "prompt": "Runtime: docker or host_systemd",
+        "prompt": "Режим запуска: docker или host_systemd",
         "required": True,
         "allowed_values": ["docker", "host_systemd"],
         "gate": None,
     },
     {
         "key": "vpn_protocol",
-        "prompt": "VPN protocol",
+        "prompt": "VPN-протокол",
         "required": True,
         "allowed_values": ["amneziawg", "wireguard", "xray"],
         "gate": None,
     },
     {
         "key": "public_exposure",
-        "prompt": "Open public exposure now? yes/no",
+        "prompt": "Открывать публичный доступ сейчас? yes/no",
         "required": True,
         "allowed_values": ["no", "yes"],
         "gate": "P6-C001",
     },
     {
         "key": "config_delivery",
-        "prompt": "Enable real config delivery now? yes/no",
+        "prompt": "Включать реальную выдачу конфигов сейчас? yes/no",
         "required": True,
         "allowed_values": ["no", "yes"],
         "gate": "P6-C002",
     },
     {
         "key": "write_api",
-        "prompt": "Enable production write API now? yes/no",
+        "prompt": "Включать production write API сейчас? yes/no",
         "required": True,
         "allowed_values": ["no", "yes"],
         "gate": "P6-C003",
     },
     {
         "key": "destructive_cleanup",
-        "prompt": "Run destructive cleanup/reinstall now? yes/no",
+        "prompt": "Запускать destructive cleanup/reinstall сейчас? yes/no",
         "required": True,
         "allowed_values": ["no", "yes"],
         "gate": "P6-C007",
     },
     {
         "key": "telegram_bot",
-        "prompt": "Telegram bot credential mode",
+        "prompt": "Режим Telegram bot credential",
         "required": True,
         "allowed_values": ["not_configured", "operator_local"],
         "gate": None,
     },
     {
         "key": "secret_handoff",
-        "prompt": "Secret handoff mode",
+        "prompt": "Режим передачи секретов",
         "required": True,
         "allowed_values": ["not_configured", "operator_local"],
         "gate": None,
@@ -228,6 +231,18 @@ _PACKAGE_HYGIENE_REQUIRED_CHECKS = [
     "commit_binding",
 ]
 
+_CURRENT_HEAD_PACKAGE_PREFLIGHT_REQUIRED_CHECKS = [
+    "toolchain_check",
+    "full_pytest",
+    "git_diff_check",
+    "source_zip_checksum_plan",
+    "forbidden_source_entries_plan",
+    "shell_lf_no_bom_plan",
+    "markdown_hygiene",
+    "commit_binding",
+    "named_live_gate_checklist",
+]
+
 _SMOKE_EVIDENCE_REQUIRED_SECTIONS = [
     "selected_commit",
     "loopback_http_codes",
@@ -264,6 +279,7 @@ def build_fresh_install_manifest() -> dict[str, Any]:
             DEFAULT_FRESH_INSTALL_ANSWERS
         ),
         "installer_evidence": _build_installer_evidence(),
+        "current_head_package_preflight": _build_current_head_package_preflight(),
         "secret_handoff_policy": {
             "policy_doc": SECRET_HANDOFF_POLICY_DOC,
             "mode": DEFAULT_FRESH_INSTALL_ANSWERS["secret_handoff"],
@@ -318,6 +334,7 @@ def build_fresh_install_plan(answers: dict[str, str]) -> dict[str, Any]:
         },
         "installer_readiness": _build_installer_readiness(normalized),
         "installer_evidence": _build_installer_evidence(),
+        "current_head_package_preflight": _build_current_head_package_preflight(),
         "rendered_plan": _build_rendered_plan(normalized, required_gates, stop_lines),
         "stop_lines": stop_lines,
         "local_dry_run_steps": list(_LOCAL_DRY_RUN_STEPS),
@@ -421,6 +438,16 @@ def _build_rendered_plan(
                 "do_not_rewrite_vps_smoked_evidence": True,
             },
             {
+                "id": "current-head-package-preflight",
+                "status": "local_plan_only",
+                "target_head": CURRENT_PACKAGE_PREFLIGHT_HEAD,
+                "latest_vps_smoked_head": LATEST_VPS_SMOKED_PACKAGE_HEAD,
+                "package_build_allowed": False,
+                "live_apply_allowed": False,
+                "live_smoke_allowed": False,
+                "required_checks": list(_CURRENT_HEAD_PACKAGE_PREFLIGHT_REQUIRED_CHECKS),
+            },
+            {
                 "id": "smoke-evidence-template",
                 "status": "local_template_only",
                 "secret_payload_allowed": False,
@@ -487,6 +514,23 @@ def _build_installer_evidence() -> dict[str, Any]:
             "path": FRESH_INSTALLER_OPERATOR_INDEX_DOC,
             "status": "local_docs_only",
         },
+    }
+
+
+def _build_current_head_package_preflight() -> dict[str, Any]:
+    return {
+        "schema_version": PACKAGE_PREFLIGHT_SCHEMA_VERSION,
+        "mode": "local_plan_only",
+        "target_head": CURRENT_PACKAGE_PREFLIGHT_HEAD,
+        "latest_vps_smoked_head": LATEST_VPS_SMOKED_PACKAGE_HEAD,
+        "package_build_allowed_by_default": False,
+        "live_apply_allowed_by_default": False,
+        "live_smoke_allowed_by_default": False,
+        "do_not_rewrite_vps_smoked_evidence": True,
+        "required_checks": list(_CURRENT_HEAD_PACKAGE_PREFLIGHT_REQUIRED_CHECKS),
+        "requires_named_gate_for_live_apply": (
+            f"current-head live apply/smoke gate for {CURRENT_PACKAGE_PREFLIGHT_HEAD}"
+        ),
     }
 
 

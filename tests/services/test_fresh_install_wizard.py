@@ -106,12 +106,26 @@ def test_build_fresh_install_manifest_describes_questions_without_secrets():
     assert manifest["question_schema"]["answer_schema_version"] == "fresh-install-answers.v1"
     assert manifest["question_schema"]["fields"][0] == {
         "key": "project_name",
-        "prompt": "Project name",
+        "prompt": "Название проекта",
         "default": "AMN2",
         "required": True,
         "allowed_values": None,
         "gate": None,
     }
+    prompts = [field["prompt"] for field in manifest["question_schema"]["fields"]]
+    assert prompts == [
+        "Название проекта",
+        "Имя сервера",
+        "Режим запуска: docker или host_systemd",
+        "VPN-протокол",
+        "Открывать публичный доступ сейчас? yes/no",
+        "Включать реальную выдачу конфигов сейчас? yes/no",
+        "Включать production write API сейчас? yes/no",
+        "Запускать destructive cleanup/reinstall сейчас? yes/no",
+        "Режим Telegram bot credential",
+        "Режим передачи секретов",
+    ]
+    assert any("Название" in prompt for prompt in prompts)
     assert manifest["secret_handoff_policy"]["policy_doc"] == (
         "docs/AMN2_SECRET_HANDOFF_PROTOCOL.ru.md"
     )
@@ -170,6 +184,34 @@ def test_build_fresh_install_manifest_includes_read_only_preflight_runtime_and_p
     ]
 
 
+def test_manifest_includes_current_head_package_preflight_plan_without_live_apply():
+    manifest = build_fresh_install_manifest()
+    package_preflight = manifest["current_head_package_preflight"]
+
+    assert package_preflight["schema_version"] == "fresh-install-package-preflight.v1"
+    assert package_preflight["mode"] == "local_plan_only"
+    assert package_preflight["target_head"] == "ff77d4c"
+    assert package_preflight["latest_vps_smoked_head"] == "c46f664"
+    assert package_preflight["package_build_allowed_by_default"] is False
+    assert package_preflight["live_apply_allowed_by_default"] is False
+    assert package_preflight["live_smoke_allowed_by_default"] is False
+    assert package_preflight["do_not_rewrite_vps_smoked_evidence"] is True
+    assert package_preflight["required_checks"] == [
+        "toolchain_check",
+        "full_pytest",
+        "git_diff_check",
+        "source_zip_checksum_plan",
+        "forbidden_source_entries_plan",
+        "shell_lf_no_bom_plan",
+        "markdown_hygiene",
+        "commit_binding",
+        "named_live_gate_checklist",
+    ]
+    assert package_preflight["requires_named_gate_for_live_apply"] == (
+        "current-head live apply/smoke gate for ff77d4c"
+    )
+
+
 def test_fresh_install_plan_renders_readiness_phases_without_live_commands():
     plan = build_fresh_install_plan(DEFAULT_FRESH_INSTALL_ANSWERS)
 
@@ -180,6 +222,10 @@ def test_fresh_install_plan_renders_readiness_phases_without_live_commands():
     assert phases["runtime-mode-decision"]["service_restart_allowed"] is False
     assert phases["package-hygiene-checklist"]["package_rebuild_allowed"] is False
     assert "markdown_hygiene" in phases["package-hygiene-checklist"]["required_checks"]
+    assert phases["current-head-package-preflight"]["status"] == "local_plan_only"
+    assert phases["current-head-package-preflight"]["target_head"] == "ff77d4c"
+    assert phases["current-head-package-preflight"]["live_apply_allowed"] is False
+    assert phases["current-head-package-preflight"]["live_smoke_allowed"] is False
 
     plan_text = json.dumps(plan, ensure_ascii=False)
     for marker in ("ssh ", "systemctl restart", "docker restart", "VPS_APPLY_ENABLED=true"):

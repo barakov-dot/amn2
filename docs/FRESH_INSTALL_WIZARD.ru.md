@@ -34,7 +34,9 @@ Wizard output versioned:
 - plan schema: `fresh-install-plan.v1`;
 - question schema: `fresh-install-questions.v1`;
 - answer schema: `fresh-install-answers.v1`;
-- readiness schema: `fresh-install-readiness.v1`.
+- readiness schema: `fresh-install-readiness.v1`;
+- evidence schema: `fresh-install-evidence.v1`;
+- current-head package preflight schema: `fresh-install-package-preflight.v1`.
 
 `build_fresh_install_manifest()` возвращает machine-readable manifest с
 описанием questions, defaults, allowed values и gated fields. Manifest также
@@ -46,18 +48,19 @@ preflight/runtime/package hygiene. Она не запускает диагнос
 
 ## Вопросы
 
-Wizard собирает только безопасные operational choices:
+Wizard собирает только безопасные operational choices. Prompt copy теперь
+Russian-first, но стабильные technical IDs остаются прежними:
 
-- project name;
-- server name;
-- runtime: `docker` or `host_systemd`;
-- VPN protocol: `amneziawg`, `wireguard` or `xray`;
-- whether public exposure is wanted;
-- whether real config delivery is wanted;
-- whether production write API is wanted;
-- whether destructive cleanup/reinstall is wanted;
-- Telegram bot credential mode;
-- secret handoff mode.
+- `project_name` - название проекта;
+- `server_name` - имя сервера;
+- `runtime` - режим запуска: `docker` or `host_systemd`;
+- `vpn_protocol` - VPN-протокол: `amneziawg`, `wireguard` or `xray`;
+- `public_exposure` - открывать публичный доступ сейчас;
+- `config_delivery` - включать реальную выдачу конфигов сейчас;
+- `write_api` - включать production write API сейчас;
+- `destructive_cleanup` - запускать destructive cleanup/reinstall сейчас;
+- `telegram_bot` - режим Telegram bot credential;
+- `secret_handoff` - режим передачи секретов.
 
 Значения по умолчанию безопасные:
 
@@ -113,6 +116,8 @@ secret values. Подробный протокол: `docs/AMN2_SECRET_HANDOFF_PR
 - `target-preflight-matrix` - список read-only target checks без выполнения;
 - `runtime-mode-decision` - выбранный runtime mode без restart;
 - `package-hygiene-checklist` - обязательные проверки перед будущим package gate;
+- `current-head-package-preflight` - local-only package preflight planning для
+  текущего head;
 - `smoke-evidence-template` - шаблон будущего smoke evidence без секретов;
 - `existing-server-reconciliation-input` - report-only input для existing server;
 - `installer-docs-index` - индекс операторских документов;
@@ -159,6 +164,35 @@ Service restart/deploy по умолчанию запрещен.
 
 Уже VPS-smoked evidence packages нельзя перепаковывать или переписывать этим
 slice. Новый package build/apply остается отдельным named gate.
+
+## Current-Head Package Preflight
+
+`current_head_package_preflight` фиксирует только local-only planning для
+текущего AMN2 head:
+
+```text
+target_head=ff77d4c
+latest_vps_smoked_head=c46f664
+package_build_allowed_by_default=false
+live_apply_allowed_by_default=false
+live_smoke_allowed_by_default=false
+```
+
+Required checks before any future package/live gate:
+
+- toolchain check;
+- full pytest;
+- git diff check;
+- source zip checksum plan;
+- forbidden source entries plan;
+- shell LF/no-BOM plan;
+- markdown hygiene;
+- commit binding;
+- named live gate checklist.
+
+Live apply/smoke для `ff77d4c` требует отдельной named gate phrase. Этот
+preflight planning сам не строит пакет, не загружает пакет на VPS, не
+перезапускает сервисы и не меняет already-smoked package evidence для `c46f664`.
 
 ## Installer Evidence
 
@@ -211,7 +245,7 @@ cleanup gate and do not turn on live deployment.
 After `P6-I007`, the safe default next planning item is:
 
 ```text
-FI-N001 + FI-N002 + FI-S001 docs/test evidence readiness
+FI-X001 + current-head package preflight planning for ff77d4c
 ```
 
 Destructive cleanup/reinstall remains `P6-C007` and requires a separate named

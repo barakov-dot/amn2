@@ -31,8 +31,10 @@ cleanup or Telegram identity mutation.
 4. Review runtime mode decision without service restart.
 5. Review package hygiene checklist without rebuilding an already-smoked
    package.
-6. Prepare smoke evidence template without secret-bearing payloads.
-7. Prepare existing-server reconciliation input as report-only data.
+6. Review current-head package preflight for `ff77d4c` without building,
+   applying or smoking a package.
+7. Prepare smoke evidence template without secret-bearing payloads.
+8. Prepare existing-server reconciliation input as report-only data.
 
 ## Hard Stops
 
@@ -40,6 +42,7 @@ Stop and require a separate named gate before:
 
 - SSH or live VPS diagnostics;
 - package upload/apply/rebuild on VPS;
+- current-head live apply/smoke without a named gate;
 - service restart/deploy;
 - public listener, domain, HTTPS or reverse proxy changes;
 - config delivery, QR, import links or client config payloads;
