@@ -191,7 +191,11 @@ Scoped API tokens для будущих external integrations.
 - `rotated_from_token_id` - ссылка на предыдущий token id при rotation;
 - `created_at`.
 
-В первом slice разрешены только read-only scopes `server:read` и `metrics:read`. `config:read`, write scopes и destructive scopes остаются future gates.
+В первом slice разрешены read-only scopes `server:read` и `metrics:read`.
+Phase 7 `P7-C005` добавляет gated scope `install:write` только для
+audit-only install mutation request contour. `config:read`, `server:write`,
+`clients:write`, Local Agent write, backup/restore и destructive scopes остаются
+future gates.
 
 ## Настройки режимов
 

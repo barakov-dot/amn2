@@ -293,6 +293,84 @@ def test_api_local_agent_runtime_summary_is_controller_safe(tmp_path: Path):
     }
 
 
+def test_install_mutation_request_requires_install_write_scope_and_never_applies_when_disabled(
+    tmp_path: Path,
+):
+    settings, repo = _seed_api_data(tmp_path, vps_apply_enabled=False)
+    _store_token(repo, raw_token="server-token", scopes=["server:read"])
+    _store_token(
+        repo,
+        raw_token="install-token",
+        scopes=["install:write"],
+        token_id="api_install_write",
+    )
+    client = TestClient(create_api_app(settings))
+
+    denied = client.post(
+        "/api/install/mutation-requests",
+        json={"requested_action": "clean_install_prepare", "target": "local"},
+        headers={"Authorization": "Bearer server-token"},
+    )
+    allowed = client.post(
+        "/api/install/mutation-requests",
+        json={
+            "requested_action": "clean_install_prepare",
+            "target": "local",
+            "operator_note": "must-not-appear-in-audit",
+        },
+        headers={"Authorization": "Bearer install-token"},
+    )
+
+    assert denied.status_code == 403
+    assert allowed.status_code == 202
+    payload = allowed.json()
+    assert payload == {
+        "install_mutation_request": {
+            "status": "recorded_blocked_by_vps_apply_disabled",
+            "request_recorded": True,
+            "requested_action": "clean_install_prepare",
+            "target": "local",
+            "execution": {
+                "vps_apply_enabled": False,
+                "executor_invoked": False,
+                "package_apply_performed": False,
+                "service_restart_performed": False,
+                "public_exposure_performed": False,
+                "config_delivery_performed": False,
+                "telegram_action_performed": False,
+            },
+            "safe_evidence": True,
+        }
+    }
+    assert _forbidden_markers_absent(payload)
+
+    row = repo._conn.execute(
+        "SELECT action, metadata_json FROM admin_actions ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row is not None
+    assert row["action"] == "api_write"
+    metadata = json.loads(row["metadata_json"])
+    assert metadata == {
+        "aggregate_only": False,
+        "method": "POST",
+        "owner_label": "ops",
+        "path": "/api/install/mutation-requests",
+        "requested_action": "clean_install_prepare",
+        "scope": "install:write",
+        "status": "recorded_blocked_by_vps_apply_disabled",
+        "target": "local",
+        "token_id": "api_install_write",
+        "token_name": "API token",
+        "vps_apply_enabled": False,
+    }
+    serialized = row["metadata_json"]
+    assert "install-token" not in serialized
+    assert "server-token" not in serialized
+    assert "Authorization" not in serialized
+    assert "token_hash" not in serialized
+    assert "must-not-appear-in-audit" not in serialized
+
+
 def _seed_api_data(tmp_path: Path, **settings_overrides: object) -> tuple[Settings, Repository]:
     db_path = tmp_path / "api.sqlite3"
     settings_values = {

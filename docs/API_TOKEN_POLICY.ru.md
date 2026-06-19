@@ -2,7 +2,10 @@
 
 Дата: 2026-06-01.
 
-Этот документ фиксирует scoped API token contract и первый подключенный read-only route shell. Slice добавляет только aggregate `/api/*` endpoints, не меняет web/bot/agent runtime behavior и не трогает live VPS.
+Этот документ фиксирует scoped API token contract, read-only route shell и
+первый `P7-C005` scoped write contour. Write contour пишет только safe audit
+metadata, не выполняет installer/apply, не меняет web/bot/agent runtime
+behavior и не открывает public API.
 
 ## First-slice contract
 
@@ -11,10 +14,14 @@
 - `server:read`;
 - `metrics:read`.
 
+Дополнительный Phase 7 gated scope:
+
+- `install:write` - только для `P7-C005` install mutation request contour.
+
 Запрещено в первом slice:
 
 - `config:read` - это future `secret-read` surface для `.conf`, QR и `vpn://`;
-- любые `*:write`;
+- любые `*:write`, кроме gated `install:write`;
 - destructive/remote-exec scopes;
 - shared broad API key без scopes;
 - хранение raw token в базе, audit metadata или logs.
@@ -65,7 +72,7 @@ Safe lifecycle metadata не содержит raw token, Authorization header, t
 
 Production policy manifest фиксирует:
 
-- allowed scopes: `server:read`, `metrics:read`;
+- allowed scopes: `server:read`, `metrics:read`, `install:write`;
 - blocked production scopes: `config:read`, `server:write`, `clients:write`, `local-agent:write`, `backup:read`, `backup:restore`;
 - raw token display: one-time;
 - stored secret material: только `sha256` digest;
@@ -99,8 +106,29 @@ python -m app.cli api smoke-cycle --db data/amneziya.sqlite3 --base-url http://1
 
 Этот shell не выполняет remote operations: нет peer apply/revoke/sync, backup/import/reboot, Docker restart, SSH command execution или выдачи secret-bearing config artifacts.
 
+## P7-C005 scoped write contour
+
+Phase 7 добавляет один scoped write route:
+
+- `POST /api/install/mutation-requests` - требует `install:write`.
+
+Этот route:
+
+- принимает только `requested_action=clean_install_prepare` и `target=local`;
+- пишет `api_write` audit event с safe metadata;
+- не возвращает и не хранит raw bearer token, Authorization header, token hash,
+  `.env`, `servers.yml`, `.conf`, QR, `vpn://`, private key или PSK;
+- не пишет runtime config;
+- не запускает installer, package apply, service restart, public exposure,
+  config delivery, Local Agent mutation или Telegram action;
+- при `VPS_APPLY_ENABLED=false` возвращает
+  `recorded_blocked_by_vps_apply_disabled`.
+
 ## VPS Gate
 
-VPS gate не нужен для этого route shell: нет live write flow, нет peer apply/revoke/config/sync/runtime changes и нет secret-bearing config reads.
+VPS gate не нужен для read-only route shell: нет live write flow, нет peer apply/revoke/config/sync/runtime changes и нет secret-bearing config reads.
+
+`P7-C005` gate нужен для `POST /api/install/mutation-requests`, потому что это
+первый write API contour, даже если он только пишет safe audit metadata.
 
 VPS gate понадобится только когда API начнет вызывать real remote operations или читать/выдавать live secret-bearing config artifacts.

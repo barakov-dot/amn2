@@ -57,11 +57,30 @@ def test_create_api_token_stores_hash_and_returns_raw_token_only_in_issue():
 
 
 def test_create_api_token_rejects_secret_read_or_write_scopes():
+    class CaptureStore:
+        def __init__(self) -> None:
+            self.stored: dict[str, object] = {}
+
+        def create_api_token(self, **kwargs):
+            self.stored.update(kwargs)
+
     class TokenStore:
         def create_api_token(self, **kwargs):  # pragma: no cover - must not be called
             raise AssertionError("token should not be stored")
 
     assert API_TOKEN_FIRST_SLICE_SCOPES == frozenset({"server:read", "metrics:read"})
+    capture_store = CaptureStore()
+    issue = create_api_token(
+        capture_store,
+        token_id="api-token-install-write",
+        raw_token="raw-install-token",
+        name="Install write contour",
+        owner_label="ops",
+        scopes={"install:write"},
+        expires_at=None,
+    )
+    assert issue.safe_metadata()["scopes"] == ["install:write"]
+    assert capture_store.stored["scopes"] == ["install:write"]
     with pytest.raises(ValueError, match="unsupported API token scopes"):
         create_api_token(
             TokenStore(),
@@ -89,7 +108,7 @@ def test_api_token_production_policy_is_secret_free_and_blocks_future_surfaces()
     metadata = policy.safe_metadata()
 
     assert metadata == {
-        "allowed_scopes": ["metrics:read", "server:read"],
+        "allowed_scopes": ["install:write", "metrics:read", "server:read"],
         "blocked_scopes": [
             "backup:read",
             "backup:restore",

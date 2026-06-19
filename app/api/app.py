@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from app.agent.api import AGENT_RUNTIME_CONTRACT_VERSION
 from app.agent.runtime_summary import build_runtime_summary
@@ -24,6 +25,12 @@ from app.services.integration_status import build_integration_status
 @dataclass(frozen=True)
 class ApiAuthContext:
     token: ApiTokenRecord
+
+
+class InstallMutationRequest(BaseModel):
+    requested_action: str = Field(pattern=r"^clean_install_prepare$")
+    target: str = Field(default="local", pattern=r"^local$")
+    operator_note: str | None = Field(default=None, max_length=500)
 
 
 def create_api_app(settings: Settings | None = None) -> FastAPI:
@@ -173,6 +180,48 @@ def create_api_app(settings: Settings | None = None) -> FastAPI:
         _record_api_read(repo, auth, path="/api/users/summary", scope="metrics:read")
         return payload
 
+    @app.post("/api/install/mutation-requests", status_code=202)
+    async def install_mutation_request(
+        payload: InstallMutationRequest,
+        request: Request,
+        repo: Repository = Depends(_repo),
+        auth: ApiAuthContext = Depends(_require_scope("install:write")),
+    ):
+        settings: Settings = request.app.state.settings
+        status = (
+            "recorded_ready_for_operator_runner"
+            if settings.vps_apply_enabled
+            else "recorded_blocked_by_vps_apply_disabled"
+        )
+        _record_api_write(
+            repo,
+            auth,
+            path="/api/install/mutation-requests",
+            scope="install:write",
+            status=status,
+            requested_action=payload.requested_action,
+            target=payload.target,
+            vps_apply_enabled=settings.vps_apply_enabled,
+        )
+        return {
+            "install_mutation_request": {
+                "status": status,
+                "request_recorded": True,
+                "requested_action": payload.requested_action,
+                "target": payload.target,
+                "execution": {
+                    "vps_apply_enabled": settings.vps_apply_enabled,
+                    "executor_invoked": False,
+                    "package_apply_performed": False,
+                    "service_restart_performed": False,
+                    "public_exposure_performed": False,
+                    "config_delivery_performed": False,
+                    "telegram_action_performed": False,
+                },
+                "safe_evidence": True,
+            }
+        }
+
     return app
 
 
@@ -280,6 +329,36 @@ def _record_api_read(
             "status": "allowed",
             "token_id": auth.token.token_id,
             "token_name": auth.token.name,
+        },
+    )
+
+
+def _record_api_write(
+    repo: Repository,
+    auth: ApiAuthContext,
+    *,
+    path: str,
+    scope: str,
+    status: str,
+    requested_action: str,
+    target: str,
+    vps_apply_enabled: bool,
+) -> None:
+    repo.record_admin_action(
+        admin_telegram_id=0,
+        action="api_write",
+        metadata={
+            "aggregate_only": False,
+            "method": "POST",
+            "owner_label": auth.token.owner_label,
+            "path": path,
+            "requested_action": requested_action,
+            "scope": scope,
+            "status": status,
+            "target": target,
+            "token_id": auth.token.token_id,
+            "token_name": auth.token.name,
+            "vps_apply_enabled": vps_apply_enabled,
         },
     )
 

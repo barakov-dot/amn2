@@ -8,6 +8,8 @@ from typing import Literal, Protocol
 
 
 API_TOKEN_FIRST_SLICE_SCOPES = frozenset({"server:read", "metrics:read"})
+API_TOKEN_P7_WRITE_SCOPES = frozenset({"install:write"})
+API_TOKEN_ALLOWED_SCOPES = API_TOKEN_FIRST_SLICE_SCOPES | API_TOKEN_P7_WRITE_SCOPES
 API_TOKEN_BLOCKED_PRODUCTION_SCOPES = frozenset(
     {
         "backup:read",
@@ -173,7 +175,7 @@ def hash_api_token(raw_token: str) -> str:
 
 def build_api_token_production_policy() -> ApiTokenProductionPolicy:
     return ApiTokenProductionPolicy(
-        allowed_scopes=API_TOKEN_FIRST_SLICE_SCOPES,
+        allowed_scopes=API_TOKEN_ALLOWED_SCOPES,
         blocked_scopes=API_TOKEN_BLOCKED_PRODUCTION_SCOPES,
         max_ttl_days=API_TOKEN_PRODUCTION_MAX_TTL_DAYS,
         rotation_notice_days=API_TOKEN_PRODUCTION_ROTATION_NOTICE_DAYS,
@@ -322,7 +324,7 @@ def authenticate_api_token(
 
 def _validate_scope_set(scopes: set[str] | frozenset[str]) -> frozenset[str]:
     normalized = frozenset(scope.strip() for scope in scopes if scope.strip())
-    unsupported = normalized - API_TOKEN_FIRST_SLICE_SCOPES
+    unsupported = normalized - API_TOKEN_ALLOWED_SCOPES
     if not normalized or unsupported:
         raise ValueError(
             "unsupported API token scopes: "

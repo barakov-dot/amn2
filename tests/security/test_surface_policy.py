@@ -79,6 +79,9 @@ API_ROUTE_SHELL_POLICY_IDS = {
     "api.metrics.summary",
     "api.users.summary",
 }
+P7_WRITE_CONTOUR_POLICY_IDS = {
+    "api.install.mutation_requests",
+}
 
 SECRET_RISKS = {"secret-read", "public-token-secret-read"}
 PUBLIC_TOKEN_RISKS = {
@@ -136,14 +139,14 @@ def test_each_surface_has_policy_entries(surface):
     assert policies_by_surface(surface)
 
 
-def test_no_policy_enables_new_behavior_in_first_slice():
+def test_enabled_behavior_is_limited_to_api_route_shell_and_p7_write_contour():
     enabled = {
         policy.policy_id
         for policy in SURFACE_POLICIES
         if policy.enables_new_behavior is True
     }
 
-    assert enabled == API_ROUTE_SHELL_POLICY_IDS
+    assert enabled == API_ROUTE_SHELL_POLICY_IDS | P7_WRITE_CONTOUR_POLICY_IDS
 
 
 def test_local_agent_first_slice_matches_existing_agent_policy():
@@ -236,6 +239,22 @@ def test_api_route_shell_policies_are_read_only_scoped_and_no_live_retest():
         assert policy.implementation_mode == "implemented"
         assert "aggregate-only" in _gate_text(policy)
         assert "no raw secret" in _gate_text(policy)
+
+
+def test_p7_install_write_route_is_scoped_audited_and_not_remote_exec():
+    policy = get_surface_policy("api.install.mutation_requests")
+
+    assert policy.surface == "api"
+    assert policy.risk_class == "state-write"
+    assert policy.secret_class == "none"
+    assert "install:write" in policy.auth_method
+    assert policy.audit_required is True
+    assert policy.live_retest_required is True
+    assert policy.implementation_mode == "implemented"
+    assert "p7-c005" in _gate_text(policy)
+    assert "no remote exec" in _gate_text(policy)
+    assert "no config delivery" in _gate_text(policy)
+    assert "no raw secret" in _gate_text(policy)
 
 
 def test_productization_future_surfaces_remain_blocked_until_named_gates():

@@ -82,3 +82,14 @@ Policy-only changes and tests do not require live VPS retest.
 - `GET /api/users/summary` - `metrics:read`.
 
 The next read-only API smoke for a head that includes this section should use `python -m app.cli api smoke-cycle` and report `checked_routes: 6`. This still does not enable `config:read`, write scopes, Local Agent mutations or public exposure.
+
+## Implemented P7-C005 write contour
+
+- `POST /api/install/mutation-requests` - `install:write`.
+
+This is the only implemented API write route in the P7-C005 contour. It records
+safe audit metadata for an install mutation request and does not execute
+installer/apply, SSH, package apply, service restart, config delivery, public
+exposure, Local Agent mutation or Telegram action. With
+`VPS_APPLY_ENABLED=false` the route returns
+`recorded_blocked_by_vps_apply_disabled`.

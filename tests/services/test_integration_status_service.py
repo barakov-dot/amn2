@@ -44,12 +44,22 @@ def test_build_integration_status_reports_controlled_prod_without_write_enableme
         "public_self_service_open": False,
         "vps_apply_enabled_default": False,
     }
-    assert report["api_baseline"]["status"] == "phase_6_planning_ready"
+    assert report["api_baseline"]["status"] == "p7_scoped_write_contour_ready"
     assert report["api_baseline"]["stable_head"] == expected_head
     assert report["api_baseline"]["previous_stable_head"] == "b3102db"
     assert report["api_baseline"]["api_web_baseline_head"] == expected_head
     assert report["api_baseline"]["integration_status_head"] == expected_head
-    assert report["api_baseline"]["write_routes_enabled"] is False
+    assert report["api_baseline"]["allowed_scopes"] == [
+        "install:write",
+        "metrics:read",
+        "server:read",
+    ]
+    assert report["api_baseline"]["write_routes_enabled"] is True
+    assert report["api_baseline"]["write_route_count"] == 1
+    assert (
+        report["api_baseline"]["write_route_boundary"]
+        == "install-mutation-request-audit-only"
+    )
     assert report["api_baseline"]["public_api_exposed"] is False
     assert report["remote_operation_gate"]["candidate_head"] == "7281254"
     assert report["remote_operation_gate"]["stable_merge_head"] == "708c98e"

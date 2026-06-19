@@ -22,7 +22,7 @@ from app.vpn.client_compatibility import (
 )
 
 
-ALLOWED_API_SCOPES = ("metrics:read", "server:read")
+ALLOWED_API_SCOPES = ("install:write", "metrics:read", "server:read")
 ALLOWED_LANES = (
     "read-only API status",
     "aggregate metrics",
@@ -108,13 +108,15 @@ def build_integration_status(repo: Repository) -> dict[str, Any]:
             "vps_apply_enabled_default": False,
         },
         "api_baseline": {
-            "status": "phase_6_planning_ready",
+            "status": "p7_scoped_write_contour_ready",
             "stable_head": CURRENT_STABLE_HEAD,
             "previous_stable_head": PREVIOUS_STABLE_HEAD,
             "api_web_baseline_head": API_WEB_BASELINE_HEAD,
             "integration_status_head": POST_DRY_RUN_READ_ONLY_HEAD,
             "allowed_scopes": list(ALLOWED_API_SCOPES),
-            "write_routes_enabled": False,
+            "write_routes_enabled": True,
+            "write_route_count": 1,
+            "write_route_boundary": "install-mutation-request-audit-only",
             "public_api_exposed": False,
         },
         "remote_operation_gate": {
