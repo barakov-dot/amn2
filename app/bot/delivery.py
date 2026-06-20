@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from string import Formatter
 
 import qrcode
+from qrcode.constants import ERROR_CORRECT_M
 
 from app.bot.ux import VERSION_LABELS
 from app.vpn.client_compatibility import render_ru_install_guidance
@@ -22,23 +23,27 @@ APP_LINKS = {
     "defaultvpn_github": "https://github.com/amnezia-vpn/DefaultVPN",
 }
 
-CONFIG_FILE_CAPTION = "Файл VPN-конфига (.conf)"
-QR_CODE_CAPTION = "QR-код ссылки vpn:// для импорта"
+CONFIG_FILE_CAPTION = "Файл VPN-конфига (.conf) - основной способ установки"
+QR_CODE_CAPTION = (
+    "QR-код для сканера внутри VPN-клиента. Камера телефона может не открыть "
+    "приложение; если QR не сработал, используйте .conf файл."
+)
 IMPORT_LINK_COPY_BUTTON_TEXT = "Скопировать ссылку"
 TELEGRAM_COPY_TEXT_MAX_LENGTH = 256
 
 DEFAULT_CONFIG_READY_TEMPLATE = """Ваш VPN-конфиг готов.
 
 Устройство: {device_name}
-Формат конфига: {config_version_label}
+Формат: {config_version_label}
 
-Варианты установки:
-1. iOS DefaultVPN — основной путь в РФ: импортируйте прикрепленный .conf файл.
-2. iOS AmneziaWG — если приложение уже установлено: используйте .conf файл; ссылку vpn:// и QR проверяйте на вашей версии приложения.
-3. Android AmneziaWG — отдельный поддерживаемый путь: начните с .conf файла, затем можно попробовать ссылку vpn:// или QR.
-4. QR-код содержит ссылку vpn://. Если встроенный QR-сканер приложения ее не принимает, используйте файл или отдельную ссылку.
+Как установить:
+1. Самый надежный способ: скачайте прикрепленный .conf файл и импортируйте его в VPN-клиент.
+2. iPhone в РФ: начните с DefaultVPN и выберите импорт .conf файла.
+3. Android: начните с AmneziaWG и выберите импорт .conf файла.
+4. QR-код - дополнительный способ для сканера внутри VPN-клиента. Обычная камера телефона может не открыть приложение.
+5. Ссылка vpn:// отправляется отдельно как запасной вариант; для длинных конфигов Telegram не всегда дает кнопку копирования.
 
-Ссылки на приложения бот пришлет отдельным сообщением.
+Ниже бот отправит ссылку vpn://, приложения, .conf файл и QR-код.
 """
 
 
@@ -88,15 +93,18 @@ def build_config_delivery(
         config_filename=f"{basename}.conf",
         config_bytes=config_text.encode("utf-8"),
         qr_filename=f"{basename}.qr.png",
-        qr_png_bytes=_build_qr_png(vpn_import_link),
+        qr_png_bytes=_build_qr_png(config_text),
         vpn_import_link=vpn_import_link,
-        vpn_import_link_text=f"Ссылка vpn:// для импорта:\n{vpn_import_link}",
+        vpn_import_link_text=_render_vpn_import_link_text(
+            vpn_import_link=vpn_import_link,
+            is_copyable=vpn_import_link_copy_text is not None,
+        ),
         vpn_import_link_copy_button_text=(
             IMPORT_LINK_COPY_BUTTON_TEXT if vpn_import_link_copy_text else ""
         ),
         vpn_import_link_copy_text=vpn_import_link_copy_text,
         app_links_text=_render_app_links(),
-        qr_payload_text=vpn_import_link,
+        qr_payload_text=config_text,
     )
 
 
@@ -118,7 +126,14 @@ def render_template(template_text: str, values: dict[str, str]) -> str:
 
 
 def _build_qr_png(config_text: str) -> bytes:
-    image = qrcode.make(config_text)
+    qr = qrcode.QRCode(
+        error_correction=ERROR_CORRECT_M,
+        box_size=12,
+        border=6,
+    )
+    qr.add_data(config_text)
+    qr.make(fit=True)
+    image = qr.make_image(fill_color="black", back_color="white")
     output = io.BytesIO()
     image.save(output, format="PNG")
     return output.getvalue()
@@ -130,6 +145,21 @@ def _copyable_vpn_import_link(vpn_import_link: str) -> str | None:
     return None
 
 
+def _render_vpn_import_link_text(*, vpn_import_link: str, is_copyable: bool) -> str:
+    if is_copyable:
+        return (
+            "Ссылка vpn:// для импорта.\n"
+            "Если ваш Telegram показывает кнопку ниже, нажмите ее, чтобы скопировать ссылку:\n"
+            f"{vpn_import_link}"
+        )
+    return (
+        "Ссылка vpn:// для импорта слишком длинная для кнопки копирования Telegram.\n"
+        "Основной способ установки - прикрепленный .conf файл. QR-код ниже "
+        "предназначен для сканера внутри VPN-клиента, а не для обычной камеры телефона.\n\n"
+        f"{vpn_import_link}"
+    )
+
+
 def _artifact_basename(*, device_name: str | None, device_id: int) -> str:
     source = (device_name or "").strip() or f"device-{device_id}"
     basename = re.sub(r"[^A-Za-z0-9._-]+", "-", source).strip(".-_")
@@ -139,11 +169,12 @@ def _artifact_basename(*, device_name: str | None, device_id: int) -> str:
 def _render_app_links() -> str:
     return "\n\n".join(
         [
-            f"Android AmneziaVPN:\n{APP_LINKS['android_amnezia']}",
-            f"Android AmneziaWG:\n{APP_LINKS['android_amneziawg']}",
-            f"iOS DefaultVPN:\n{APP_LINKS['ios_russia_defaultvpn']}",
-            f"Windows AmneziaWG:\n{APP_LINKS['windows_amneziawg']}",
-            f"DefaultVPN GitHub:\n{APP_LINKS['defaultvpn_github']}",
+            "Приложения для импорта VPN-профиля",
+            f"iPhone / iPad: DefaultVPN\n{APP_LINKS['ios_russia_defaultvpn']}",
+            f"Android: AmneziaWG\n{APP_LINKS['android_amneziawg']}",
+            f"Android / Desktop: AmneziaVPN\n{APP_LINKS['android_amnezia']}",
+            f"Windows: AmneziaWG\n{APP_LINKS['windows_amneziawg']}",
+            f"DefaultVPN GitHub\n{APP_LINKS['defaultvpn_github']}",
             render_ru_install_guidance(),
         ]
     )

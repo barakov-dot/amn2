@@ -43,13 +43,13 @@ def test_build_config_delivery_creates_conf_and_qr_png_bytes():
     assert package.qr_png_bytes.startswith(b"\x89PNG\r\n\x1a\n")
     assert "AmneziaWG 2.0" in package.message_text
     assert APP_LINKS["ios_russia_defaultvpn"] in package.message_text
-    assert package.vpn_import_link_text == (
-        f"Ссылка vpn:// для импорта:\n{package.vpn_import_link}"
-    )
+    assert package.vpn_import_link in package.vpn_import_link_text
+    assert "кнопку ниже" in package.vpn_import_link_text
     assert APP_LINKS["ios_russia_defaultvpn"] in package.app_links_text
-    assert package.config_caption == "Файл VPN-конфига (.conf)"
-    assert package.qr_caption == "QR-код ссылки vpn:// для импорта"
-    assert package.qr_payload_text == package.vpn_import_link
+    assert "основной способ установки" in package.config_caption
+    assert "сканера внутри VPN-клиента" in package.qr_caption
+    assert "Камера телефона" in package.qr_caption
+    assert package.qr_payload_text == "[Interface]\nPrivateKey = test\n[Peer]"
 
 
 def test_build_config_delivery_marks_short_import_link_copyable():
@@ -76,6 +76,9 @@ def test_build_config_delivery_does_not_mark_long_import_link_copyable():
     assert len(package.vpn_import_link) > TELEGRAM_COPY_TEXT_MAX_LENGTH
     assert package.vpn_import_link_copy_button_text == ""
     assert package.vpn_import_link_copy_text is None
+    assert "слишком длинная для кнопки копирования Telegram" in package.vpn_import_link_text
+    assert "Основной способ установки" in package.vpn_import_link_text
+    assert "обычной камеры телефона" in package.vpn_import_link_text
 
 
 def test_render_template_leaves_unknown_placeholders_visible_for_admins_to_fix():
@@ -88,13 +91,14 @@ def test_default_config_ready_template_mentions_all_delivery_options():
     assert ".conf" in DEFAULT_CONFIG_READY_TEMPLATE
     assert "QR" in DEFAULT_CONFIG_READY_TEMPLATE
     assert "Ваш VPN-конфиг готов" in DEFAULT_CONFIG_READY_TEMPLATE
-    assert "iOS DefaultVPN" in DEFAULT_CONFIG_READY_TEMPLATE
-    assert "основной путь в РФ" in DEFAULT_CONFIG_READY_TEMPLATE
-    assert "iOS AmneziaWG" in DEFAULT_CONFIG_READY_TEMPLATE
-    assert "если приложение уже установлено" in DEFAULT_CONFIG_READY_TEMPLATE
-    assert "Android AmneziaWG" in DEFAULT_CONFIG_READY_TEMPLATE
-    assert "ссылку vpn://" in DEFAULT_CONFIG_READY_TEMPLATE
-    assert "Ссылки на приложения" in DEFAULT_CONFIG_READY_TEMPLATE
+    assert "iPhone в РФ" in DEFAULT_CONFIG_READY_TEMPLATE
+    assert "DefaultVPN" in DEFAULT_CONFIG_READY_TEMPLATE
+    assert "Android" in DEFAULT_CONFIG_READY_TEMPLATE
+    assert "AmneziaWG" in DEFAULT_CONFIG_READY_TEMPLATE
+    assert "ссылка vpn://" in DEFAULT_CONFIG_READY_TEMPLATE
+    assert "Обычная камера телефона" in DEFAULT_CONFIG_READY_TEMPLATE
+    assert "не всегда дает кнопку копирования" in DEFAULT_CONFIG_READY_TEMPLATE
+    assert "Ниже бот отправит" in DEFAULT_CONFIG_READY_TEMPLATE
 
 
 def test_app_links_text_includes_client_compatibility_guidance():
@@ -106,6 +110,7 @@ def test_app_links_text_includes_client_compatibility_guidance():
     )
 
     assert APP_LINKS["android_amnezia"] in package.app_links_text
+    assert "Приложения для импорта VPN-профиля" in package.app_links_text
     assert "Файл .conf" in package.app_links_text
     assert "iOS DefaultVPN" in package.app_links_text
     assert "основной путь в РФ" in package.app_links_text
@@ -136,7 +141,7 @@ def test_build_config_delivery_preserves_utf8_secret_artifacts():
     )
 
     assert package.config_bytes == config_text.encode("utf-8")
-    assert package.qr_payload_text == package.vpn_import_link
+    assert package.qr_payload_text == config_text
     assert package.config_secret_class == "client-config-secret"
     assert package.config_content_encoding == "utf-8"
     assert package.vpn_import_link_encoding == "base64-url-no-padding"
