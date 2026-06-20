@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import os
 import tarfile
 
 import pytest
@@ -201,6 +202,8 @@ def test_backup_create_verify_and_restore_requires_secret(tmp_path, monkeypatch)
     assert backup_path.exists()
     assert backup_path.suffixes[-2:] == [".tar", ".enc"]
     assert "source" not in backup_path.name
+    if os.name != "nt":
+        assert backup_path.stat().st_mode & 0o777 == 0o600
 
     manifest = service.verify(backup_path)
     assert manifest["format_version"] == 1

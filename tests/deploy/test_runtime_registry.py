@@ -53,6 +53,11 @@ def test_debug_snapshot_script_is_read_only_and_redacts_secrets():
     assert "TELEGRAM_BOT_TOKEN" in text
     assert "APP_SECRET_KEY" in text
     assert "WEB_ADMIN_SESSION_SECRET" in text
+    assert "validate_port AMN_WEB_PORT" in text
+    assert "validate_port AMN_VPN_PORT" in text
+    assert "run_shell()" not in text
+    assert 'bash -lc "$command"' not in text
+    assert 'ss "$@"' in text
     assert "python -m app.cli server check" in text
     assert "deploy/runtime/check_vps.sh" in text
     assert "docker inspect" in text

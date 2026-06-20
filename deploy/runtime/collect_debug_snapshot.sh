@@ -23,6 +23,21 @@ note() {
     printf '[INFO] %s\n' "$1"
 }
 
+validate_port() {
+    local name="$1"
+    local value="$2"
+    case "$value" in
+        ''|*[!0-9]*)
+            printf '[ERROR] %s must be a numeric TCP/UDP port\n' "$name" >&2
+            exit 2
+            ;;
+    esac
+    if [ "$value" -lt 1 ] || [ "$value" -gt 65535 ]; then
+        printf '[ERROR] %s must be between 1 and 65535\n' "$name" >&2
+        exit 2
+    fi
+}
+
 redact_stream() {
     sed -E \
         -e 's/[0-9]{6,12}:[A-Za-z0-9_-]{20,}/[REDACTED_TELEGRAM_BOT_TOKEN]/g' \
@@ -48,12 +63,15 @@ run() {
     "$@" 2>&1 | redact_stream || true
 }
 
-run_shell() {
+run_port_grep() {
     local title="$1"
-    local command="$2"
+    local port="$2"
+    shift 2
     section "$title"
-    printf '+ %s\n' "$command"
-    bash -lc "$command" 2>&1 | redact_stream || true
+    printf '+ ss'
+    printf ' %q' "$@"
+    printf ' | grep -E %q\n' "[:.]${port}[[:space:]]"
+    ss "$@" 2>&1 | grep -E "[:.]${port}[[:space:]]" | redact_stream || true
 }
 
 python_bin() {
@@ -114,8 +132,8 @@ collect_system_snapshot() {
     run "current user" id
     run "listening tcp ports" ss -lntp
     run "listening udp ports" ss -lun
-    run_shell "web port grep" "ss -lntp | grep -E '[:.]${AMN_WEB_PORT}[[:space:]]' || true"
-    run_shell "vpn port grep" "ss -lun | grep -E '[:.]${AMN_VPN_PORT}[[:space:]]' || true"
+    run_port_grep "web port grep" "$AMN_WEB_PORT" -lntp
+    run_port_grep "vpn port grep" "$AMN_VPN_PORT" -lun
 }
 
 collect_host_systemd_snapshot() {
@@ -142,6 +160,9 @@ collect_logs() {
 }
 
 main() {
+    validate_port AMN_WEB_PORT "$AMN_WEB_PORT"
+    validate_port AMN_VPN_PORT "$AMN_VPN_PORT"
+
     section "debug snapshot settings"
     cat <<EOF | redact_stream
 AMN_PROJECT_DIR=${AMN_PROJECT_DIR}

@@ -1,5 +1,6 @@
 from email import policy
 from email.parser import BytesParser
+import ssl
 
 from app.bot.delivery import ConfigDeliveryPackage
 from app.services.email_delivery import EmailDeliveryService
@@ -113,6 +114,9 @@ def test_build_smtp_sender_uses_injected_factory_without_connecting_in_unit_test
     assert smtp.host == "smtp.example.com"
     assert smtp.port == 587
     assert smtp.started_tls is True
+    assert isinstance(smtp.tls_context, ssl.SSLContext)
+    assert smtp.tls_context.verify_mode == ssl.CERT_REQUIRED
+    assert smtp.tls_context.check_hostname is True
     assert smtp.login_calls == [("smtp-user", "smtp-password")]
     assert smtp.sent == [("alice@example.com", b"Subject: Test\r\n\r\nBody")]
     assert smtp.closed is True
@@ -131,6 +135,7 @@ class RecordingSmtp:
         self.host = None
         self.port = None
         self.started_tls = False
+        self.tls_context = None
         self.login_calls = []
         self.sent = []
         self.closed = False
@@ -146,8 +151,9 @@ class RecordingSmtp:
     def __exit__(self, *args):
         self.closed = True
 
-    def starttls(self):
+    def starttls(self, context=None):
         self.started_tls = True
+        self.tls_context = context
 
     def login(self, username, password):
         self.login_calls.append((username, password))

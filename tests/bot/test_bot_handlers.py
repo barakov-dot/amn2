@@ -643,6 +643,33 @@ def test_handle_admin_approve_reports_apply_error_without_sending_config():
     assert callback.answered is True
 
 
+def test_handle_admin_approve_delivery_failure_does_not_send_config_to_admin():
+    class FailingBot(FakeBot):
+        async def send_message(self, chat_id, text, reply_markup=None):
+            raise RuntimeError("user has not opened the bot")
+
+    callback = FakeCallback(
+        data="admin:approve:11:amneziawg_v1_5",
+        user_id=9001,
+        username="admin",
+        first_name="Admin",
+    )
+    callback.bot = FailingBot()
+    workflow = FakeWorkflow(admin_ids={9001})
+
+    asyncio.run(handle_admin_approve(callback, workflow=workflow))
+
+    admin_answers = [answer["text"] for answer in callback.message.answers]
+    joined_answers = "\n".join(admin_answers)
+    assert "одобрена" in admin_answers[0]
+    assert "contains client secrets" in admin_answers[1]
+    assert "PrivateKey" not in joined_answers
+    assert "[Interface]" not in joined_answers
+    assert "vpn://import/test" not in joined_answers
+    assert callback.bot.sent_documents == []
+    assert callback.bot.sent_photos == []
+
+
 def test_handle_admin_approve_rejects_non_admin():
     callback = FakeCallback(
         data="admin:approve:11:amneziawg_v1_5",

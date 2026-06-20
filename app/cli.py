@@ -326,6 +326,7 @@ def main() -> None:
         if args.dry_run:
             print(build_peer_apply_dry_run(server, peer))
         else:
+            require_vps_apply_enabled_for_cli_apply()
             print(apply_peer(server, peer, ssh_client=SystemSshClient(server)))
     elif args.command == "server" and args.server_command == "revoke-peer":
         config = load_server_config(Path(args.config))
@@ -333,6 +334,7 @@ def main() -> None:
         if args.dry_run:
             print(build_peer_revoke_dry_run(server, args.public_key))
         else:
+            require_vps_apply_enabled_for_cli_apply()
             print(revoke_peer(server, args.public_key, ssh_client=SystemSshClient(server)))
     elif args.command == "server" and args.server_command == "collect-traffic":
         config = load_server_config(Path(args.config))
@@ -1069,6 +1071,15 @@ def _parse_api_datetime(value: str) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def require_vps_apply_enabled_for_cli_apply() -> None:
+    settings = Settings()
+    if not settings.vps_apply_enabled:
+        raise SystemExit(
+            "VPS_APPLY_ENABLED=true is required for live server peer mutations. "
+            "Use --dry-run or open the named live apply gate first."
+        )
 
 
 def read_preshared_key_arg(args: argparse.Namespace) -> str:

@@ -5,6 +5,7 @@ from email import policy
 from email.message import EmailMessage
 from email.parser import BytesParser
 import smtplib
+import ssl
 
 from app.bot.delivery import ConfigDeliveryPackage
 
@@ -150,7 +151,7 @@ def build_smtp_sender(
         from_address = _message_from_address(message_bytes)
         with factory(host, port) as smtp:
             if use_tls:
-                smtp.starttls()
+                smtp.starttls(context=ssl.create_default_context())
             if username:
                 smtp.login(username, password)
             smtp.sendmail(from_address, to_address, message_bytes)

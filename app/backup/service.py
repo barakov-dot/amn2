@@ -61,6 +61,7 @@ class BackupService:
 
         backup_path = output_dir / f"amneziya-backup-{self._timestamp()}.tar.enc"
         backup_path.write_bytes(encrypted_bytes)
+        backup_path.chmod(0o600)
         return backup_path
 
     def verify(self, backup_path: Path) -> dict[str, Any]:

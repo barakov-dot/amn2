@@ -295,6 +295,92 @@ def test_cli_accepts_server_revoke_peer_apply_arguments():
     assert args.dry_run is False
 
 
+def test_cli_apply_peer_blocks_live_mutation_when_vps_apply_disabled(tmp_path, monkeypatch):
+    path = tmp_path / "servers.yml"
+    path.write_text(VALID_YAML, encoding="utf-8")
+    called = False
+
+    class DisabledSettings:
+        vps_apply_enabled = False
+
+    def fail_apply_peer(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("apply_peer must not run while VPS_APPLY_ENABLED=false")
+
+    monkeypatch.setattr(cli, "Settings", DisabledSettings)
+    monkeypatch.setattr(cli, "apply_peer", fail_apply_peer)
+    monkeypatch.setattr(
+        cli.sys,
+        "argv",
+        [
+            "amneziya",
+            "server",
+            "apply-peer",
+            "--config",
+            str(path),
+            "--server",
+            "debian-vps-1",
+            "--public-key",
+            "peer-public",
+            "--preshared-key",
+            "secret-psk",
+            "--vpn-ip",
+            "10.8.0.2",
+            "--apply",
+        ],
+    )
+
+    try:
+        cli.main()
+    except SystemExit as exc:
+        assert "VPS_APPLY_ENABLED=true is required" in str(exc)
+    else:
+        raise AssertionError("live apply-peer must be blocked by default")
+    assert called is False
+
+
+def test_cli_revoke_peer_blocks_live_mutation_when_vps_apply_disabled(tmp_path, monkeypatch):
+    path = tmp_path / "servers.yml"
+    path.write_text(VALID_YAML, encoding="utf-8")
+    called = False
+
+    class DisabledSettings:
+        vps_apply_enabled = False
+
+    def fail_revoke_peer(*args, **kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("revoke_peer must not run while VPS_APPLY_ENABLED=false")
+
+    monkeypatch.setattr(cli, "Settings", DisabledSettings)
+    monkeypatch.setattr(cli, "revoke_peer", fail_revoke_peer)
+    monkeypatch.setattr(
+        cli.sys,
+        "argv",
+        [
+            "amneziya",
+            "server",
+            "revoke-peer",
+            "--config",
+            str(path),
+            "--server",
+            "debian-vps-1",
+            "--public-key",
+            "peer-public",
+            "--apply",
+        ],
+    )
+
+    try:
+        cli.main()
+    except SystemExit as exc:
+        assert "VPS_APPLY_ENABLED=true is required" in str(exc)
+    else:
+        raise AssertionError("live revoke-peer must be blocked by default")
+    assert called is False
+
+
 def test_cli_accepts_server_collect_traffic_arguments():
     parser = build_parser()
 

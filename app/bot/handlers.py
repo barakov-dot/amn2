@@ -361,10 +361,10 @@ async def handle_admin_approve(callback, *, workflow) -> None:
     except Exception:
         await callback.message.answer(
             "Could not deliver config to the user automatically. "
-            "Manual delivery package follows. Check that the user has opened the bot."
+            "The config was not sent here because it contains client secrets. "
+            "Ask the user to open the bot and retry delivery, or use the "
+            "operator-local private handoff gate."
         )
-        await callback.message.answer(result.delivery.message_text)
-        await callback.message.answer(result.config_text)
 
 
 async def handle_admin_template(callback, *, workflow) -> None:
