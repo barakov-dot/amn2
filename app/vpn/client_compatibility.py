@@ -10,6 +10,7 @@ SUPPORT_UNAVAILABLE = "unavailable"
 SUPPORT_FUTURE_GATE = "future_gate"
 
 CLIENT_ROLE_PRIMARY_RF_IOS = "primary_rf_ios"
+CLIENT_ROLE_EXPERIMENTAL_IOS = "experimental_ios"
 CLIENT_ROLE_INSTALLED_LEGACY = "installed_legacy"
 CLIENT_ROLE_ANDROID_SUPPORTED = "android_supported"
 CLIENT_ROLE_GENERAL = "general"
@@ -86,23 +87,25 @@ CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
         label="DefaultVPN",
         platform="iOS",
         app_url="https://apps.apple.com/app/defaultvpn/id6473452691",
-        client_role=CLIENT_ROLE_PRIMARY_RF_IOS,
+        client_role=CLIENT_ROLE_EXPERIMENTAL_IOS,
         platform_constraints=(
             "iOS App Store availability is region-specific",
-            "primary RF-available iOS path",
+            "RF-available iOS candidate",
+            "not accepted as primary path after P7-C010c real-device retest",
+            "first-connect/reconnect/tunnel reliability failed on operator iPhone",
         ),
         artifact_support={
             "conf_file": ArtifactSupport(
-                SUPPORT_RECOMMENDED,
-                "Основной безопасный путь, если встроенный QR/import flow не принимает профиль.",
+                SUPPORT_UNRELIABLE,
+                "Импорт может пройти, но P7-C010c показал нестабильное подключение и нерабочий туннель.",
             ),
             "vpn_import_link": ArtifactSupport(
-                SUPPORT_SUPPORTED,
-                "Отправлять отдельным сообщением, чтобы пользователь мог открыть или скопировать.",
+                SUPPORT_UNRELIABLE,
+                "Не считать рабочим путем до отдельной DefaultVPN compatibility диагностики.",
             ),
             "qr_vpn_import_link": ArtifactSupport(
                 SUPPORT_UNRELIABLE,
-                "Не обещать, что встроенный QR-сканер DefaultVPN примет AMN2 vpn:// QR.",
+                "P7-C010c: QR не прошел; не обещать QR/import flow для DefaultVPN.",
             ),
             "native_vpn_json": ArtifactSupport(
                 SUPPORT_FUTURE_GATE,
@@ -211,8 +214,8 @@ def render_ru_install_guidance() -> str:
         [
             "Файл .conf остается основным надежным способом импорта.",
             (
-                "iOS DefaultVPN: основной путь в РФ. Сначала используйте .conf файл "
-                "или отдельную ссылку импорта."
+                "iOS DefaultVPN: пока экспериментальный путь. В P7-C010c .conf импорт "
+                "не дал надежного туннеля; не считать основным iOS-клиентом до отдельной диагностики."
             ),
             (
                 "iOS AmneziaWG: используйте, если приложение уже установлено. "

@@ -2,12 +2,10 @@ from app.vpn.client_compatibility import (
     AMN2_DELIVERY_ARTIFACTS,
     CLIENT_COMPATIBILITY_MATRIX,
     CLIENT_ROLE_ANDROID_SUPPORTED,
+    CLIENT_ROLE_EXPERIMENTAL_IOS,
     CLIENT_ROLE_INSTALLED_LEGACY,
-    CLIENT_ROLE_PRIMARY_RF_IOS,
     SUPPORT_RECOMMENDED,
-    SUPPORT_SUPPORTED,
     SUPPORT_UNRELIABLE,
-    SUPPORT_UNAVAILABLE,
     clients_for_artifact,
     recommended_delivery_order,
     render_ru_install_guidance,
@@ -22,12 +20,15 @@ def test_delivery_artifacts_cover_current_bot_outputs():
     }
 
 
-def test_defaultvpn_keeps_conf_ahead_of_qr_import():
+def test_defaultvpn_is_experimental_after_mobile_retest_failure():
     defaultvpn = CLIENT_COMPATIBILITY_MATRIX["defaultvpn_ios_ru"]
 
-    assert defaultvpn.client_role == CLIENT_ROLE_PRIMARY_RF_IOS
-    assert defaultvpn.artifact_support["conf_file"].level == SUPPORT_RECOMMENDED
-    assert defaultvpn.artifact_support["vpn_import_link"].level == SUPPORT_SUPPORTED
+    assert defaultvpn.client_role == CLIENT_ROLE_EXPERIMENTAL_IOS
+    assert "not accepted as primary path after P7-C010c real-device retest" in (
+        defaultvpn.platform_constraints
+    )
+    assert defaultvpn.artifact_support["conf_file"].level == SUPPORT_UNRELIABLE
+    assert defaultvpn.artifact_support["vpn_import_link"].level == SUPPORT_UNRELIABLE
     assert defaultvpn.artifact_support["qr_vpn_import_link"].level == SUPPORT_UNRELIABLE
     assert recommended_delivery_order("defaultvpn_ios_ru") == [
         "conf_file",
@@ -82,7 +83,8 @@ def test_ru_install_guidance_mentions_constraints_without_secret_material():
 
     assert "Файл .conf" in guidance
     assert "iOS DefaultVPN" in guidance
-    assert "основной путь в РФ" in guidance
+    assert "экспериментальный путь" in guidance
+    assert "не считать основным iOS-клиентом" in guidance
     assert "iOS AmneziaWG" in guidance
     assert "если приложение уже установлено" in guidance
     assert "Android AmneziaWG" in guidance
