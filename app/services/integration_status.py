@@ -171,18 +171,35 @@ def build_integration_status(repo: Repository) -> dict[str, Any]:
 
 
 def build_client_compatibility_boundary() -> dict[str, Any]:
+    defaultvpn = CLIENT_COMPATIBILITY_MATRIX["defaultvpn_ios_ru"]
+    android = CLIENT_COMPATIBILITY_MATRIX["amneziawg_android"]
+    windows = CLIENT_COMPATIBILITY_MATRIX["amneziawg_windows"]
     return {
         "status": "client-compatibility-matrix-ready",
         "ios": {
-            "primary_rf_path": CLIENT_COMPATIBILITY_MATRIX["defaultvpn_ios_ru"].label,
+            "primary_rf_path": defaultvpn.label,
+            "primary_rf_acceptance_status": defaultvpn.acceptance_status,
+            "primary_rf_release_allowed": defaultvpn.release_primary_allowed,
             "installed_legacy_path": CLIENT_COMPATIBILITY_MATRIX[
                 "amneziawg_apple"
             ].label,
         },
         "android": {
-            "supported_path": CLIENT_COMPATIBILITY_MATRIX["amneziawg_android"].label,
+            "supported_path": android.label,
+            "acceptance_status": android.acceptance_status,
+            "release_primary_allowed": android.release_primary_allowed,
+        },
+        "desktop": {
+            "windows_path": windows.label,
+            "windows_observation_status": windows.acceptance_status,
+            "windows_release_primary_allowed": windows.release_primary_allowed,
         },
         "fallback_order": recommended_delivery_order("defaultvpn_ios_ru"),
+        "phase8_mobile_gate_status": (
+            "blocked_android_real_device_acceptance_pending"
+        ),
+        "qr_release_primary_allowed": False,
+        "vpn_import_link_release_primary_allowed": False,
         "one_tap_copy": {
             "telegram_copy_text_limit": 256,
             "full_import_link_copy_when_too_long": False,

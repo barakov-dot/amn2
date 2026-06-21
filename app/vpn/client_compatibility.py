@@ -44,6 +44,8 @@ class ClientCompatibility:
     client_role: str
     platform_constraints: tuple[str, ...]
     artifact_support: dict[str, ArtifactSupport]
+    acceptance_status: str = "not_release_verified"
+    release_primary_allowed: bool = False
     notes_ru: tuple[str, ...] = ()
 
 
@@ -121,6 +123,7 @@ CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
         platform_constraints=(
             "Standalone AWG client",
             "Android standalone AWG path",
+            "Android AmneziaWG 2.0.1 real-device acceptance pending",
         ),
         artifact_support={
             "conf_file": ArtifactSupport(
@@ -128,14 +131,16 @@ CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
                 "Надежный import path для WireGuard-style profile.",
             ),
             "vpn_import_link": ArtifactSupport(
-                SUPPORT_SUPPORTED,
-                "Поддерживать как отдельный convenience channel.",
+                SUPPORT_UNRELIABLE,
+                "Не считать release-primary до real-device acceptance.",
             ),
             "qr_vpn_import_link": ArtifactSupport(
-                SUPPORT_SUPPORTED,
-                "Допустимый QR path для AWG importer tests, но не universal promise.",
+                SUPPORT_UNRELIABLE,
+                "QR не прошел текущие мобильные проверки; оставить только как диагностический fallback.",
             ),
         },
+        acceptance_status="pending_real_device_acceptance",
+        release_primary_allowed=False,
     ),
     "amneziawg_apple": ClientCompatibility(
         label="AmneziaWG Apple",
@@ -157,8 +162,8 @@ CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
                 "Поддерживать как отдельный convenience channel.",
             ),
             "qr_vpn_import_link": ArtifactSupport(
-                SUPPORT_SUPPORTED,
-                "Допустимый QR path для AWG importer tests, но не universal promise.",
+                SUPPORT_UNRELIABLE,
+                "Не считать release-primary: QR не прошел текущие мобильные проверки.",
             ),
         },
     ),
@@ -184,6 +189,8 @@ CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
                 "Desktop QR flow не считать основным путем установки.",
             ),
         },
+        acceptance_status="operator_observed_passed",
+        release_primary_allowed=True,
     ),
 }
 
@@ -223,7 +230,8 @@ def render_ru_install_guidance() -> str:
             ),
             (
                 "Android AmneziaWG: отдельный поддерживаемый путь. .conf и QR допустимы "
-                "для проверки совместимости, но QR не является универсальным обещанием."
+                "для проверки совместимости, но Phase 8 требует real-device acceptance; "
+                "QR не является универсальным обещанием."
             ),
             (
                 "AmneziaVPN: перед рекомендацией приложения учитывайте ограничения "

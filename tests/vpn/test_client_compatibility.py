@@ -57,6 +57,19 @@ def test_amneziawg_android_is_separate_supported_path():
     assert "Android standalone AWG path" in android.platform_constraints
 
 
+def test_android_amneziawg_requires_real_device_acceptance_before_phase8():
+    android = CLIENT_COMPATIBILITY_MATRIX["amneziawg_android"]
+
+    assert android.acceptance_status == "pending_real_device_acceptance"
+    assert android.release_primary_allowed is False
+    assert "Android AmneziaWG 2.0.1 real-device acceptance pending" in (
+        android.platform_constraints
+    )
+    assert android.artifact_support["conf_file"].level == SUPPORT_RECOMMENDED
+    assert android.artifact_support["vpn_import_link"].level == SUPPORT_UNRELIABLE
+    assert android.artifact_support["qr_vpn_import_link"].level == SUPPORT_UNRELIABLE
+
+
 def test_release_platform_constraints_are_machine_checkable():
     amnezia = CLIENT_COMPATIBILITY_MATRIX["amnezia_vpn"]
 
@@ -74,8 +87,8 @@ def test_no_qr_claim_is_universal_across_clients():
     qr_clients = clients_for_artifact("qr_vpn_import_link")
 
     assert qr_clients["defaultvpn_ios_ru"].level == SUPPORT_UNRELIABLE
-    assert qr_clients["amneziawg_android"].level == SUPPORT_SUPPORTED
-    assert qr_clients["amneziawg_apple"].level == SUPPORT_SUPPORTED
+    assert qr_clients["amneziawg_android"].level == SUPPORT_UNRELIABLE
+    assert qr_clients["amneziawg_apple"].level == SUPPORT_UNRELIABLE
 
 
 def test_ru_install_guidance_mentions_constraints_without_secret_material():
