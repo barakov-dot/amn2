@@ -200,6 +200,28 @@ def test_settings_reads_client_amneziawg_parameters():
     assert defaults.i5 == ""
 
 
+def test_settings_uses_android_accepted_amneziawg_defaults():
+    settings = Settings(
+        _env_file=None,
+        telegram_bot_token="CHANGE_ME",
+        app_secret_key="test-secret",
+    )
+
+    defaults = settings.client_config_defaults
+
+    assert defaults.jc == 3
+    assert defaults.jmin == 10
+    assert defaults.jmax == 30
+    assert defaults.s1 == 15
+    assert defaults.s2 == 18
+    assert defaults.s3 == 20
+    assert defaults.s4 == 23
+    assert defaults.h1 == 1020325451
+    assert defaults.h2 == 3288052141
+    assert defaults.h3 == 1766607858
+    assert defaults.h4 == 2528465083
+
+
 def test_settings_accepts_client_awg_h_range_values_from_amneziawg():
     settings = Settings(
         _env_file=None,
