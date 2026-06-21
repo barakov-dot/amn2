@@ -2,23 +2,35 @@ from dataclasses import dataclass
 
 AwgParameter = int | str
 
+DEFAULT_CLIENT_AWG_JC = 3
+DEFAULT_CLIENT_AWG_JMIN = 10
+DEFAULT_CLIENT_AWG_JMAX = 30
+DEFAULT_CLIENT_AWG_S1 = 15
+DEFAULT_CLIENT_AWG_S2 = 18
+DEFAULT_CLIENT_AWG_S3 = 20
+DEFAULT_CLIENT_AWG_S4 = 23
+DEFAULT_CLIENT_AWG_H1 = 1020325451
+DEFAULT_CLIENT_AWG_H2 = 3288052141
+DEFAULT_CLIENT_AWG_H3 = 1766607858
+DEFAULT_CLIENT_AWG_H4 = 2528465083
+
 
 @dataclass(frozen=True)
 class ClientConfigDefaults:
     dns: str = "8.8.8.8, 8.8.4.4"
     allowed_ips: str = "0.0.0.0/0, ::/0"
     persistent_keepalive: int = 25
-    jc: int = 4
-    jmin: int = 40
-    jmax: int = 70
-    s1: int = 0
-    s2: int = 0
-    s3: int = 0
-    s4: int = 0
-    h1: AwgParameter = 1
-    h2: AwgParameter = 2
-    h3: AwgParameter = 3
-    h4: AwgParameter = 4
+    jc: int = DEFAULT_CLIENT_AWG_JC
+    jmin: int = DEFAULT_CLIENT_AWG_JMIN
+    jmax: int = DEFAULT_CLIENT_AWG_JMAX
+    s1: int = DEFAULT_CLIENT_AWG_S1
+    s2: int = DEFAULT_CLIENT_AWG_S2
+    s3: int = DEFAULT_CLIENT_AWG_S3
+    s4: int = DEFAULT_CLIENT_AWG_S4
+    h1: AwgParameter = DEFAULT_CLIENT_AWG_H1
+    h2: AwgParameter = DEFAULT_CLIENT_AWG_H2
+    h3: AwgParameter = DEFAULT_CLIENT_AWG_H3
+    h4: AwgParameter = DEFAULT_CLIENT_AWG_H4
     i1: str = ""
     i2: str = ""
     i3: str = ""
