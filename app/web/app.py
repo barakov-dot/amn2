@@ -67,7 +67,7 @@ TEMPLATE_DIR = BASE_DIR / "templates"
 STATIC_DIR = BASE_DIR / "static"
 SESSION_AUTH_KEY = "web_admin_authenticated"
 SECRET_CONFIG_LINE_RE = re.compile(
-    r"^(\s*(?:PrivateKey|PresharedKey)\s*[:=]\s*).+$",
+    r"^([^\r\n]*(?:PrivateKey|PresharedKey)\s*[:=]\s*)[^\r\n]*$",
     re.IGNORECASE | re.MULTILINE,
 )
 

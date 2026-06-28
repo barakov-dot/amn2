@@ -60,6 +60,33 @@ def test_config_templates_page_lists_versions_placeholders_and_safe_preview(tmp_
     assert "production-secret-should-not-appear" not in response.text
 
 
+def test_config_templates_preview_redacts_inline_secret_assignments(tmp_path: Path):
+    template_dir = tmp_path / "client-templates"
+    template_dir.mkdir()
+    (template_dir / "amneziawg_v2.conf.tpl").write_text(
+        "\n".join(
+            [
+                "# preview guard",
+                "Comment PrivateKey = {private_key}",
+                "Inline PresharedKey: {preshared_key}",
+                "Endpoint = {endpoint}",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    settings = _settings(tmp_path, client_config_template_dir=str(template_dir))
+    client = _authenticated_client(settings)
+
+    response = client.get("/config-templates")
+
+    assert response.status_code == 200
+    assert "sample-client-private-key" not in response.text
+    assert "sample-preshared-key" not in response.text
+    assert "Comment PrivateKey = &lt;sample-secret&gt;" in response.text
+    assert "Inline PresharedKey: &lt;sample-secret&gt;" in response.text
+
+
 def test_config_template_editor_saves_override_and_updates_preview(tmp_path: Path):
     template_dir = tmp_path / "client-templates"
     settings = _settings(tmp_path, client_config_template_dir=str(template_dir))
