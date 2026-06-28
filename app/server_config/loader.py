@@ -1,5 +1,6 @@
 import ipaddress
 from pathlib import Path
+import re
 from typing import Any
 
 import yaml
@@ -17,6 +18,9 @@ from app.server_config.models import (
 
 class ConfigError(ValueError):
     pass
+
+
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.@:-]+$")
 
 
 def load_server_config(path: str | Path) -> ServersConfig:
@@ -47,9 +51,9 @@ def _parse_server(item: Any) -> ServerConfig:
     firewall = _required_dict(item, "firewall")
     runtime = _required_dict(item, "runtime")
     return ServerConfig(
-        name=str(_required(item, "name")),
+        name=_parse_required_identifier(item, "name", field_name="server.name"),
         enabled=bool(_required(item, "enabled")),
-        location=str(_required(item, "location")),
+        location=_parse_required_identifier(item, "location", field_name="server.location"),
         ssh=SshConfig(
             host=_parse_required_host(ssh, "host", field_name="ssh.host"),
             port=_parse_required_port(ssh, "port", field_name="ssh.port"),
@@ -62,7 +66,7 @@ def _parse_server(item: Any) -> ServerConfig:
         vpn=VpnConfig(
             endpoint_host=_parse_required_host(vpn, "endpoint_host", field_name="vpn.endpoint_host"),
             port=_parse_required_port(vpn, "port", field_name="vpn.port", allow_auto=True),
-            interface=str(_required(vpn, "interface")),
+            interface=_parse_required_identifier(vpn, "interface", field_name="vpn.interface"),
             network_cidr=_effective_network_cidr(vpn),
             server_address=_parse_required_ip_or_interface(vpn, "server_address", field_name="vpn.server_address"),
             dns=_parse_required_ip_address(vpn, "dns", field_name="vpn.dns"),
@@ -121,6 +125,13 @@ def _parse_required_host(data: dict[str, Any], key: str, *, field_name: str) -> 
     return host
 
 
+def _parse_required_identifier(data: dict[str, Any], key: str, *, field_name: str) -> str:
+    value = str(_required(data, key)).strip()
+    if not value or not _IDENTIFIER_RE.fullmatch(value) or ".." in value:
+        raise ConfigError(f"{field_name} must be a non-empty identifier")
+    return value
+
+
 def _optional_runtime_config_path(data: dict[str, Any], key: str) -> str | None:
     path = _optional_str(data, key)
     if path is None:
@@ -172,7 +183,7 @@ def _parse_runtime(runtime: dict[str, Any]) -> RuntimeConfig:
     if runtime_type == "host_systemd":
         return RuntimeConfig(
             type=runtime_type,
-            service_name=str(_required(runtime, "service_name")),
+            service_name=_parse_required_identifier(runtime, "service_name", field_name="runtime.service_name"),
             container_name=_optional_str(runtime, "container_name"),
             config_path=_optional_runtime_config_path(runtime, "config_path"),
         )
@@ -180,7 +191,7 @@ def _parse_runtime(runtime: dict[str, Any]) -> RuntimeConfig:
         return RuntimeConfig(
             type=runtime_type,
             service_name=_optional_str(runtime, "service_name"),
-            container_name=str(_required(runtime, "container_name")),
+            container_name=_parse_required_identifier(runtime, "container_name", field_name="runtime.container_name"),
             config_path=_optional_runtime_config_path(runtime, "config_path"),
         )
     raise ConfigError(f"Unsupported runtime type: {runtime_type}")

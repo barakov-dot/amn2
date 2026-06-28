@@ -180,6 +180,24 @@ def test_loader_rejects_invalid_network_values(tmp_path: Path, content: str, err
         load_server_config(path)
 
 
+@pytest.mark.parametrize(
+    ("content", "error"),
+    [
+        (VALID_YAML.replace("  - name: debian-vps-1\n", "  - name: ''\n"), "server.name"),
+        (VALID_YAML.replace("    location: default\n", "    location: 'bad location'\n"), "server.location"),
+        (VALID_YAML.replace("      interface: awg0\n", "      interface: '../awg0'\n"), "vpn.interface"),
+        (VALID_YAML.replace("      service_name: awg-quick@awg0\n", "      service_name: ''\n"), "runtime.service_name"),
+        (DOCKER_YAML.replace("      container_name: amnezia-awg\n", "      container_name: '../amnezia-awg'\n"), "runtime.container_name"),
+    ],
+)
+def test_loader_rejects_invalid_identifier_values(tmp_path: Path, content: str, error: str):
+    path = tmp_path / "servers.yml"
+    path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=error):
+        load_server_config(path)
+
+
 def test_select_server_lists_available_names(tmp_path: Path):
     path = tmp_path / "servers.yml"
     path.write_text(VALID_YAML, encoding="utf-8")
