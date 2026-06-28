@@ -117,6 +117,24 @@ def test_loader_rejects_docker_runtime_without_container_name(tmp_path: Path):
         load_server_config(path)
 
 
+@pytest.mark.parametrize(
+    ("content", "error"),
+    [
+        (VALID_YAML.replace("      port: 22\n", "      port: 0\n"), "ssh.port"),
+        (VALID_YAML.replace("      port: 22\n", "      port: 65536\n"), "ssh.port"),
+        (VALID_YAML.replace("      port: 30001\n", "      port: 0\n"), "vpn.port"),
+        (VALID_YAML.replace("      port: 30001\n", "      port: 65536\n"), "vpn.port"),
+        (VALID_YAML.replace("      max_devices: 254\n", "      max_devices: 0\n"), "vpn.max_devices"),
+    ],
+)
+def test_loader_rejects_out_of_range_numeric_values(tmp_path: Path, content: str, error: str):
+    path = tmp_path / "servers.yml"
+    path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=error):
+        load_server_config(path)
+
+
 def test_select_server_lists_available_names(tmp_path: Path):
     path = tmp_path / "servers.yml"
     path.write_text(VALID_YAML, encoding="utf-8")

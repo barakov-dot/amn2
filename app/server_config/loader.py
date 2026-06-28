@@ -52,7 +52,7 @@ def _parse_server(item: Any) -> ServerConfig:
         location=str(_required(item, "location")),
         ssh=SshConfig(
             host=str(_required(ssh, "host")),
-            port=int(_required(ssh, "port")),
+            port=_parse_required_port(ssh, "port", field_name="ssh.port"),
             user=str(_required(ssh, "user")),
             auth=SshAuthConfig(
                 type=str(_required(auth, "type")),
@@ -61,13 +61,13 @@ def _parse_server(item: Any) -> ServerConfig:
         ),
         vpn=VpnConfig(
             endpoint_host=str(_required(vpn, "endpoint_host")),
-            port=_parse_port(_required(vpn, "port")),
+            port=_parse_required_port(vpn, "port", field_name="vpn.port", allow_auto=True),
             interface=str(_required(vpn, "interface")),
             network_cidr=_effective_network_cidr(vpn),
             server_address=str(_required(vpn, "server_address")),
             dns=str(_required(vpn, "dns")),
             allowed_ips=str(_required(vpn, "allowed_ips")),
-            max_devices=int(_required(vpn, "max_devices")),
+            max_devices=_parse_required_positive_int(vpn, "max_devices", field_name="vpn.max_devices"),
             server_public_key=(
                 None
                 if vpn.get("server_public_key") is None
@@ -82,10 +82,36 @@ def _parse_server(item: Any) -> ServerConfig:
     )
 
 
-def _parse_port(value: Any) -> int | str:
+def _parse_required_port(
+    data: dict[str, Any],
+    key: str,
+    *,
+    field_name: str,
+    allow_auto: bool = False,
+) -> int | str:
+    value = _required(data, key)
     if value == "auto":
-        return "auto"
-    return int(value)
+        if allow_auto:
+            return "auto"
+        raise ConfigError(f"{field_name} must be between 1 and 65535")
+    try:
+        port = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{field_name} must be between 1 and 65535") from exc
+    if not 1 <= port <= 65535:
+        raise ConfigError(f"{field_name} must be between 1 and 65535")
+    return port
+
+
+def _parse_required_positive_int(data: dict[str, Any], key: str, *, field_name: str) -> int:
+    value = _required(data, key)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ConfigError(f"{field_name} must be greater than 0") from exc
+    if parsed < 1:
+        raise ConfigError(f"{field_name} must be greater than 0")
+    return parsed
 
 
 def _effective_network_cidr(vpn: dict[str, Any]) -> str:
