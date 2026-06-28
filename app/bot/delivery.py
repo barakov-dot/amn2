@@ -75,9 +75,12 @@ def build_config_delivery(
         **APP_LINKS,
     }
     _validate_delivery_template_placeholders(template_text, context)
+    message_text = render_template(template_text, context)
+    if not message_text.strip():
+        raise ConfigDeliveryTemplateError("Delivery template rendered empty message")
     return ConfigDeliveryPackage(
         template_key=CONFIG_READY_TEMPLATE_KEY,
-        message_text=render_template(template_text, context),
+        message_text=message_text,
         config_filename="Neobyatnaya-AMNZ-N.conf",
         config_bytes=config_text.encode("utf-8"),
         qr_filename=f"amneziya-device-{device_id}.qr.png",

@@ -60,6 +60,16 @@ def test_build_config_delivery_rejects_unknown_delivery_template_placeholder():
         )
 
 
+def test_build_config_delivery_rejects_empty_rendered_message():
+    with pytest.raises(ConfigDeliveryTemplateError, match="empty"):
+        build_config_delivery(
+            device_id=7,
+            config_version="amneziawg_v2",
+            config_text="[Interface]\nPrivateKey = test\n[Peer]",
+            template_text="   \n\t",
+        )
+
+
 def test_default_config_ready_template_mentions_all_delivery_options():
     assert ".conf" in DEFAULT_CONFIG_READY_TEMPLATE
     assert "QR" in DEFAULT_CONFIG_READY_TEMPLATE
