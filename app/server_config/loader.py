@@ -64,9 +64,9 @@ def _parse_server(item: Any) -> ServerConfig:
             port=_parse_required_port(vpn, "port", field_name="vpn.port", allow_auto=True),
             interface=str(_required(vpn, "interface")),
             network_cidr=_effective_network_cidr(vpn),
-            server_address=str(_required(vpn, "server_address")),
-            dns=str(_required(vpn, "dns")),
-            allowed_ips=str(_required(vpn, "allowed_ips")),
+            server_address=_parse_required_ip_or_interface(vpn, "server_address", field_name="vpn.server_address"),
+            dns=_parse_required_ip_address(vpn, "dns", field_name="vpn.dns"),
+            allowed_ips=_parse_required_ip_network(vpn, "allowed_ips", field_name="vpn.allowed_ips"),
             max_devices=_parse_required_positive_int(vpn, "max_devices", field_name="vpn.max_devices"),
             server_public_key=(
                 None
@@ -130,15 +130,38 @@ def _optional_runtime_config_path(data: dict[str, Any], key: str) -> str | None:
     return path
 
 
+def _parse_required_ip_network(data: dict[str, Any], key: str, *, field_name: str) -> str:
+    value = str(_required(data, key)).strip()
+    try:
+        return str(ipaddress.ip_network(value, strict=False))
+    except ValueError as exc:
+        raise ConfigError(f"{field_name} must be an IP network") from exc
+
+
+def _parse_required_ip_address(data: dict[str, Any], key: str, *, field_name: str) -> str:
+    value = str(_required(data, key)).strip()
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError as exc:
+        raise ConfigError(f"{field_name} must be an IP address") from exc
+
+
+def _parse_required_ip_or_interface(data: dict[str, Any], key: str, *, field_name: str) -> str:
+    value = str(_required(data, key)).strip()
+    try:
+        if "/" in value:
+            return str(ipaddress.ip_interface(value))
+        return str(ipaddress.ip_address(value))
+    except ValueError as exc:
+        raise ConfigError(f"{field_name} must be an IP address or interface") from exc
+
+
 def _effective_network_cidr(vpn: dict[str, Any]) -> str:
-    configured_network = str(_required(vpn, "network_cidr"))
-    server_address = str(_required(vpn, "server_address"))
+    configured_network = _parse_required_ip_network(vpn, "network_cidr", field_name="vpn.network_cidr")
+    server_address = _parse_required_ip_or_interface(vpn, "server_address", field_name="vpn.server_address")
     if "/" not in server_address:
         return configured_network
-    try:
-        interface = ipaddress.ip_interface(server_address)
-    except ValueError:
-        return configured_network
+    interface = ipaddress.ip_interface(server_address)
     if interface.network.prefixlen == interface.max_prefixlen:
         return configured_network
     return str(interface.network)

@@ -163,6 +163,23 @@ def test_loader_rejects_invalid_host_and_runtime_path_values(
         load_server_config(path)
 
 
+@pytest.mark.parametrize(
+    ("content", "error"),
+    [
+        (VALID_YAML.replace("      network_cidr: 10.8.0.0/24\n", "      network_cidr: not-a-cidr\n"), "vpn.network_cidr"),
+        (VALID_YAML.replace("      server_address: 10.8.0.1/24\n", "      server_address: not-an-address\n"), "vpn.server_address"),
+        (VALID_YAML.replace("      dns: 1.1.1.1\n", "      dns: not-an-ip\n"), "vpn.dns"),
+        (VALID_YAML.replace("      allowed_ips: 0.0.0.0/0\n", "      allowed_ips: not-a-cidr\n"), "vpn.allowed_ips"),
+    ],
+)
+def test_loader_rejects_invalid_network_values(tmp_path: Path, content: str, error: str):
+    path = tmp_path / "servers.yml"
+    path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=error):
+        load_server_config(path)
+
+
 def test_select_server_lists_available_names(tmp_path: Path):
     path = tmp_path / "servers.yml"
     path.write_text(VALID_YAML, encoding="utf-8")
