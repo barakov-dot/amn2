@@ -111,7 +111,7 @@ def _parse_runtime(runtime: dict[str, Any]) -> RuntimeConfig:
             container_name=_optional_str(runtime, "container_name"),
             config_path=_optional_str(runtime, "config_path"),
         )
-    if runtime_type == "docker":
+    if runtime_type in {"docker", "xray_docker"}:
         return RuntimeConfig(
             type=runtime_type,
             service_name=_optional_str(runtime, "service_name"),

@@ -178,6 +178,59 @@ def test_local_command_runtime_adapter_reports_stopped_docker_container():
     assert snapshot.protocols[0].client_count is None
 
 
+def test_local_command_runtime_adapter_detects_running_xray_docker_container():
+    runner = FakeCommandRunner(
+        {
+            ("docker", "ps", "--format", "{{.Names}}"): CommandResult(
+                exit_code=0,
+                stdout="amnezia-xray\n",
+                stderr="",
+            ),
+        }
+    )
+
+    snapshot = LocalCommandRuntimeAdapter(
+        _server(RuntimeConfig(type="xray_docker", container_name="amnezia-xray")),
+        runner=runner,
+    ).snapshot()
+
+    assert snapshot.runtime_type == "xray_docker"
+    assert snapshot.status == "running"
+    assert snapshot.protocols == (
+        ProtocolSnapshot(
+            name="xray",
+            status="running",
+            runtime_type="xray_docker",
+            capabilities=("detect", "status", "validation"),
+            container_name="amnezia-xray",
+            interface=None,
+            client_count=None,
+        ),
+    )
+
+
+def test_local_command_runtime_adapter_reports_stopped_xray_docker_container():
+    runner = FakeCommandRunner(
+        {
+            ("docker", "ps", "--format", "{{.Names}}"): CommandResult(
+                exit_code=0,
+                stdout="amnezia-awg2\n",
+                stderr="",
+            ),
+        }
+    )
+
+    snapshot = LocalCommandRuntimeAdapter(
+        _server(RuntimeConfig(type="xray_docker", container_name="amnezia-xray")),
+        runner=runner,
+    ).snapshot()
+
+    assert snapshot.status == "stopped"
+    assert snapshot.protocols[0].name == "xray"
+    assert snapshot.protocols[0].capabilities == ("detect", "status", "validation")
+    assert snapshot.protocols[0].interface is None
+
+
 def test_local_command_runtime_adapter_detects_running_host_systemd():
     runner = FakeCommandRunner(
         {

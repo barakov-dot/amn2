@@ -79,6 +79,8 @@ class LocalCommandRuntimeAdapter:
     def snapshot(self) -> RuntimeSnapshot:
         if self._server.runtime.type == "docker":
             protocol = self._docker_snapshot()
+        elif self._server.runtime.type == "xray_docker":
+            protocol = self._xray_docker_snapshot()
         elif self._server.runtime.type == "host_systemd":
             protocol = self._host_systemd_snapshot()
         else:
@@ -114,6 +116,29 @@ class LocalCommandRuntimeAdapter:
             client_count=_count_dump_peers(dump.stdout),
         )
 
+    def _xray_docker_snapshot(self) -> ProtocolSnapshot:
+        container_name = self._server.runtime.container_name
+        docker_ps = self._runner.run(("docker", "ps", "--format", "{{.Names}}"))
+
+        if docker_ps.exit_code != 0 or container_name is None:
+            return self._protocol_snapshot(
+                name="xray",
+                status="stopped",
+                container_name=container_name,
+                capabilities=("detect", "status", "validation"),
+                include_interface=False,
+            )
+
+        containers = {line.strip() for line in docker_ps.stdout.splitlines() if line.strip()}
+        status: ProtocolStatus = "running" if container_name in containers else "stopped"
+        return self._protocol_snapshot(
+            name="xray",
+            status=status,
+            container_name=container_name,
+            capabilities=("detect", "status", "validation"),
+            include_interface=False,
+        )
+
     def _host_systemd_snapshot(self) -> ProtocolSnapshot:
         service_name = self._server.runtime.service_name or f"awg-quick@{self._server.vpn.interface}"
         service_status = self._runner.run(("systemctl", "is-active", service_name))
@@ -133,17 +158,20 @@ class LocalCommandRuntimeAdapter:
     def _protocol_snapshot(
         self,
         *,
+        name: str = "amneziawg",
         status: ProtocolStatus,
         container_name: str | None = None,
+        capabilities: tuple[str, ...] = ("detect", "status"),
+        include_interface: bool = True,
         client_count: int | None = None,
     ) -> ProtocolSnapshot:
         return ProtocolSnapshot(
-            name="amneziawg",
+            name=name,
             status=status,
             runtime_type=self._server.runtime.type,
-            capabilities=("detect", "status"),
+            capabilities=capabilities,
             container_name=container_name,
-            interface=self._server.vpn.interface,
+            interface=self._server.vpn.interface if include_interface else None,
             client_count=client_count,
         )
 
