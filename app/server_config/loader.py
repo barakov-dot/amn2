@@ -51,7 +51,7 @@ def _parse_server(item: Any) -> ServerConfig:
         enabled=bool(_required(item, "enabled")),
         location=str(_required(item, "location")),
         ssh=SshConfig(
-            host=str(_required(ssh, "host")),
+            host=_parse_required_host(ssh, "host", field_name="ssh.host"),
             port=_parse_required_port(ssh, "port", field_name="ssh.port"),
             user=str(_required(ssh, "user")),
             auth=SshAuthConfig(
@@ -60,7 +60,7 @@ def _parse_server(item: Any) -> ServerConfig:
             ),
         ),
         vpn=VpnConfig(
-            endpoint_host=str(_required(vpn, "endpoint_host")),
+            endpoint_host=_parse_required_host(vpn, "endpoint_host", field_name="vpn.endpoint_host"),
             port=_parse_required_port(vpn, "port", field_name="vpn.port", allow_auto=True),
             interface=str(_required(vpn, "interface")),
             network_cidr=_effective_network_cidr(vpn),
@@ -114,6 +114,22 @@ def _parse_required_positive_int(data: dict[str, Any], key: str, *, field_name: 
     return parsed
 
 
+def _parse_required_host(data: dict[str, Any], key: str, *, field_name: str) -> str:
+    host = str(_required(data, key)).strip()
+    if not host or any(char.isspace() for char in host) or "://" in host or "/" in host:
+        raise ConfigError(f"{field_name} must be a host name or IP address")
+    return host
+
+
+def _optional_runtime_config_path(data: dict[str, Any], key: str) -> str | None:
+    path = _optional_str(data, key)
+    if path is None:
+        return None
+    if not path.startswith("/") or any(char in path for char in ("\n", "\r", "\x00")):
+        raise ConfigError("runtime.config_path must be an absolute POSIX path")
+    return path
+
+
 def _effective_network_cidr(vpn: dict[str, Any]) -> str:
     configured_network = str(_required(vpn, "network_cidr"))
     server_address = str(_required(vpn, "server_address"))
@@ -135,14 +151,14 @@ def _parse_runtime(runtime: dict[str, Any]) -> RuntimeConfig:
             type=runtime_type,
             service_name=str(_required(runtime, "service_name")),
             container_name=_optional_str(runtime, "container_name"),
-            config_path=_optional_str(runtime, "config_path"),
+            config_path=_optional_runtime_config_path(runtime, "config_path"),
         )
     if runtime_type in {"docker", "xray_docker"}:
         return RuntimeConfig(
             type=runtime_type,
             service_name=_optional_str(runtime, "service_name"),
             container_name=str(_required(runtime, "container_name")),
-            config_path=_optional_str(runtime, "config_path"),
+            config_path=_optional_runtime_config_path(runtime, "config_path"),
         )
     raise ConfigError(f"Unsupported runtime type: {runtime_type}")
 

@@ -135,6 +135,34 @@ def test_loader_rejects_out_of_range_numeric_values(tmp_path: Path, content: str
         load_server_config(path)
 
 
+@pytest.mark.parametrize(
+    ("content", "error"),
+    [
+        (VALID_YAML.replace("      host: 203.0.113.10\n", "      host: ''\n"), "ssh.host"),
+        (VALID_YAML.replace("      host: 203.0.113.10\n", "      host: https://203.0.113.10\n"), "ssh.host"),
+        (VALID_YAML.replace("      endpoint_host: 203.0.113.10\n", "      endpoint_host: ''\n"), "vpn.endpoint_host"),
+        (
+            VALID_YAML.replace("      endpoint_host: 203.0.113.10\n", "      endpoint_host: vpn.example.test/path\n"),
+            "vpn.endpoint_host",
+        ),
+        (
+            DOCKER_YAML.replace("      config_path: /opt/amnezia/awg/awg0.conf\n", "      config_path: awg0.conf\n"),
+            "runtime.config_path",
+        ),
+    ],
+)
+def test_loader_rejects_invalid_host_and_runtime_path_values(
+    tmp_path: Path,
+    content: str,
+    error: str,
+):
+    path = tmp_path / "servers.yml"
+    path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=error):
+        load_server_config(path)
+
+
 def test_select_server_lists_available_names(tmp_path: Path):
     path = tmp_path / "servers.yml"
     path.write_text(VALID_YAML, encoding="utf-8")
