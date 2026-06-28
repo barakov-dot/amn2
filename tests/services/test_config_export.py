@@ -60,6 +60,7 @@ def test_config_export_safe_metadata_excludes_secret_payloads():
         "user_id": 42,
         "server_id": 3,
         "secret_class": "client-config-secret",
+        "runtime_config_path_status": "not_required",
         "artifact_kinds": [
             "wireguard_conf",
             "qr_payload",
@@ -102,6 +103,32 @@ def test_unsupported_target_client_returns_safe_category_without_payload():
     assert result.safe_metadata()["warnings"] == ["unsupported_target_client"]
     assert "unknown_client" not in str(result.safe_metadata())
     assert "client-private" not in str(result.safe_metadata())
+
+
+def test_required_runtime_config_path_missing_returns_safe_reason_without_payload():
+    request = _request(require_runtime_config_path=True)
+
+    result = export_device_config_delivery(_device_delivery(), request)
+
+    assert result.status == "runtime_config_path_missing"
+    assert result.artifacts == ()
+    assert result.safe_metadata()["runtime_config_path_status"] == "missing"
+    assert result.safe_metadata()["warnings"] == ["runtime_config_path_missing"]
+    assert "client-private" not in str(result.safe_metadata())
+    assert "awg0.conf" not in str(result.safe_metadata())
+
+
+def test_runtime_config_path_status_does_not_expose_raw_path():
+    request = _request(
+        require_runtime_config_path=True,
+        runtime_config_path="/opt/amnezia/awg/awg0.conf",
+    )
+
+    result = export_device_config_delivery(_device_delivery(), request)
+
+    assert result.status == "success"
+    assert result.safe_metadata()["runtime_config_path_status"] == "provided"
+    assert "/opt/amnezia/awg/awg0.conf" not in str(result.safe_metadata())
 
 
 def test_exporter_signature_mismatch_becomes_safe_export_failed_result():

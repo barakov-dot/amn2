@@ -10,8 +10,10 @@ ConfigExportStatus = Literal[
     "success",
     "unsupported_artifact",
     "unsupported_target_client",
+    "runtime_config_path_missing",
     "export_failed",
 ]
+RuntimeConfigPathStatus = Literal["not_required", "provided", "missing"]
 ConfigExportArtifactKind = Literal[
     "wireguard_conf",
     "qr_payload",
@@ -52,6 +54,8 @@ class ConfigExportRequest:
     target_client: str = "amnezia_generic"
     requested_artifacts: tuple[str, ...] = DEFAULT_ARTIFACTS
     delivery_channel: str = "internal"
+    require_runtime_config_path: bool = False
+    runtime_config_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -94,6 +98,7 @@ class ConfigExportResult:
     config_version: str
     target_client: str
     secret_class: str = CLIENT_CONFIG_SECRET
+    runtime_config_path_status: RuntimeConfigPathStatus = "not_required"
     artifacts: tuple[ConfigExportArtifact, ...] = ()
     warnings: tuple[ConfigExportWarning, ...] = ()
 
@@ -107,6 +112,7 @@ class ConfigExportResult:
             "user_id": self.user_id,
             "server_id": self.server_id,
             "secret_class": self.secret_class,
+            "runtime_config_path_status": self.runtime_config_path_status,
             "artifact_kinds": [artifact.kind for artifact in self.artifacts],
             "warnings": [warning.code for warning in self.warnings],
         }
@@ -123,6 +129,9 @@ def export_device_config_delivery(
     if request.target_client not in SUPPORTED_TARGET_CLIENTS:
         return _blocked_result(request, status="unsupported_target_client")
 
+    if request.require_runtime_config_path and not request.runtime_config_path:
+        return _blocked_result(request, status="runtime_config_path_missing")
+
     requested = tuple(request.requested_artifacts or DEFAULT_ARTIFACTS)
     if any(artifact not in SUPPORTED_ARTIFACTS for artifact in requested):
         return _blocked_result(request, status="unsupported_artifact")
@@ -137,6 +146,7 @@ def export_device_config_delivery(
         server_id=request.server_id,
         config_version=request.config_version,
         target_client=request.target_client,
+        runtime_config_path_status=_runtime_config_path_status(request),
         artifacts=tuple(artifacts_by_kind[kind] for kind in requested),
     )
 
@@ -215,8 +225,21 @@ def _blocked_result(
         server_id=request.server_id,
         config_version=request.config_version,
         target_client="unsupported" if status == "unsupported_target_client" else request.target_client,
+        runtime_config_path_status=_runtime_config_path_status(request, missing_status=status),
         warnings=(ConfigExportWarning(status),),
     )
+
+
+def _runtime_config_path_status(
+    request: ConfigExportRequest,
+    *,
+    missing_status: ConfigExportStatus | None = None,
+) -> RuntimeConfigPathStatus:
+    if missing_status == "runtime_config_path_missing":
+        return "missing"
+    if request.runtime_config_path:
+        return "provided"
+    return "not_required"
 
 
 def _payload_size(payload: bytes | str) -> int:

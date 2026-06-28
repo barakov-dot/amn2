@@ -38,6 +38,13 @@
 
 Unsupported artifact, unsupported target client и manager signature mismatch возвращают стабильные safe categories без raw traceback, `.conf`, QR payload или `vpn://`.
 
+Manager/runtime compatibility: если будущий manager export требует
+`runtime.config_path`, контракт должен получить этот факт явно через request.
+При отсутствующем пути export возвращает safe reason code
+`runtime_config_path_missing` без `.conf`, QR/import payload, raw path или
+traceback в `safe_metadata()`. При наличии пути metadata публикует только
+`runtime_config_path_status=provided`, но не сам путь.
+
 ## Проверка
 
 Основные тесты:
