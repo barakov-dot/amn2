@@ -31,7 +31,9 @@ def load_server_config(path: str | Path) -> ServersConfig:
     if not isinstance(data, dict) or not isinstance(data.get("servers"), list):
         raise ConfigError("servers.yml must contain a servers list")
     _reject_placeholders(data)
-    return ServersConfig(servers=[_parse_server(item) for item in data["servers"]])
+    servers = [_parse_server(item) for item in data["servers"]]
+    _reject_duplicate_server_names(servers)
+    return ServersConfig(servers=servers)
 
 
 def select_server(config: ServersConfig, name: str) -> ServerConfig:
@@ -225,3 +227,11 @@ def _reject_placeholders(value: Any) -> None:
             _reject_placeholders(child)
     elif isinstance(value, str) and value.startswith("CHANGE_ME"):
         raise ConfigError("Server config contains placeholder values")
+
+
+def _reject_duplicate_server_names(servers: list[ServerConfig]) -> None:
+    seen: set[str] = set()
+    for server in servers:
+        if server.name in seen:
+            raise ConfigError(f"Duplicate server name: {server.name}")
+        seen.add(server.name)

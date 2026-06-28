@@ -198,6 +198,15 @@ def test_loader_rejects_invalid_identifier_values(tmp_path: Path, content: str, 
         load_server_config(path)
 
 
+def test_loader_rejects_duplicate_server_names(tmp_path: Path):
+    path = tmp_path / "servers.yml"
+    server_entry = VALID_YAML.split("servers:\n", maxsplit=1)[1]
+    path.write_text(f"servers:\n{server_entry}{server_entry}", encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="Duplicate server name: debian-vps-1"):
+        load_server_config(path)
+
+
 def test_select_server_lists_available_names(tmp_path: Path):
     path = tmp_path / "servers.yml"
     path.write_text(VALID_YAML, encoding="utf-8")
