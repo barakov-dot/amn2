@@ -34,6 +34,11 @@ def test_template_renderer_rejects_unknown_placeholders():
         render_client_config_template("PrivateKey = {unknown}", _input())
 
 
+def test_template_renderer_rejects_empty_rendered_config():
+    with pytest.raises(ConfigTemplateError, match="empty"):
+        render_client_config_template("   \n\t", _input())
+
+
 @pytest.mark.parametrize(
     "template_text",
     [

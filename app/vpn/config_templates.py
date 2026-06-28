@@ -79,9 +79,12 @@ def render_client_config_template(
 ) -> str:
     _validate_template_placeholders(template_text)
     try:
-        return template_text.format_map(asdict(config))
+        rendered = template_text.format_map(asdict(config))
     except (IndexError, KeyError, ValueError) as exc:
         raise ConfigTemplateError(f"Invalid client config template: {exc}") from exc
+    if not rendered.strip():
+        raise ConfigTemplateError("Client config template rendered empty config")
+    return rendered
 
 
 def render_client_config_from_template(
