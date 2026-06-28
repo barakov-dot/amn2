@@ -207,6 +207,22 @@ def test_loader_rejects_duplicate_server_names(tmp_path: Path):
         load_server_config(path)
 
 
+@pytest.mark.parametrize(
+    ("content", "error"),
+    [
+        (VALID_YAML.replace("        type: key\n", "        type: magic\n"), "ssh.auth.type"),
+        (VALID_YAML.replace("      provider: ufw\n", "      provider: magic\n"), "firewall.provider"),
+        (VALID_YAML.replace("      type: host_systemd\n", "      type: magic\n"), "runtime.type"),
+    ],
+)
+def test_loader_rejects_unsupported_enum_values(tmp_path: Path, content: str, error: str):
+    path = tmp_path / "servers.yml"
+    path.write_text(content, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=error):
+        load_server_config(path)
+
+
 def test_select_server_lists_available_names(tmp_path: Path):
     path = tmp_path / "servers.yml"
     path.write_text(VALID_YAML, encoding="utf-8")

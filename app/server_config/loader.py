@@ -61,7 +61,12 @@ def _parse_server(item: Any) -> ServerConfig:
             port=_parse_required_port(ssh, "port", field_name="ssh.port"),
             user=str(_required(ssh, "user")),
             auth=SshAuthConfig(
-                type=str(_required(auth, "type")),
+                type=_parse_required_enum(
+                    auth,
+                    "type",
+                    field_name="ssh.auth.type",
+                    allowed={"key", "password"},
+                ),
                 private_key_path=None if auth.get("private_key_path") is None else str(auth["private_key_path"]),
             ),
         ),
@@ -81,7 +86,7 @@ def _parse_server(item: Any) -> ServerConfig:
             ),
         ),
         firewall=FirewallConfig(
-            provider=str(_required(firewall, "provider")),
+            provider=_parse_required_enum(firewall, "provider", field_name="firewall.provider", allowed={"ufw"}),
             open_vpn_port=bool(_required(firewall, "open_vpn_port")),
         ),
         runtime=_parse_runtime(runtime),
@@ -131,6 +136,20 @@ def _parse_required_identifier(data: dict[str, Any], key: str, *, field_name: st
     value = str(_required(data, key)).strip()
     if not value or not _IDENTIFIER_RE.fullmatch(value) or ".." in value:
         raise ConfigError(f"{field_name} must be a non-empty identifier")
+    return value
+
+
+def _parse_required_enum(
+    data: dict[str, Any],
+    key: str,
+    *,
+    field_name: str,
+    allowed: set[str],
+) -> str:
+    value = str(_required(data, key)).strip()
+    if value not in allowed:
+        allowed_values = ", ".join(sorted(allowed))
+        raise ConfigError(f"{field_name} must be one of: {allowed_values}")
     return value
 
 
