@@ -55,6 +55,10 @@ class ConfigDeliveryPackage:
     vpn_import_link_encoding: str = "base64-url-no-padding"
 
 
+class ConfigDeliveryTemplateError(ValueError):
+    pass
+
+
 def build_config_delivery(
     *,
     device_id: int,
@@ -70,6 +74,7 @@ def build_config_delivery(
         "vpn_link": vpn_import_link,
         **APP_LINKS,
     }
+    _validate_delivery_template_placeholders(template_text, context)
     return ConfigDeliveryPackage(
         template_key=CONFIG_READY_TEMPLATE_KEY,
         message_text=render_template(template_text, context),
@@ -97,6 +102,32 @@ def render_template(template_text: str, values: dict[str, str]) -> str:
             value = formatter.convert_field(value, conversion)
         chunks.append(formatter.format_field(value, format_spec))
     return "".join(chunks)
+
+
+def _validate_delivery_template_placeholders(template_text: str, values: dict[str, str]) -> None:
+    formatter = Formatter()
+    unknown: set[str] = set()
+    try:
+        for _, field_name, format_spec, conversion in formatter.parse(template_text):
+            if field_name is None:
+                continue
+            if conversion is not None:
+                raise ConfigDeliveryTemplateError(
+                    f"Unsupported conversion for delivery placeholder {{{field_name}}}"
+                )
+            if format_spec:
+                raise ConfigDeliveryTemplateError(
+                    f"Unsupported format spec for delivery placeholder {{{field_name}}}"
+                )
+            if field_name not in values:
+                unknown.add(field_name)
+    except ValueError as exc:
+        raise ConfigDeliveryTemplateError(f"Invalid delivery template: {exc}") from exc
+    if unknown:
+        raise ConfigDeliveryTemplateError(
+            "Unknown delivery placeholder(s): "
+            + ", ".join(f"{{{name}}}" for name in sorted(unknown))
+        )
 
 
 def _build_qr_png(config_text: str) -> bytes:

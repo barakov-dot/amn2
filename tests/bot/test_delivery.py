@@ -1,9 +1,12 @@
 import base64
 
+import pytest
+
 from app.bot.delivery import (
     APP_LINKS,
     CONFIG_READY_TEMPLATE_KEY,
     DEFAULT_CONFIG_READY_TEMPLATE,
+    ConfigDeliveryTemplateError,
     build_config_delivery,
     render_template,
 )
@@ -45,6 +48,16 @@ def test_render_template_leaves_unknown_placeholders_visible_for_admins_to_fix()
     text = render_template("Hello {name}. {unknown}", {"name": "Alice"})
 
     assert text == "Hello Alice. {unknown}"
+
+
+def test_build_config_delivery_rejects_unknown_delivery_template_placeholder():
+    with pytest.raises(ConfigDeliveryTemplateError, match="Unknown delivery placeholder"):
+        build_config_delivery(
+            device_id=7,
+            config_version="amneziawg_v2",
+            config_text="[Interface]\nPrivateKey = test\n[Peer]",
+            template_text="Import link: {vpn_link}\nBroken: {unknown}",
+        )
 
 
 def test_default_config_ready_template_mentions_all_delivery_options():
