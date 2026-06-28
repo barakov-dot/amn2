@@ -33,7 +33,7 @@ def test_build_config_delivery_creates_conf_and_qr_png_bytes():
     assert "PrivateKey" not in package.vpn_import_link
     assert "PrivateKey" not in package.message_text
     assert package.vpn_import_link in package.message_text
-    assert package.config_filename == "amneziya-device-7.conf"
+    assert package.config_filename == "Neobyatnaya-AMNZ-N.conf"
     assert package.config_bytes.startswith(b"[Interface]")
     assert package.qr_filename == "amneziya-device-7.qr.png"
     assert package.qr_png_bytes.startswith(b"\x89PNG\r\n\x1a\n")

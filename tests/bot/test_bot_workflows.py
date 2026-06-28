@@ -237,7 +237,7 @@ def test_approve_order_creates_device_with_selected_config_version(tmp_path):
     assert result.user_telegram_id == 1001
     assert "Access request #1 approved" in result.admin_text
     assert "[Interface]" in result.config_text
-    assert result.delivery.config_filename == f"amneziya-device-{result.device_id}.conf"
+    assert result.delivery.config_filename == "Neobyatnaya-AMNZ-N.conf"
     assert result.delivery.qr_png_bytes.startswith(b"\x89PNG")
     assert "DefaultVPN" in result.delivery.message_text
 
@@ -387,7 +387,7 @@ def test_resend_device_config_rebuilds_delivery_from_encrypted_device_secrets(tm
     )
 
     assert resend.user_telegram_id == 1001
-    assert resend.delivery.config_filename == f"amneziya-device-{approval.device_id}.conf"
+    assert resend.delivery.config_filename == "Neobyatnaya-AMNZ-N.conf"
     assert resend.delivery.qr_png_bytes.startswith(b"\x89PNG")
     assert "[Interface]" in resend.config_text
 
@@ -473,7 +473,7 @@ def test_user_can_resend_only_owned_device_config(tmp_path):
     )
 
     assert resend.user_telegram_id == 1001
-    assert resend.delivery.config_filename == f"amneziya-device-{device_id}.conf"
+    assert resend.delivery.config_filename == "Neobyatnaya-AMNZ-N.conf"
     assert forbidden is None
 
 

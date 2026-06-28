@@ -73,7 +73,7 @@ def build_config_delivery(
     return ConfigDeliveryPackage(
         template_key=CONFIG_READY_TEMPLATE_KEY,
         message_text=render_template(template_text, context),
-        config_filename=f"amneziya-device-{device_id}.conf",
+        config_filename="Neobyatnaya-AMNZ-N.conf",
         config_bytes=config_text.encode("utf-8"),
         qr_filename=f"amneziya-device-{device_id}.qr.png",
         qr_png_bytes=_build_qr_png(config_text),

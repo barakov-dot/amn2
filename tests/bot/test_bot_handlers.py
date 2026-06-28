@@ -774,7 +774,7 @@ class FakeWorkflow:
             config_text="[Interface]\nPrivateKey = test",
             delivery=SimpleNamespace(
                 message_text="Your VPN config is ready.",
-                config_filename=f"amneziya-device-{device_id}.conf",
+                config_filename="Neobyatnaya-AMNZ-N.conf",
                 config_bytes=b"[Interface]\nPrivateKey = test",
                 qr_filename=f"amneziya-device-{device_id}.qr.png",
                 qr_png_bytes=b"\x89PNG\r\n\x1a\n",
@@ -883,7 +883,7 @@ class FakeWorkflow:
             config_text="[Interface]\nPrivateKey = test",
             delivery=SimpleNamespace(
                 message_text="Your VPN config is ready.",
-                config_filename="amneziya-device-7.conf",
+                config_filename="Neobyatnaya-AMNZ-N.conf",
                 config_bytes=b"[Interface]\nPrivateKey = test",
                 qr_filename="amneziya-device-7.qr.png",
                 qr_png_bytes=b"\x89PNG\r\n\x1a\n",
@@ -911,7 +911,7 @@ class FakeWorkflow:
             config_text="[Interface]\nPrivateKey = test",
             delivery=SimpleNamespace(
                 message_text="Your VPN config is ready.",
-                config_filename=f"amneziya-device-{device_id}.conf",
+                config_filename="Neobyatnaya-AMNZ-N.conf",
                 config_bytes=b"[Interface]\nPrivateKey = test",
                 qr_filename=f"amneziya-device-{device_id}.qr.png",
                 qr_png_bytes=b"\x89PNG\r\n\x1a\n",

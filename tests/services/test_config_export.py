@@ -72,7 +72,7 @@ def test_config_export_safe_metadata_excludes_secret_payloads():
     assert result.artifacts[0].safe_metadata() == {
         "kind": "wireguard_conf",
         "target_client": "amnezia_generic",
-        "filename": "amneziya-device-7.conf",
+        "filename": "Neobyatnaya-AMNZ-N.conf",
         "media_type": "text/plain",
         "content_encoding": "utf-8",
         "secret_class": "client-config-secret",

@@ -30,7 +30,7 @@ def test_config_email_contains_vpn_link_and_optional_conf_attachment():
     assert "vpn://import/test" in body
     assert "PRIVATE_CONFIG_TEXT_SHOULD_NOT_BE_IN_BODY" not in body
     attachments = list(message.iter_attachments())
-    assert [part.get_filename() for part in attachments] == ["amneziya-device-22.conf"]
+    assert [part.get_filename() for part in attachments] == ["Neobyatnaya-AMNZ-N.conf"]
     assert (
         attachments[0].get_payload(decode=True).strip()
         == b"PRIVATE_CONFIG_TEXT_SHOULD_NOT_BE_IN_BODY"
@@ -160,7 +160,7 @@ def _delivery(*, config_text: str) -> ConfigDeliveryPackage:
     return ConfigDeliveryPackage(
         template_key="config_ready",
         message_text="Your config is ready",
-        config_filename="amneziya-device-22.conf",
+        config_filename="Neobyatnaya-AMNZ-N.conf",
         config_bytes=config_text.encode("utf-8"),
         qr_filename="amneziya-device-22.qr.png",
         qr_png_bytes=b"png",
