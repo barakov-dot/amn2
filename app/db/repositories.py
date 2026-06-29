@@ -1741,6 +1741,43 @@ class Repository:
         self._commit()
         return cursor.rowcount > 0
 
+    def redeem_config_share_token_for_auth(
+        self,
+        *,
+        token_hash: str,
+        now: str,
+        used_at: str,
+        ip_hash: str | None = None,
+    ) -> sqlite3.Row | None:
+        cursor = self._conn.execute(
+            """
+            UPDATE config_share_tokens
+            SET download_count = download_count + 1,
+                last_used_at = ?,
+                last_used_ip_hash = ?
+            WHERE token_hash = ?
+              AND purpose = 'config_share'
+              AND revoked_at IS NULL
+              AND expires_at > ?
+              AND download_count < max_downloads
+            RETURNING *
+            """,
+            (used_at, ip_hash, token_hash, now),
+        )
+        row = cursor.fetchone()
+        self._commit()
+        if row is None:
+            return None
+        return self._conn.execute(
+            """
+            SELECT config_share_tokens.*, users.status AS owner_status
+            FROM config_share_tokens
+            JOIN users ON users.id = config_share_tokens.owner_user_id
+            WHERE config_share_tokens.id = ?
+            """,
+            (row["id"],),
+        ).fetchone()
+
     def revoke_config_share_token(
         self,
         token_id: str,

@@ -894,6 +894,83 @@ def test_config_share_token_lifecycle_stores_hash_policy_and_usage_state(tmp_pat
     )
 
 
+def test_redeem_config_share_token_for_auth_is_one_time_and_atomic(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    user_id, server_id = _create_user_and_server(repo)
+    device_id = repo.create_device(
+        user_id=user_id,
+        server_id=server_id,
+        name="phone",
+        duration_days=7,
+        vpn_ip="10.8.0.99",
+        peer_public_key="share-public",
+        peer_private_key_encrypted="v1:share-private",
+        preshared_key_encrypted="v1:share-psk",
+        config_version="amneziawg_v2",
+    )
+    repo.create_config_share_token(
+        token_id="share-token-1",
+        token_hash="sha256:share-token-hash",
+        token_prefix="share-to",
+        purpose="config_share",
+        created_by_actor="web-admin:7",
+        owner_user_id=user_id,
+        bound_device_ids=[device_id],
+        bound_server_ids=[server_id],
+        allowed_artifact_kinds=["wireguard_conf"],
+        target_client="amnezia_generic",
+        expires_at="2026-06-01T12:30:00Z",
+        one_time=True,
+        max_downloads=1,
+    )
+
+    redeemed = repo.redeem_config_share_token_for_auth(
+        token_hash="sha256:share-token-hash",
+        now="2026-06-01T12:05:00Z",
+        used_at="2026-06-01T12:05:01Z",
+        ip_hash="sha256:ip-hash",
+    )
+
+    assert redeemed is not None
+    assert redeemed["id"] == "share-token-1"
+    assert redeemed["download_count"] == 1
+    assert redeemed["last_used_at"] == "2026-06-01T12:05:01Z"
+    assert redeemed["last_used_ip_hash"] == "sha256:ip-hash"
+    assert "raw-share-token" not in dict(redeemed).values()
+    assert (
+        repo.redeem_config_share_token_for_auth(
+            token_hash="sha256:share-token-hash",
+            now="2026-06-01T12:06:00Z",
+            used_at="2026-06-01T12:06:01Z",
+        )
+        is None
+    )
+
+    repo.create_config_share_token(
+        token_id="share-token-expired",
+        token_hash="sha256:expired-share-token-hash",
+        token_prefix="expired",
+        purpose="config_share",
+        created_by_actor="web-admin:7",
+        owner_user_id=user_id,
+        bound_device_ids=[device_id],
+        bound_server_ids=[server_id],
+        allowed_artifact_kinds=["wireguard_conf"],
+        target_client="amnezia_generic",
+        expires_at="2026-06-01T12:30:00Z",
+    )
+    assert (
+        repo.redeem_config_share_token_for_auth(
+            token_hash="sha256:expired-share-token-hash",
+            now="2026-06-01T12:30:00Z",
+            used_at="2026-06-01T12:30:01Z",
+        )
+        is None
+    )
+
+
 def _create_user_and_server(repo: Repository) -> tuple[int, int]:
     user_id = repo.upsert_user(
         telegram_id=2001,
