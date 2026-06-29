@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import secrets
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from app.services.config_export import (
     CLIENT_CONFIG_SECRET,
@@ -51,6 +52,24 @@ class ConfigShareTokenStore(Protocol):
         one_time: bool = True,
         max_downloads: int = 1,
     ) -> None: ...
+
+
+class ConfigShareTokenRedeemStore(Protocol):
+    def get_config_share_token_for_auth(
+        self,
+        *,
+        token_hash: str,
+        now: str,
+    ) -> Any | None: ...
+
+    def redeem_config_share_token_for_auth(
+        self,
+        *,
+        token_hash: str,
+        now: str,
+        used_at: str,
+        ip_hash: str | None = None,
+    ) -> Any | None: ...
 
 
 @dataclass(frozen=True)
@@ -256,6 +275,61 @@ def evaluate_config_share_download(
     )
 
 
+def redeem_config_share_download(
+    store: ConfigShareTokenRedeemStore,
+    *,
+    raw_token: str,
+    requested_device_id: int,
+    requested_artifact_kinds: tuple[str, ...],
+    target_client: str,
+    now: datetime,
+    used_at: datetime,
+    ip_hash: str | None = None,
+) -> ConfigShareDownloadDecision:
+    token_hash = hash_config_share_token(raw_token)
+    now_text = _format_datetime(now)
+    assert now_text is not None
+    used_at_text = _format_datetime(used_at)
+    assert used_at_text is not None
+    row = store.get_config_share_token_for_auth(token_hash=token_hash, now=now_text)
+    if row is None:
+        return _denied_config_share_download_decision(
+            requested_device_id=requested_device_id,
+            requested_artifact_kinds=requested_artifact_kinds,
+            target_client=target_client,
+            denial_category="expired_token",
+        )
+
+    record = _config_share_record_from_row(row)
+    decision = evaluate_config_share_download(
+        record,
+        requested_device_id=requested_device_id,
+        requested_artifact_kinds=requested_artifact_kinds,
+        target_client=target_client,
+        now=now,
+    )
+    if not decision.allowed:
+        return decision
+
+    redeemed = store.redeem_config_share_token_for_auth(
+        token_hash=token_hash,
+        now=now_text,
+        used_at=used_at_text,
+        ip_hash=ip_hash,
+    )
+    if redeemed is None:
+        return _denied_config_share_download_decision(
+            requested_device_id=requested_device_id,
+            requested_artifact_kinds=requested_artifact_kinds,
+            target_client=target_client,
+            token_id=record.token_id,
+            token_prefix=record.token_prefix,
+            owner_user_id=record.owner_user_id,
+            denial_category="download_limit_reached",
+        )
+    return decision
+
+
 def config_share_token_redacted_backup_metadata(
     record: ConfigShareTokenRecord,
 ) -> dict[str, object]:
@@ -271,6 +345,53 @@ def config_share_token_redacted_backup_metadata(
         "restore_status": "restore-disabled",
         "token_hash_included": False,
     }
+
+
+def _denied_config_share_download_decision(
+    *,
+    requested_device_id: int,
+    requested_artifact_kinds: tuple[str, ...],
+    target_client: str,
+    denial_category: ConfigShareDenialCategory,
+    token_id: str = "unknown",
+    token_prefix: str = "unknown",
+    owner_user_id: int = 0,
+) -> ConfigShareDownloadDecision:
+    return ConfigShareDownloadDecision(
+        allowed=False,
+        token_id=token_id,
+        token_prefix=token_prefix,
+        owner_user_id=owner_user_id,
+        requested_device_id=requested_device_id,
+        requested_artifact_kinds=tuple(sorted(requested_artifact_kinds)),
+        target_client=target_client if target_client in SUPPORTED_TARGET_CLIENTS else "unsupported",
+        denial_category=denial_category,
+    )
+
+
+def _config_share_record_from_row(row: Any) -> ConfigShareTokenRecord:
+    if isinstance(row, ConfigShareTokenRecord):
+        return row
+    return ConfigShareTokenRecord(
+        token_id=str(row["id"]),
+        token_hash=str(row["token_hash"]),
+        token_prefix=str(row["token_prefix"]),
+        purpose=str(row["purpose"]),
+        created_by_actor=str(row["created_by_actor"]),
+        owner_user_id=int(row["owner_user_id"]),
+        bound_device_ids=tuple(int(value) for value in json.loads(str(row["bound_device_ids_json"]))),
+        bound_server_ids=tuple(int(value) for value in json.loads(str(row["bound_server_ids_json"]))),
+        allowed_artifact_kinds=tuple(json.loads(str(row["allowed_artifact_kinds_json"]))),
+        target_client=str(row["target_client"]),
+        expires_at=_parse_datetime(str(row["expires_at"])),
+        revoked_at=None if row["revoked_at"] is None else _parse_datetime(str(row["revoked_at"])),
+        one_time=bool(row["one_time"]),
+        max_downloads=int(row["max_downloads"]),
+        download_count=int(row["download_count"]),
+        owner_user_status=str(row["owner_status"]),
+        device_status=str(row["device_status"]) if "device_status" in row.keys() else "active",
+        server_status=str(row["server_status"]) if "server_status" in row.keys() else "active",
+    )
 
 
 def _config_share_denial_category(
@@ -362,3 +483,7 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _parse_datetime(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))

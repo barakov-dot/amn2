@@ -12,6 +12,7 @@ from app.services.config_share_tokens import (
     create_config_share_token,
     evaluate_config_share_download,
     hash_config_share_token,
+    redeem_config_share_download,
 )
 
 
@@ -218,6 +219,76 @@ def test_redacted_backup_metadata_cannot_restore_usable_share_token():
     assert record.token_hash not in str(metadata)
 
 
+def test_redeem_config_share_download_allows_then_atomically_consumes_token():
+    store = RecordingRedeemStore(record=_record())
+
+    decision = redeem_config_share_download(
+        store,
+        raw_token="raw-share-token",
+        requested_device_id=10,
+        requested_artifact_kinds=("wireguard_conf",),
+        target_client="amnezia_generic",
+        now=NOW,
+        used_at=NOW + timedelta(seconds=1),
+        ip_hash="sha256:ip-hash",
+    )
+
+    assert decision.allowed is True
+    assert store.lookups == [
+        {
+            "token_hash": hash_config_share_token("raw-share-token"),
+            "now": "2026-06-01T12:00:00+00:00",
+        }
+    ]
+    assert store.redeems == [
+        {
+            "token_hash": hash_config_share_token("raw-share-token"),
+            "now": "2026-06-01T12:00:00+00:00",
+            "used_at": "2026-06-01T12:00:01+00:00",
+            "ip_hash": "sha256:ip-hash",
+        }
+    ]
+    assert "raw-share-token" not in str(decision.safe_audit_metadata())
+    assert "sha256:" not in str(decision.safe_audit_metadata())
+
+
+def test_redeem_config_share_download_denies_invalid_request_without_consuming_token():
+    store = RecordingRedeemStore(record=_record())
+
+    decision = redeem_config_share_download(
+        store,
+        raw_token="raw-share-token",
+        requested_device_id=11,
+        requested_artifact_kinds=("wireguard_conf",),
+        target_client="amnezia_generic",
+        now=NOW,
+        used_at=NOW + timedelta(seconds=1),
+    )
+
+    assert decision.allowed is False
+    assert decision.denial_category == "resource_not_bound"
+    assert store.redeems == []
+    assert decision.public_message == "Config link is invalid or expired."
+
+
+def test_redeem_config_share_download_denies_when_atomic_consume_loses_race():
+    store = RecordingRedeemStore(record=_record(), redeem_record=None)
+
+    decision = redeem_config_share_download(
+        store,
+        raw_token="raw-share-token",
+        requested_device_id=10,
+        requested_artifact_kinds=("wireguard_conf",),
+        target_client="amnezia_generic",
+        now=NOW,
+        used_at=NOW + timedelta(seconds=1),
+    )
+
+    assert decision.allowed is False
+    assert decision.denial_category == "download_limit_reached"
+    assert len(store.redeems) == 1
+
+
 def _record(**overrides) -> ConfigShareTokenRecord:
     base = ConfigShareTokenRecord(
         token_id="share-token-1",
@@ -240,3 +311,33 @@ def _record(**overrides) -> ConfigShareTokenRecord:
         server_status="active",
     )
     return replace(base, **overrides)
+
+
+class RecordingRedeemStore:
+    def __init__(self, *, record, redeem_record="same"):
+        self.record = record
+        self.redeem_record = record if redeem_record == "same" else redeem_record
+        self.lookups = []
+        self.redeems = []
+
+    def get_config_share_token_for_auth(self, *, token_hash: str, now: str):
+        self.lookups.append({"token_hash": token_hash, "now": now})
+        return self.record
+
+    def redeem_config_share_token_for_auth(
+        self,
+        *,
+        token_hash: str,
+        now: str,
+        used_at: str,
+        ip_hash: str | None = None,
+    ):
+        self.redeems.append(
+            {
+                "token_hash": token_hash,
+                "now": now,
+                "used_at": used_at,
+                "ip_hash": ip_hash,
+            }
+        )
+        return self.redeem_record
