@@ -59,6 +59,16 @@ def test_web_post_runtime_routes_have_policy_bindings(tmp_path: Path):
     assert missing_policy == []
 
 
+def test_public_config_share_download_route_stays_unmounted(tmp_path: Path):
+    policy = get_surface_policy("public_token.config_share_download.blocked")
+    actual_routes = _route_keys(create_web_app(_settings(tmp_path)))
+
+    assert policy.implementation_mode == "blocked-future"
+    assert policy.enables_new_behavior is False
+    assert (policy.method, policy.path) not in actual_routes
+    assert "tests/security/test_surface_policy_bindings.py" in policy.test_refs
+
+
 def test_local_agent_runtime_routes_match_inventory_bindings():
     app = _agent_app()
     actual_routes = _route_keys(app)

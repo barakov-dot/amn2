@@ -715,7 +715,10 @@ SURFACE_POLICIES: tuple[SurfacePolicy, ...] = (
         "Future route is policy-only until public config delivery gate.",
         False,
         "blocked-future",
-        ("tests/security/test_surface_policy.py",),
+        (
+            "tests/security/test_surface_policy.py",
+            "tests/security/test_surface_policy_bindings.py",
+        ),
         "No public config download route is exposed by this slice.",
     ),
     _p(
