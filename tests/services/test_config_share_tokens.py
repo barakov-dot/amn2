@@ -299,6 +299,116 @@ def test_redeem_config_share_download_records_allowed_audit_without_payloads():
     assert "PresharedKey" not in serialized
 
 
+def test_redeem_config_share_download_rate_limit_blocks_before_token_lookup():
+    store = RecordingRedeemStore(record=_record())
+    audit_store = RecordingAuditStore()
+    rate_limit_store = RecordingRateLimitStore(blocked=True)
+
+    decision = redeem_config_share_download(
+        store,
+        raw_token="raw-share-token-with-vpn://payload",
+        requested_device_id=10,
+        requested_artifact_kinds=("wireguard_conf",),
+        target_client="amnezia_generic",
+        now=NOW,
+        used_at=NOW + timedelta(seconds=1),
+        ip_hash="sha256:ip-hash",
+        audit_store=audit_store,
+        rate_limit_store=rate_limit_store,
+    )
+
+    assert decision.allowed is False
+    assert decision.denial_category == "rate_limited"
+    assert decision.public_message == "Config link is invalid or expired."
+    assert store.lookups == []
+    assert store.redeems == []
+    assert rate_limit_store.checks == [
+        {
+            "scope_key": "config-share-redeem:ip:sha256:ip-hash",
+            "now": "2026-06-01T12:00:00+00:00",
+        }
+    ]
+    assert rate_limit_store.attempts == [
+        {
+            "scope_key": "config-share-redeem:ip:sha256:ip-hash",
+            "now": "2026-06-01T12:00:00+00:00",
+            "allowed": False,
+            "denial_category": "rate_limited",
+        }
+    ]
+    assert audit_store.actions[0]["action"] == "config.share.download_denied"
+    assert audit_store.actions[0]["metadata"]["denial_category"] == "rate_limited"
+    serialized = str(audit_store.actions)
+    assert "raw-share-token" not in serialized
+    assert hash_config_share_token("raw-share-token-with-vpn://payload") not in serialized
+    assert "vpn://" not in serialized
+    assert "PrivateKey" not in serialized
+    assert "PresharedKey" not in serialized
+
+
+def test_redeem_config_share_download_records_safe_rate_limit_attempt_on_denied_request():
+    store = RecordingRedeemStore(record=_record())
+    rate_limit_store = RecordingRateLimitStore(blocked=False)
+
+    decision = redeem_config_share_download(
+        store,
+        raw_token="raw-share-token",
+        requested_device_id=11,
+        requested_artifact_kinds=("wireguard_conf",),
+        target_client="amnezia_generic",
+        now=NOW,
+        used_at=NOW + timedelta(seconds=1),
+        ip_hash="sha256:ip-hash",
+        rate_limit_store=rate_limit_store,
+    )
+
+    assert decision.allowed is False
+    assert decision.denial_category == "resource_not_bound"
+    assert rate_limit_store.attempts == [
+        {
+            "scope_key": "config-share-redeem:ip:sha256:ip-hash",
+            "now": "2026-06-01T12:00:00+00:00",
+            "allowed": False,
+            "denial_category": "resource_not_bound",
+        }
+    ]
+    serialized = str(rate_limit_store.attempts)
+    assert "raw-share-token" not in serialized
+    assert hash_config_share_token("raw-share-token") not in serialized
+    assert "vpn://" not in serialized
+
+
+def test_redeem_config_share_download_records_safe_rate_limit_attempt_on_allowed_request():
+    store = RecordingRedeemStore(record=_record())
+    rate_limit_store = RecordingRateLimitStore(blocked=False)
+
+    decision = redeem_config_share_download(
+        store,
+        raw_token="raw-share-token",
+        requested_device_id=10,
+        requested_artifact_kinds=("wireguard_conf",),
+        target_client="amnezia_generic",
+        now=NOW,
+        used_at=NOW + timedelta(seconds=1),
+        ip_hash="sha256:ip-hash",
+        rate_limit_store=rate_limit_store,
+    )
+
+    assert decision.allowed is True
+    assert rate_limit_store.attempts == [
+        {
+            "scope_key": "config-share-redeem:ip:sha256:ip-hash",
+            "now": "2026-06-01T12:00:00+00:00",
+            "allowed": True,
+            "denial_category": None,
+        }
+    ]
+    serialized = str(rate_limit_store.attempts)
+    assert "raw-share-token" not in serialized
+    assert hash_config_share_token("raw-share-token") not in serialized
+    assert "vpn://" not in serialized
+
+
 def test_redeem_config_share_download_denies_invalid_request_without_consuming_token():
     store = RecordingRedeemStore(record=_record())
 
@@ -457,3 +567,31 @@ class RecordingAuditStore:
             }
         )
         return len(self.actions)
+
+
+class RecordingRateLimitStore:
+    def __init__(self, *, blocked: bool):
+        self.blocked = blocked
+        self.checks = []
+        self.attempts = []
+
+    def is_config_share_redeem_rate_limited(self, *, scope_key: str, now: str) -> bool:
+        self.checks.append({"scope_key": scope_key, "now": now})
+        return self.blocked
+
+    def record_config_share_redeem_attempt(
+        self,
+        *,
+        scope_key: str,
+        now: str,
+        allowed: bool,
+        denial_category: str | None = None,
+    ) -> None:
+        self.attempts.append(
+            {
+                "scope_key": scope_key,
+                "now": now,
+                "allowed": allowed,
+                "denial_category": denial_category,
+            }
+        )

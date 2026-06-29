@@ -30,6 +30,7 @@ ConfigShareDenialCategory = Literal[
     "resource_not_bound",
     "artifact_not_allowed",
     "unsupported_target_client",
+    "rate_limited",
 ]
 
 
@@ -83,6 +84,24 @@ class ConfigShareDownloadAuditStore(Protocol):
         target_device_id: int | None = None,
         metadata: dict[str, object] | None = None,
     ) -> int: ...
+
+
+class ConfigShareRedeemRateLimitStore(Protocol):
+    def is_config_share_redeem_rate_limited(
+        self,
+        *,
+        scope_key: str,
+        now: str,
+    ) -> bool: ...
+
+    def record_config_share_redeem_attempt(
+        self,
+        *,
+        scope_key: str,
+        now: str,
+        allowed: bool,
+        denial_category: str | None = None,
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -300,12 +319,37 @@ def redeem_config_share_download(
     ip_hash: str | None = None,
     audit_store: ConfigShareDownloadAuditStore | None = None,
     audit_admin_telegram_id: int = 0,
+    rate_limit_store: ConfigShareRedeemRateLimitStore | None = None,
 ) -> ConfigShareDownloadDecision:
-    token_hash = hash_config_share_token(raw_token)
     now_text = _format_datetime(now)
     assert now_text is not None
     used_at_text = _format_datetime(used_at)
     assert used_at_text is not None
+    rate_limit_scope_key = _config_share_redeem_rate_limit_scope_key(ip_hash)
+    if rate_limit_store is not None and rate_limit_store.is_config_share_redeem_rate_limited(
+        scope_key=rate_limit_scope_key,
+        now=now_text,
+    ):
+        decision = _denied_config_share_download_decision(
+            requested_device_id=requested_device_id,
+            requested_artifact_kinds=requested_artifact_kinds,
+            target_client=target_client,
+            denial_category="rate_limited",
+        )
+        _record_config_share_download_audit(
+            audit_store,
+            decision,
+            admin_telegram_id=audit_admin_telegram_id,
+        )
+        _record_config_share_redeem_rate_limit_attempt(
+            rate_limit_store,
+            decision,
+            scope_key=rate_limit_scope_key,
+            now=now_text,
+        )
+        return decision
+
+    token_hash = hash_config_share_token(raw_token)
     row = store.get_config_share_token_for_auth(
         token_hash=token_hash,
         now=now_text,
@@ -323,6 +367,12 @@ def redeem_config_share_download(
             decision,
             admin_telegram_id=audit_admin_telegram_id,
         )
+        _record_config_share_redeem_rate_limit_attempt(
+            rate_limit_store,
+            decision,
+            scope_key=rate_limit_scope_key,
+            now=now_text,
+        )
         return decision
 
     record = _config_share_record_from_row(row)
@@ -338,6 +388,12 @@ def redeem_config_share_download(
             audit_store,
             decision,
             admin_telegram_id=audit_admin_telegram_id,
+        )
+        _record_config_share_redeem_rate_limit_attempt(
+            rate_limit_store,
+            decision,
+            scope_key=rate_limit_scope_key,
+            now=now_text,
         )
         return decision
 
@@ -362,11 +418,23 @@ def redeem_config_share_download(
             decision,
             admin_telegram_id=audit_admin_telegram_id,
         )
+        _record_config_share_redeem_rate_limit_attempt(
+            rate_limit_store,
+            decision,
+            scope_key=rate_limit_scope_key,
+            now=now_text,
+        )
         return decision
     _record_config_share_download_audit(
         audit_store,
         decision,
         admin_telegram_id=audit_admin_telegram_id,
+    )
+    _record_config_share_redeem_rate_limit_attempt(
+        rate_limit_store,
+        decision,
+        scope_key=rate_limit_scope_key,
+        now=now_text,
     )
     return decision
 
@@ -425,6 +493,29 @@ def _record_config_share_download_audit(
         target_device_id=decision.requested_device_id,
         metadata=decision.safe_audit_metadata(),
     )
+
+
+def _record_config_share_redeem_rate_limit_attempt(
+    rate_limit_store: ConfigShareRedeemRateLimitStore | None,
+    decision: ConfigShareDownloadDecision,
+    *,
+    scope_key: str,
+    now: str,
+) -> None:
+    if rate_limit_store is None:
+        return
+    rate_limit_store.record_config_share_redeem_attempt(
+        scope_key=scope_key,
+        now=now,
+        allowed=decision.allowed,
+        denial_category=decision.denial_category,
+    )
+
+
+def _config_share_redeem_rate_limit_scope_key(ip_hash: str | None) -> str:
+    if ip_hash is None or not ip_hash.strip():
+        return "config-share-redeem:ip:unknown"
+    return f"config-share-redeem:ip:{ip_hash.strip()}"
 
 
 def _config_share_record_from_row(row: Any) -> ConfigShareTokenRecord:
