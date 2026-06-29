@@ -202,6 +202,14 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS config_share_redeem_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope_key TEXT NOT NULL,
+            attempted_at TEXT NOT NULL,
+            allowed INTEGER NOT NULL CHECK (allowed IN (0, 1)),
+            denial_category TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS ignored_remote_peers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             server_id INTEGER NOT NULL,
@@ -235,6 +243,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             ON config_share_tokens(owner_user_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_config_share_tokens_expiry
             ON config_share_tokens(expires_at);
+        CREATE INDEX IF NOT EXISTS idx_config_share_redeem_attempts_scope_time
+            ON config_share_redeem_attempts(scope_key, attempted_at DESC);
         CREATE INDEX IF NOT EXISTS idx_ignored_remote_peers_server
             ON ignored_remote_peers(server_id, created_at DESC);
         """

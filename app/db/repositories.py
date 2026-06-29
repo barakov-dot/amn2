@@ -3,11 +3,14 @@ import json
 import sqlite3
 from contextlib import contextmanager
 from collections.abc import Iterator
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 DEFAULT_PLAN_DAYS = (3, 7, 10, 14, 30, 60, 90, 180)
 USER_STATUSES = {"active", "blocked", "deleted"}
 SERVER_STATUSES = {"active", "degraded", "disabled"}
+CONFIG_SHARE_REDEEM_RATE_LIMIT_MAX_DENIED_ATTEMPTS = 5
+CONFIG_SHARE_REDEEM_RATE_LIMIT_WINDOW = timedelta(minutes=10)
 
 
 class Repository:
@@ -1874,6 +1877,64 @@ class Repository:
         self._commit()
         return cursor.rowcount > 0
 
+    def record_config_share_redeem_attempt(
+        self,
+        *,
+        scope_key: str,
+        now: str,
+        allowed: bool,
+        denial_category: str | None = None,
+    ) -> None:
+        actual_scope_key = scope_key.strip()
+        if not actual_scope_key:
+            raise ValueError("scope_key is required")
+        attempted_at = _format_utc_timestamp(_parse_utc_timestamp(now))
+        self._conn.execute(
+            """
+            INSERT INTO config_share_redeem_attempts (
+                scope_key,
+                attempted_at,
+                allowed,
+                denial_category
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                actual_scope_key,
+                attempted_at,
+                int(allowed),
+                denial_category,
+            ),
+        )
+        self._commit()
+
+    def is_config_share_redeem_rate_limited(
+        self,
+        *,
+        scope_key: str,
+        now: str,
+    ) -> bool:
+        actual_scope_key = scope_key.strip()
+        if not actual_scope_key:
+            raise ValueError("scope_key is required")
+        current_time = _parse_utc_timestamp(now)
+        cutoff = _format_utc_timestamp(
+            current_time - CONFIG_SHARE_REDEEM_RATE_LIMIT_WINDOW
+        )
+        current = _format_utc_timestamp(current_time)
+        row = self._conn.execute(
+            """
+            SELECT COUNT(*) AS denied_attempt_count
+            FROM config_share_redeem_attempts
+            WHERE scope_key = ?
+              AND allowed = 0
+              AND attempted_at >= ?
+              AND attempted_at <= ?
+            """,
+            (actual_scope_key, cutoff, current),
+        ).fetchone()
+        return int(row["denied_attempt_count"]) >= CONFIG_SHARE_REDEEM_RATE_LIMIT_MAX_DENIED_ATTEMPTS
+
     def _commit(self) -> None:
         if self._transaction_depth == 0:
             self._conn.commit()
@@ -1905,6 +1966,22 @@ def _validate_user_status(status: str) -> None:
 def _validate_server_status(status: str) -> None:
     if status not in SERVER_STATUSES:
         raise ValueError(f"unsupported server status: {status}")
+
+
+def _parse_utc_timestamp(value: str) -> datetime:
+    text = value.strip()
+    if not text:
+        raise ValueError("timestamp is required")
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _format_utc_timestamp(value: datetime) -> str:
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _validate_server_fields(

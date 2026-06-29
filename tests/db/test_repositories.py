@@ -1153,6 +1153,160 @@ def test_config_share_redeem_audit_records_safe_admin_action(tmp_path):
     assert "PresharedKey" not in metadata
 
 
+def test_config_share_redeem_rate_limit_persists_safe_attempts_and_blocks_scope(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    scope_key = "config-share-redeem:ip:sha256:ip-hash"
+
+    for minute in range(4):
+        repo.record_config_share_redeem_attempt(
+            scope_key=scope_key,
+            now=f"2026-06-01T12:0{minute}:00Z",
+            allowed=False,
+            denial_category="expired_token",
+        )
+
+    assert not repo.is_config_share_redeem_rate_limited(
+        scope_key=scope_key,
+        now="2026-06-01T12:04:00Z",
+    )
+
+    repo.record_config_share_redeem_attempt(
+        scope_key=scope_key,
+        now="2026-06-01T12:04:00Z",
+        allowed=False,
+        denial_category="expired_token",
+    )
+
+    assert repo.is_config_share_redeem_rate_limited(
+        scope_key=scope_key,
+        now="2026-06-01T12:05:00Z",
+    )
+    rows = conn.execute(
+        "SELECT * FROM config_share_redeem_attempts ORDER BY id"
+    ).fetchall()
+    assert len(rows) == 5
+    assert rows[0]["scope_key"] == scope_key
+    assert rows[0]["allowed"] == 0
+    assert rows[0]["denial_category"] == "expired_token"
+    serialized_rows = "\n".join(str(dict(row)) for row in rows)
+    assert "raw-share-token" not in serialized_rows
+    assert hash_config_share_token("raw-share-token") not in serialized_rows
+    assert "vpn://" not in serialized_rows
+    assert "PrivateKey" not in serialized_rows
+    assert "PresharedKey" not in serialized_rows
+
+
+def test_config_share_redeem_rate_limit_ignores_allowed_and_old_attempts(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    scope_key = "config-share-redeem:ip:sha256:ip-hash"
+
+    for minute in range(5):
+        repo.record_config_share_redeem_attempt(
+            scope_key=scope_key,
+            now=f"2026-06-01T11:4{minute}:00Z",
+            allowed=False,
+            denial_category="expired_token",
+        )
+        repo.record_config_share_redeem_attempt(
+            scope_key=scope_key,
+            now=f"2026-06-01T12:0{minute}:00Z",
+            allowed=True,
+        )
+
+    assert not repo.is_config_share_redeem_rate_limited(
+        scope_key=scope_key,
+        now="2026-06-01T12:05:00Z",
+    )
+
+
+def test_config_share_redeem_repository_rate_limit_blocks_before_consume(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    user_id, server_id = _create_user_and_server(repo)
+    device_id = repo.create_device(
+        user_id=user_id,
+        server_id=server_id,
+        name="phone",
+        duration_days=7,
+        vpn_ip="10.8.0.99",
+        peer_public_key="share-public",
+        peer_private_key_encrypted="v1:share-private",
+        preshared_key_encrypted="v1:share-psk",
+        config_version="amneziawg_v2",
+    )
+    repo.create_config_share_token(
+        token_id="share-token-1",
+        token_hash=hash_config_share_token("raw-share-token"),
+        token_prefix="raw-shar",
+        purpose="config_share",
+        created_by_actor="web-admin:7",
+        owner_user_id=user_id,
+        bound_device_ids=[device_id],
+        bound_server_ids=[server_id],
+        allowed_artifact_kinds=["wireguard_conf"],
+        target_client="amnezia_generic",
+        expires_at="2026-06-01T12:30:00Z",
+        one_time=True,
+        max_downloads=1,
+    )
+    for minute in range(5):
+        repo.record_config_share_redeem_attempt(
+            scope_key="config-share-redeem:ip:sha256:ip-hash",
+            now=f"2026-06-01T12:0{minute}:00Z",
+            allowed=False,
+            denial_category="expired_token",
+        )
+
+    decision = redeem_config_share_download(
+        repo,
+        raw_token="raw-share-token",
+        requested_device_id=device_id,
+        requested_artifact_kinds=("wireguard_conf",),
+        target_client="amnezia_generic",
+        now=datetime(2026, 6, 1, 12, 5, tzinfo=timezone.utc),
+        used_at=datetime(2026, 6, 1, 12, 5, 1, tzinfo=timezone.utc),
+        ip_hash="sha256:ip-hash",
+        audit_store=repo,
+        rate_limit_store=repo,
+    )
+
+    assert decision.allowed is False
+    assert decision.denial_category == "rate_limited"
+    token = conn.execute(
+        "SELECT download_count, last_used_at FROM config_share_tokens WHERE id = ?",
+        ("share-token-1",),
+    ).fetchone()
+    assert token["download_count"] == 0
+    assert token["last_used_at"] is None
+    actions = conn.execute(
+        "SELECT * FROM admin_actions ORDER BY id DESC LIMIT 1"
+    ).fetchall()
+    assert len(actions) == 1
+    action = actions[0]
+    assert action["action"] == "config.share.download_denied"
+    assert action["target_user_id"] is None
+    assert action["target_device_id"] == device_id
+    assert '"denial_category": "rate_limited"' in action["metadata_json"]
+    attempts = conn.execute(
+        "SELECT * FROM config_share_redeem_attempts ORDER BY id"
+    ).fetchall()
+    assert len(attempts) == 6
+    assert attempts[-1]["denial_category"] == "rate_limited"
+    serialized = "\n".join(
+        [action["metadata_json"], *(str(dict(row)) for row in attempts)]
+    )
+    assert "raw-share-token" not in serialized
+    assert hash_config_share_token("raw-share-token") not in serialized
+    assert "vpn://" not in serialized
+    assert "PrivateKey" not in serialized
+    assert "PresharedKey" not in serialized
+
+
 def _create_user_and_server(repo: Repository) -> tuple[int, int]:
     user_id = repo.upsert_user(
         telegram_id=2001,
