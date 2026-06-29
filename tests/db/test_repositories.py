@@ -1,10 +1,12 @@
 import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 
 from app.db.connection import connect
 from app.db.repositories import Repository
 from app.db.schema import initialize_schema
+from app.services.config_share_tokens import hash_config_share_token, redeem_config_share_download
 
 
 def test_repository_creates_user_server_order_and_device(tmp_path):
@@ -1087,6 +1089,68 @@ def test_redeem_config_share_token_for_auth_is_one_time_and_atomic(tmp_path):
         )
         is None
     )
+
+
+def test_config_share_redeem_audit_records_safe_admin_action(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    user_id, server_id = _create_user_and_server(repo)
+    device_id = repo.create_device(
+        user_id=user_id,
+        server_id=server_id,
+        name="phone",
+        duration_days=7,
+        vpn_ip="10.8.0.99",
+        peer_public_key="share-public",
+        peer_private_key_encrypted="v1:share-private",
+        preshared_key_encrypted="v1:share-psk",
+        config_version="amneziawg_v2",
+    )
+    repo.create_config_share_token(
+        token_id="share-token-1",
+        token_hash=hash_config_share_token("raw-share-token"),
+        token_prefix="raw-shar",
+        purpose="config_share",
+        created_by_actor="web-admin:7",
+        owner_user_id=user_id,
+        bound_device_ids=[device_id],
+        bound_server_ids=[server_id],
+        allowed_artifact_kinds=["wireguard_conf"],
+        target_client="amnezia_generic",
+        expires_at="2026-06-01T12:30:00Z",
+        one_time=True,
+        max_downloads=1,
+    )
+
+    decision = redeem_config_share_download(
+        repo,
+        raw_token="raw-share-token",
+        requested_device_id=device_id,
+        requested_artifact_kinds=("wireguard_conf",),
+        target_client="amnezia_generic",
+        now=datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc),
+        used_at=datetime(2026, 6, 1, 12, 0, 1, tzinfo=timezone.utc),
+        audit_store=repo,
+    )
+
+    assert decision.allowed is True
+    actions = repo.list_admin_actions_for_target_user(user_id)
+    assert len(actions) == 1
+    action = actions[0]
+    assert action["admin_telegram_id"] == 0
+    assert action["action"] == "config.share.download_allowed"
+    assert action["target_user_id"] == user_id
+    assert action["target_device_id"] == device_id
+    metadata = action["metadata_json"]
+    assert metadata is not None
+    assert '"event": "config.share.download_allowed"' in metadata
+    assert '"secret_class": "client-config-secret"' in metadata
+    assert "raw-share-token" not in metadata
+    assert hash_config_share_token("raw-share-token") not in metadata
+    assert "vpn://" not in metadata
+    assert "PrivateKey" not in metadata
+    assert "PresharedKey" not in metadata
 
 
 def _create_user_and_server(repo: Repository) -> tuple[int, int]:

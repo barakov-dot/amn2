@@ -73,6 +73,18 @@ class ConfigShareTokenRedeemStore(Protocol):
     ) -> Any | None: ...
 
 
+class ConfigShareDownloadAuditStore(Protocol):
+    def record_admin_action(
+        self,
+        *,
+        admin_telegram_id: int,
+        action: str,
+        target_user_id: int | None = None,
+        target_device_id: int | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> int: ...
+
+
 @dataclass(frozen=True)
 class ConfigShareTokenIssue:
     token_id: str
@@ -286,6 +298,8 @@ def redeem_config_share_download(
     now: datetime,
     used_at: datetime,
     ip_hash: str | None = None,
+    audit_store: ConfigShareDownloadAuditStore | None = None,
+    audit_admin_telegram_id: int = 0,
 ) -> ConfigShareDownloadDecision:
     token_hash = hash_config_share_token(raw_token)
     now_text = _format_datetime(now)
@@ -298,12 +312,18 @@ def redeem_config_share_download(
         requested_device_id=requested_device_id,
     )
     if row is None:
-        return _denied_config_share_download_decision(
+        decision = _denied_config_share_download_decision(
             requested_device_id=requested_device_id,
             requested_artifact_kinds=requested_artifact_kinds,
             target_client=target_client,
             denial_category="expired_token",
         )
+        _record_config_share_download_audit(
+            audit_store,
+            decision,
+            admin_telegram_id=audit_admin_telegram_id,
+        )
+        return decision
 
     record = _config_share_record_from_row(row)
     decision = evaluate_config_share_download(
@@ -314,6 +334,11 @@ def redeem_config_share_download(
         now=now,
     )
     if not decision.allowed:
+        _record_config_share_download_audit(
+            audit_store,
+            decision,
+            admin_telegram_id=audit_admin_telegram_id,
+        )
         return decision
 
     redeemed = store.redeem_config_share_token_for_auth(
@@ -323,7 +348,7 @@ def redeem_config_share_download(
         ip_hash=ip_hash,
     )
     if redeemed is None:
-        return _denied_config_share_download_decision(
+        decision = _denied_config_share_download_decision(
             requested_device_id=requested_device_id,
             requested_artifact_kinds=requested_artifact_kinds,
             target_client=target_client,
@@ -332,6 +357,17 @@ def redeem_config_share_download(
             owner_user_id=record.owner_user_id,
             denial_category="download_limit_reached",
         )
+        _record_config_share_download_audit(
+            audit_store,
+            decision,
+            admin_telegram_id=audit_admin_telegram_id,
+        )
+        return decision
+    _record_config_share_download_audit(
+        audit_store,
+        decision,
+        admin_telegram_id=audit_admin_telegram_id,
+    )
     return decision
 
 
@@ -371,6 +407,23 @@ def _denied_config_share_download_decision(
         requested_artifact_kinds=tuple(sorted(requested_artifact_kinds)),
         target_client=target_client if target_client in SUPPORTED_TARGET_CLIENTS else "unsupported",
         denial_category=denial_category,
+    )
+
+
+def _record_config_share_download_audit(
+    audit_store: ConfigShareDownloadAuditStore | None,
+    decision: ConfigShareDownloadDecision,
+    *,
+    admin_telegram_id: int,
+) -> None:
+    if audit_store is None:
+        return
+    audit_store.record_admin_action(
+        admin_telegram_id=admin_telegram_id,
+        action=decision.event_name,
+        target_user_id=decision.owner_user_id or None,
+        target_device_id=decision.requested_device_id,
+        metadata=decision.safe_audit_metadata(),
     )
 
 

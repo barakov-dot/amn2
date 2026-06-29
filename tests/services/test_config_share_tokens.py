@@ -253,6 +253,52 @@ def test_redeem_config_share_download_allows_then_atomically_consumes_token():
     assert "sha256:" not in str(decision.safe_audit_metadata())
 
 
+def test_redeem_config_share_download_records_allowed_audit_without_payloads():
+    store = RecordingRedeemStore(record=_record())
+    audit_store = RecordingAuditStore()
+
+    decision = redeem_config_share_download(
+        store,
+        raw_token="raw-share-token-with-vpn://payload",
+        requested_device_id=10,
+        requested_artifact_kinds=("wireguard_conf",),
+        target_client="amnezia_generic",
+        now=NOW,
+        used_at=NOW + timedelta(seconds=1),
+        ip_hash="sha256:ip-hash",
+        audit_store=audit_store,
+    )
+
+    assert decision.allowed is True
+    assert audit_store.actions == [
+        {
+            "admin_telegram_id": 0,
+            "action": "config.share.download_allowed",
+            "target_user_id": 42,
+            "target_device_id": 10,
+            "metadata": {
+                "event": "config.share.download_allowed",
+                "status": "allowed",
+                "denial_category": None,
+                "policy_id": "share.config_download",
+                "token_id": "share-token-1",
+                "token_prefix": "raw-shar",
+                "owner_user_id": 42,
+                "requested_device_id": 10,
+                "requested_artifact_kinds": ["wireguard_conf"],
+                "target_client": "amnezia_generic",
+                "secret_class": "client-config-secret",
+            },
+        }
+    ]
+    serialized = str(audit_store.actions)
+    assert "raw-share-token" not in serialized
+    assert hash_config_share_token("raw-share-token-with-vpn://payload") not in serialized
+    assert "vpn://" not in serialized
+    assert "PrivateKey" not in serialized
+    assert "PresharedKey" not in serialized
+
+
 def test_redeem_config_share_download_denies_invalid_request_without_consuming_token():
     store = RecordingRedeemStore(record=_record())
 
@@ -270,6 +316,38 @@ def test_redeem_config_share_download_denies_invalid_request_without_consuming_t
     assert decision.denial_category == "resource_not_bound"
     assert store.redeems == []
     assert decision.public_message == "Config link is invalid or expired."
+
+
+def test_redeem_config_share_download_records_denied_audit_without_payloads_or_consume():
+    store = RecordingRedeemStore(record=_record())
+    audit_store = RecordingAuditStore()
+
+    decision = redeem_config_share_download(
+        store,
+        raw_token="raw-share-token",
+        requested_device_id=11,
+        requested_artifact_kinds=("wireguard_conf",),
+        target_client="amnezia_generic",
+        now=NOW,
+        used_at=NOW + timedelta(seconds=1),
+        audit_store=audit_store,
+    )
+
+    assert decision.allowed is False
+    assert decision.denial_category == "resource_not_bound"
+    assert store.redeems == []
+    assert audit_store.actions[0]["action"] == "config.share.download_denied"
+    assert audit_store.actions[0]["target_user_id"] == 42
+    assert audit_store.actions[0]["target_device_id"] == 11
+    metadata = audit_store.actions[0]["metadata"]
+    assert metadata["status"] == "denied"
+    assert metadata["denial_category"] == "resource_not_bound"
+    serialized = str(audit_store.actions)
+    assert "raw-share-token" not in serialized
+    assert hash_config_share_token("raw-share-token") not in serialized
+    assert "vpn://" not in serialized
+    assert "PrivateKey" not in serialized
+    assert "PresharedKey" not in serialized
 
 
 def test_redeem_config_share_download_denies_when_atomic_consume_loses_race():
@@ -354,3 +432,28 @@ class RecordingRedeemStore:
             }
         )
         return self.redeem_record
+
+
+class RecordingAuditStore:
+    def __init__(self):
+        self.actions = []
+
+    def record_admin_action(
+        self,
+        *,
+        admin_telegram_id: int,
+        action: str,
+        target_user_id: int | None = None,
+        target_device_id: int | None = None,
+        metadata: dict[str, object] | None = None,
+    ) -> int:
+        self.actions.append(
+            {
+                "admin_telegram_id": admin_telegram_id,
+                "action": action,
+                "target_user_id": target_user_id,
+                "target_device_id": target_device_id,
+                "metadata": metadata,
+            }
+        )
+        return len(self.actions)
