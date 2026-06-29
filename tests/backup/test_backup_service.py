@@ -2,6 +2,7 @@ import hashlib
 import io
 import json
 import tarfile
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -11,6 +12,7 @@ from app.db.connection import connect
 from app.db.repositories import Repository
 from app.db.schema import initialize_schema
 from app.security.crypto import SecretBox
+from app.services.config_share_tokens import hash_config_share_token
 
 
 STRONG_SECRET = "test-secret-for-backup-1234567890-ABCDE"
@@ -40,6 +42,37 @@ def _create_database_with_encrypted_device(path, app_secret=STRONG_SECRET):
         peer_private_key_encrypted=box.encrypt_text("peer-private-key"),
         preshared_key_encrypted=box.encrypt_text("preshared-key"),
         config_version="amneziawg_v2",
+    )
+    conn.close()
+
+
+def _create_database_with_usable_config_share_token(path):
+    conn = connect(path)
+    initialize_schema(conn)
+    repo = Repository(conn)
+    user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="alice",
+        first_name="Alice",
+        last_name=None,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    now = datetime.now(timezone.utc)
+    repo.create_config_share_token(
+        token_id="share-token-1",
+        token_hash=hash_config_share_token("backup-redaction-token"),
+        token_prefix="backup-",
+        purpose="config_share",
+        created_by_actor="web-admin:7",
+        owner_user_id=user_id,
+        bound_device_ids=[10],
+        bound_server_ids=[server_id],
+        allowed_artifact_kinds=["wireguard_conf"],
+        target_client="amnezia_generic",
+        expires_at=(now + timedelta(minutes=30)).isoformat(),
+        created_at=now.isoformat(),
+        one_time=True,
+        max_downloads=1,
     )
     conn.close()
 
@@ -212,6 +245,7 @@ def test_backup_create_verify_and_restore_requires_secret(tmp_path, monkeypatch)
     assert "telegram_bot_token" in manifest["excludes"]
     assert "qr_files" in manifest["excludes"]
     assert "plain_configs" in manifest["excludes"]
+    assert "usable_config_share_token_hashes" in manifest["excludes"]
 
     encrypted_bytes = backup_path.read_bytes()
     assert b"APP_SECRET_KEY" not in encrypted_bytes
@@ -233,6 +267,48 @@ def test_create_rejects_directory_db_path(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="database.*regular file"):
         service.create(db_path=tmp_path, output_dir=tmp_path / "backups")
+
+
+def test_verify_accepts_legacy_manifest_excludes_without_share_token_hashes(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
+    db_path = tmp_path / "source.sqlite3"
+    _create_database(db_path)
+    database_payload = db_path.read_bytes()
+    manifest = build_manifest(
+        app_version="0.1.0",
+        database_checksum_sha256=hashlib.sha256(database_payload).hexdigest(),
+    )
+    manifest["excludes"] = [
+        "app_secret_key",
+        "telegram_bot_token",
+        "qr_files",
+        "plain_configs",
+    ]
+    backup_path = _write_encrypted_archive(
+        tmp_path / "legacy-manifest.tar.enc",
+        [
+            _regular_member("database.sqlite3", database_payload),
+            _regular_member("manifest.json", json.dumps(manifest).encode("utf-8")),
+        ],
+    )
+
+    service = BackupService(app_version="0.1.0")
+
+    assert service.verify(backup_path)["excludes"] == manifest["excludes"]
+
+
+def test_backup_create_rejects_usable_config_share_token_hashes(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
+    db_path = tmp_path / "source.sqlite3"
+    _create_database_with_usable_config_share_token(db_path)
+
+    service = BackupService(app_version="0.1.0")
+
+    with pytest.raises(ValueError, match="config share token.*dangerous mode"):
+        service.create(db_path=db_path, output_dir=tmp_path / "backups")
 
 
 def test_restore_refuses_overwrite_without_force(tmp_path, monkeypatch):
@@ -267,6 +343,35 @@ def test_restore_writes_database_only_after_successful_checksum(tmp_path, monkey
     assert target_path.read_bytes() == db_path.read_bytes()
     assert not (tmp_path / "manifest.json").exists()
     assert not (tmp_path / "database.sqlite3").exists()
+
+
+def test_restore_rejects_usable_config_share_token_hashes_before_writing_target(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
+    db_path = tmp_path / "source.sqlite3"
+    target_path = tmp_path / "restored.sqlite3"
+    _create_database_with_usable_config_share_token(db_path)
+    database_payload = db_path.read_bytes()
+    manifest = build_manifest(
+        app_version="0.1.0",
+        database_checksum_sha256=hashlib.sha256(database_payload).hexdigest(),
+    )
+    backup_path = _write_encrypted_archive(
+        tmp_path / "share-token-backup.tar.enc",
+        [
+            _regular_member("database.sqlite3", database_payload),
+            _regular_member("manifest.json", json.dumps(manifest).encode("utf-8")),
+        ],
+    )
+
+    service = BackupService(app_version="0.1.0")
+
+    with pytest.raises(ValueError, match="config share token.*dangerous mode"):
+        service.restore(backup_path=backup_path, target_db_path=target_path)
+
+    assert not target_path.exists()
 
 
 def test_restore_accepts_database_with_encrypted_peer_secrets_for_current_secret(tmp_path, monkeypatch):

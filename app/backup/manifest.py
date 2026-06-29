@@ -12,6 +12,13 @@ EXCLUDES = [
     "telegram_bot_token",
     "qr_files",
     "plain_configs",
+    "usable_config_share_token_hashes",
+]
+LEGACY_EXCLUDES = [
+    "app_secret_key",
+    "telegram_bot_token",
+    "qr_files",
+    "plain_configs",
 ]
 
 
@@ -44,7 +51,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         raise ValueError("Unsupported backup database_kind")
     if manifest.get("includes") != INCLUDES:
         raise ValueError("Unexpected backup includes")
-    if manifest.get("excludes") != EXCLUDES:
+    if manifest.get("excludes") not in (EXCLUDES, LEGACY_EXCLUDES):
         raise ValueError("Unexpected backup excludes")
     checksum = manifest.get("database_checksum_sha256")
     if not isinstance(checksum, str) or len(checksum) != 64:

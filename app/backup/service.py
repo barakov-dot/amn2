@@ -38,6 +38,11 @@ REQUIRED_COLUMNS = {
     "orders": {"requested_config_version"},
     "devices": {"first_connected_at", "last_connected_at"},
 }
+CONFIG_SHARE_TOKENS_TABLE = "config_share_tokens"
+USABLE_CONFIG_SHARE_TOKEN_ERROR = (
+    "Backup database contains usable config share token hashes; "
+    "restore requires explicit dangerous mode"
+)
 
 
 class BackupService:
@@ -48,6 +53,7 @@ class BackupService:
         db_path = Path(db_path)
         if not db_path.is_file():
             raise ValueError("database path must be a regular file")
+        self._validate_no_usable_config_share_tokens_from_path(db_path)
 
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -178,6 +184,7 @@ class BackupService:
                 self._validate_order_rows(conn)
                 self._validate_active_device_rows(conn)
                 self._validate_device_secrets(conn)
+                self._validate_no_usable_config_share_tokens(conn)
             finally:
                 conn.close()
         except sqlite3.DatabaseError as exc:
@@ -264,3 +271,66 @@ class BackupService:
 
     def _timestamp(self) -> str:
         return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    def _validate_no_usable_config_share_tokens_from_path(self, db_path: Path) -> None:
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                self._validate_no_usable_config_share_tokens(conn)
+            finally:
+                conn.close()
+        except sqlite3.DatabaseError as exc:
+            raise ValueError("Backup database is not a usable SQLite database") from exc
+
+    def _validate_no_usable_config_share_tokens(self, conn: sqlite3.Connection) -> None:
+        if not self._table_exists(conn, CONFIG_SHARE_TOKENS_TABLE):
+            return
+        rows = conn.execute(
+            """
+            SELECT id, expires_at, revoked_at, one_time, max_downloads, download_count
+            FROM config_share_tokens
+            WHERE purpose = 'config_share'
+            """
+        ).fetchall()
+        now = datetime.now(timezone.utc)
+        if any(self._config_share_token_is_usable(row, now=now) for row in rows):
+            raise ValueError(USABLE_CONFIG_SHARE_TOKEN_ERROR)
+
+    def _config_share_token_is_usable(self, row: sqlite3.Row, *, now: datetime) -> bool:
+        revoked_at = row["revoked_at"]
+        if revoked_at is not None and str(revoked_at).strip():
+            return False
+        expires_at = self._parse_backup_datetime(row["expires_at"], field_name="expires_at")
+        if expires_at <= now:
+            return False
+        download_count = int(row["download_count"])
+        max_downloads = int(row["max_downloads"])
+        if download_count >= max_downloads:
+            return False
+        if bool(row["one_time"]) and download_count > 0:
+            return False
+        return True
+
+    def _parse_backup_datetime(self, value: object, *, field_name: str) -> datetime:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError(
+                f"Backup database config share token has invalid {field_name}"
+            ) from exc
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    def _table_exists(self, conn: sqlite3.Connection, table_name: str) -> bool:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name = ?
+            """,
+            (table_name,),
+        ).fetchone()
+        return row is not None
