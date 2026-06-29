@@ -60,6 +60,7 @@ class ConfigShareTokenRedeemStore(Protocol):
         *,
         token_hash: str,
         now: str,
+        requested_device_id: int | None = None,
     ) -> Any | None: ...
 
     def redeem_config_share_token_for_auth(
@@ -291,7 +292,11 @@ def redeem_config_share_download(
     assert now_text is not None
     used_at_text = _format_datetime(used_at)
     assert used_at_text is not None
-    row = store.get_config_share_token_for_auth(token_hash=token_hash, now=now_text)
+    row = store.get_config_share_token_for_auth(
+        token_hash=token_hash,
+        now=now_text,
+        requested_device_id=requested_device_id,
+    )
     if row is None:
         return _denied_config_share_download_decision(
             requested_device_id=requested_device_id,
@@ -413,14 +418,14 @@ def _config_share_denial_category(
         return "download_limit_reached"
     if record.one_time and record.download_count > 0:
         return "download_limit_reached"
+    if requested_device_id not in record.bound_device_ids:
+        return "resource_not_bound"
     if record.owner_user_status != "active":
         return "inactive_owner"
     if record.device_status != "active":
         return "inactive_device"
     if record.server_status != "active":
         return "inactive_server"
-    if requested_device_id not in record.bound_device_ids:
-        return "resource_not_bound"
     if not requested_artifact_kinds:
         return "artifact_not_allowed"
     if any(artifact not in record.allowed_artifact_kinds for artifact in requested_artifact_kinds):

@@ -238,6 +238,7 @@ def test_redeem_config_share_download_allows_then_atomically_consumes_token():
         {
             "token_hash": hash_config_share_token("raw-share-token"),
             "now": "2026-06-01T12:00:00+00:00",
+            "requested_device_id": 10,
         }
     ]
     assert store.redeems == [
@@ -320,8 +321,20 @@ class RecordingRedeemStore:
         self.lookups = []
         self.redeems = []
 
-    def get_config_share_token_for_auth(self, *, token_hash: str, now: str):
-        self.lookups.append({"token_hash": token_hash, "now": now})
+    def get_config_share_token_for_auth(
+        self,
+        *,
+        token_hash: str,
+        now: str,
+        requested_device_id: int | None = None,
+    ):
+        self.lookups.append(
+            {
+                "token_hash": token_hash,
+                "now": now,
+                "requested_device_id": requested_device_id,
+            }
+        )
         return self.record
 
     def redeem_config_share_token_for_auth(

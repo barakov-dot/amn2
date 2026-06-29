@@ -1704,19 +1704,71 @@ class Repository:
         *,
         token_hash: str,
         now: str,
+        requested_device_id: int | None = None,
     ) -> sqlite3.Row | None:
         return self._conn.execute(
             """
-            SELECT config_share_tokens.*, users.status AS owner_status
+            SELECT
+                config_share_tokens.*,
+                users.status AS owner_status,
+                COALESCE(
+                    (
+                        SELECT devices.status
+                        FROM devices
+                        JOIN json_each(config_share_tokens.bound_device_ids_json) AS bound_device
+                          ON CAST(bound_device.value AS INTEGER) = devices.id
+                        WHERE :requested_device_id IS NOT NULL
+                          AND devices.id = :requested_device_id
+                        LIMIT 1
+                    ),
+                    (
+                        SELECT devices.status
+                        FROM devices
+                        JOIN json_each(config_share_tokens.bound_device_ids_json) AS bound_device
+                          ON CAST(bound_device.value AS INTEGER) = devices.id
+                        WHERE :requested_device_id IS NULL
+                        ORDER BY CASE WHEN devices.status = 'active' THEN 1 ELSE 0 END, devices.id
+                        LIMIT 1
+                    ),
+                    'missing'
+                ) AS device_status,
+                COALESCE(
+                    (
+                        SELECT servers.status
+                        FROM devices
+                        JOIN servers ON servers.id = devices.server_id
+                        JOIN json_each(config_share_tokens.bound_device_ids_json) AS bound_device
+                          ON CAST(bound_device.value AS INTEGER) = devices.id
+                        JOIN json_each(config_share_tokens.bound_server_ids_json) AS bound_server
+                          ON CAST(bound_server.value AS INTEGER) = servers.id
+                        WHERE :requested_device_id IS NOT NULL
+                          AND devices.id = :requested_device_id
+                        LIMIT 1
+                    ),
+                    (
+                        SELECT servers.status
+                        FROM servers
+                        JOIN json_each(config_share_tokens.bound_server_ids_json) AS bound_server
+                          ON CAST(bound_server.value AS INTEGER) = servers.id
+                        WHERE :requested_device_id IS NULL
+                        ORDER BY CASE WHEN servers.status = 'active' THEN 1 ELSE 0 END, servers.id
+                        LIMIT 1
+                    ),
+                    'missing'
+                ) AS server_status
             FROM config_share_tokens
             JOIN users ON users.id = config_share_tokens.owner_user_id
-            WHERE token_hash = ?
+            WHERE token_hash = :token_hash
               AND purpose = 'config_share'
               AND revoked_at IS NULL
-              AND expires_at > ?
+              AND expires_at > :now
               AND download_count < max_downloads
             """,
-            (token_hash, now),
+            {
+                "token_hash": token_hash,
+                "now": now,
+                "requested_device_id": requested_device_id,
+            },
         ).fetchone()
 
     def mark_config_share_token_used(
@@ -1770,7 +1822,31 @@ class Repository:
             return None
         return self._conn.execute(
             """
-            SELECT config_share_tokens.*, users.status AS owner_status
+            SELECT
+                config_share_tokens.*,
+                users.status AS owner_status,
+                COALESCE(
+                    (
+                        SELECT devices.status
+                        FROM devices
+                        JOIN json_each(config_share_tokens.bound_device_ids_json) AS bound_device
+                          ON CAST(bound_device.value AS INTEGER) = devices.id
+                        ORDER BY CASE WHEN devices.status = 'active' THEN 1 ELSE 0 END, devices.id
+                        LIMIT 1
+                    ),
+                    'missing'
+                ) AS device_status,
+                COALESCE(
+                    (
+                        SELECT servers.status
+                        FROM servers
+                        JOIN json_each(config_share_tokens.bound_server_ids_json) AS bound_server
+                          ON CAST(bound_server.value AS INTEGER) = servers.id
+                        ORDER BY CASE WHEN servers.status = 'active' THEN 1 ELSE 0 END, servers.id
+                        LIMIT 1
+                    ),
+                    'missing'
+                ) AS server_status
             FROM config_share_tokens
             JOIN users ON users.id = config_share_tokens.owner_user_id
             WHERE config_share_tokens.id = ?

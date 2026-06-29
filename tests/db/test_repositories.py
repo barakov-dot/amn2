@@ -894,6 +894,124 @@ def test_config_share_token_lifecycle_stores_hash_policy_and_usage_state(tmp_pat
     )
 
 
+def test_config_share_token_auth_lookup_includes_bound_device_and_server_status(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    user_id, server_id = _create_user_and_server(repo)
+    device_id = repo.create_device(
+        user_id=user_id,
+        server_id=server_id,
+        name="phone",
+        duration_days=7,
+        vpn_ip="10.8.0.99",
+        peer_public_key="share-public",
+        peer_private_key_encrypted="v1:share-private",
+        preshared_key_encrypted="v1:share-psk",
+        config_version="amneziawg_v2",
+    )
+    repo.create_config_share_token(
+        token_id="share-token-1",
+        token_hash="sha256:share-token-hash",
+        token_prefix="share-to",
+        purpose="config_share",
+        created_by_actor="web-admin:7",
+        owner_user_id=user_id,
+        bound_device_ids=[device_id],
+        bound_server_ids=[server_id],
+        allowed_artifact_kinds=["wireguard_conf"],
+        target_client="amnezia_generic",
+        expires_at="2026-06-01T12:30:00Z",
+        one_time=True,
+        max_downloads=1,
+    )
+
+    assert repo.revoke_device(
+        device_id,
+        reason="operator-review",
+        revoked_at="2026-06-01T12:02:00Z",
+    )
+    repo.set_server_status_for_admin(server_id, "disabled")
+
+    token = repo.get_config_share_token_for_auth(
+        token_hash="sha256:share-token-hash",
+        now="2026-06-01T12:05:00Z",
+    )
+
+    assert token is not None
+    assert token["device_status"] == "revoked"
+    assert token["server_status"] == "disabled"
+    assert token["owner_status"] == "active"
+    assert "raw-share-token" not in dict(token).values()
+
+
+def test_config_share_token_auth_lookup_prefers_requested_device_status(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    user_id, server_id = _create_user_and_server(repo)
+    active_device_id = repo.create_device(
+        user_id=user_id,
+        server_id=server_id,
+        name="active-phone",
+        duration_days=7,
+        vpn_ip="10.8.0.99",
+        peer_public_key="share-public-active",
+        peer_private_key_encrypted="v1:share-private-active",
+        preshared_key_encrypted="v1:share-psk-active",
+        config_version="amneziawg_v2",
+    )
+    revoked_device_id = repo.create_device(
+        user_id=user_id,
+        server_id=server_id,
+        name="revoked-phone",
+        duration_days=7,
+        vpn_ip="10.8.0.100",
+        peer_public_key="share-public-revoked",
+        peer_private_key_encrypted="v1:share-private-revoked",
+        preshared_key_encrypted="v1:share-psk-revoked",
+        config_version="amneziawg_v2",
+    )
+    repo.create_config_share_token(
+        token_id="share-token-1",
+        token_hash="sha256:share-token-hash",
+        token_prefix="share-to",
+        purpose="config_share",
+        created_by_actor="web-admin:7",
+        owner_user_id=user_id,
+        bound_device_ids=[active_device_id, revoked_device_id],
+        bound_server_ids=[server_id],
+        allowed_artifact_kinds=["wireguard_conf"],
+        target_client="amnezia_generic",
+        expires_at="2026-06-01T12:30:00Z",
+        one_time=True,
+        max_downloads=1,
+    )
+    assert repo.revoke_device(
+        revoked_device_id,
+        reason="operator-review",
+        revoked_at="2026-06-01T12:02:00Z",
+    )
+
+    active_lookup = repo.get_config_share_token_for_auth(
+        token_hash="sha256:share-token-hash",
+        now="2026-06-01T12:05:00Z",
+        requested_device_id=active_device_id,
+    )
+    revoked_lookup = repo.get_config_share_token_for_auth(
+        token_hash="sha256:share-token-hash",
+        now="2026-06-01T12:05:00Z",
+        requested_device_id=revoked_device_id,
+    )
+
+    assert active_lookup is not None
+    assert active_lookup["device_status"] == "active"
+    assert active_lookup["server_status"] == "active"
+    assert revoked_lookup is not None
+    assert revoked_lookup["device_status"] == "revoked"
+    assert revoked_lookup["server_status"] == "active"
+
+
 def test_redeem_config_share_token_for_auth_is_one_time_and_atomic(tmp_path):
     conn = connect(tmp_path / "test.sqlite3")
     initialize_schema(conn)
