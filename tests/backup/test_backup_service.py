@@ -8,6 +8,7 @@ import pytest
 
 from app.backup.manifest import build_manifest
 from app.backup.service import BackupService
+from app.cli import build_parser
 from app.db.connection import connect
 from app.db.repositories import Repository
 from app.db.schema import initialize_schema
@@ -372,6 +373,73 @@ def test_restore_rejects_usable_config_share_token_hashes_before_writing_target(
         service.restore(backup_path=backup_path, target_db_path=target_path)
 
     assert not target_path.exists()
+
+
+def test_restore_usable_config_share_tokens_dangerous_mode_gate_is_closed():
+    service = BackupService(app_version="0.1.0")
+
+    gate = service.config_share_restore_dangerous_mode_gate()
+
+    assert gate == {
+        "gate": "CONFIG_SHARE_RESTORE_USABLE_TOKEN_HASHES_DANGEROUS_MODE",
+        "status": "not_implemented",
+        "enabled": False,
+        "requires_explicit_operator_gate": True,
+        "restores_usable_config_share_token_hashes": False,
+    }
+
+
+def test_restore_rejects_explicit_share_token_dangerous_mode_before_writing_target(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
+    db_path = tmp_path / "source.sqlite3"
+    target_path = tmp_path / "restored.sqlite3"
+    _create_database(db_path)
+
+    service = BackupService(app_version="0.1.0")
+    backup_path = service.create(db_path=db_path, output_dir=tmp_path / "backups")
+
+    with pytest.raises(ValueError, match="dangerous mode gate.*not implemented"):
+        service.restore(
+            backup_path=backup_path,
+            target_db_path=target_path,
+            restore_usable_config_share_tokens=True,
+        )
+
+    assert not target_path.exists()
+
+
+def test_restore_cli_does_not_expose_share_token_dangerous_mode():
+    parser = build_parser()
+
+    args = parser.parse_args(
+        [
+            "backup",
+            "restore",
+            "--file",
+            "backup.tar.enc",
+            "--target-db",
+            "restored.sqlite3",
+            "--force",
+        ]
+    )
+
+    assert args.force is True
+    assert not hasattr(args, "restore_usable_config_share_tokens")
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "backup",
+                "restore",
+                "--file",
+                "backup.tar.enc",
+                "--target-db",
+                "restored.sqlite3",
+                "--restore-usable-config-share-tokens",
+            ]
+        )
 
 
 def test_restore_accepts_database_with_encrypted_peer_secrets_for_current_secret(tmp_path, monkeypatch):

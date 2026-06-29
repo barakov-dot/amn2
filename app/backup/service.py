@@ -39,6 +39,12 @@ REQUIRED_COLUMNS = {
     "devices": {"first_connected_at", "last_connected_at"},
 }
 CONFIG_SHARE_TOKENS_TABLE = "config_share_tokens"
+CONFIG_SHARE_RESTORE_DANGEROUS_MODE_GATE = (
+    "CONFIG_SHARE_RESTORE_USABLE_TOKEN_HASHES_DANGEROUS_MODE"
+)
+CONFIG_SHARE_RESTORE_DANGEROUS_MODE_NOT_IMPLEMENTED_ERROR = (
+    "Config share restore dangerous mode gate is not implemented"
+)
 USABLE_CONFIG_SHARE_TOKEN_ERROR = (
     "Backup database contains usable config share token hashes; "
     "restore requires explicit dangerous mode"
@@ -81,7 +87,11 @@ class BackupService:
         backup_path: Path,
         target_db_path: Path,
         force: bool = False,
+        restore_usable_config_share_tokens: bool = False,
     ) -> Path:
+        if restore_usable_config_share_tokens:
+            raise ValueError(CONFIG_SHARE_RESTORE_DANGEROUS_MODE_NOT_IMPLEMENTED_ERROR)
+
         target_db_path = Path(target_db_path)
         if target_db_path.exists() and not force:
             raise FileExistsError(target_db_path)
@@ -271,6 +281,15 @@ class BackupService:
 
     def _timestamp(self) -> str:
         return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    def config_share_restore_dangerous_mode_gate(self) -> dict[str, Any]:
+        return {
+            "gate": CONFIG_SHARE_RESTORE_DANGEROUS_MODE_GATE,
+            "status": "not_implemented",
+            "enabled": False,
+            "requires_explicit_operator_gate": True,
+            "restores_usable_config_share_token_hashes": False,
+        }
 
     def _validate_no_usable_config_share_tokens_from_path(self, db_path: Path) -> None:
         try:
