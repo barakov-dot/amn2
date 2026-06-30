@@ -358,6 +358,25 @@ def test_backup_create_rejects_usable_config_share_token_hashes(tmp_path, monkey
         service.create(db_path=db_path, output_dir=tmp_path / "backups")
 
 
+def test_backup_create_rejects_malformed_config_share_token_policy_shape(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
+    db_path = tmp_path / "source.sqlite3"
+    _create_database_with_config_share_token(
+        db_path,
+        one_time=True,
+        max_downloads=2,
+        download_count=1,
+    )
+
+    service = BackupService(app_version="0.1.0")
+
+    with pytest.raises(ValueError, match="config share token.*policy shape"):
+        service.create(db_path=db_path, output_dir=tmp_path / "backups")
+
+
 def test_restore_refuses_overwrite_without_force(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
     db_path = tmp_path / "source.sqlite3"
@@ -416,6 +435,40 @@ def test_restore_rejects_usable_config_share_token_hashes_before_writing_target(
     service = BackupService(app_version="0.1.0")
 
     with pytest.raises(ValueError, match="config share token.*dangerous mode"):
+        service.restore(backup_path=backup_path, target_db_path=target_path)
+
+    assert not target_path.exists()
+
+
+def test_restore_rejects_malformed_config_share_token_policy_shape_before_writing_target(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
+    db_path = tmp_path / "source.sqlite3"
+    target_path = tmp_path / "restored.sqlite3"
+    _create_database_with_config_share_token(
+        db_path,
+        one_time=True,
+        max_downloads=2,
+        download_count=1,
+    )
+    database_payload = db_path.read_bytes()
+    manifest = build_manifest(
+        app_version="0.1.0",
+        database_checksum_sha256=hashlib.sha256(database_payload).hexdigest(),
+    )
+    backup_path = _write_encrypted_archive(
+        tmp_path / "malformed-share-token-backup.tar.enc",
+        [
+            _regular_member("database.sqlite3", database_payload),
+            _regular_member("manifest.json", json.dumps(manifest).encode("utf-8")),
+        ],
+    )
+
+    service = BackupService(app_version="0.1.0")
+
+    with pytest.raises(ValueError, match="config share token.*policy shape"):
         service.restore(backup_path=backup_path, target_db_path=target_path)
 
     assert not target_path.exists()

@@ -49,6 +49,9 @@ USABLE_CONFIG_SHARE_TOKEN_ERROR = (
     "Backup database contains usable config share token hashes; "
     "restore requires explicit dangerous mode"
 )
+MALFORMED_CONFIG_SHARE_TOKEN_POLICY_ERROR = (
+    "Backup database config share token has invalid policy shape"
+)
 
 
 class BackupService:
@@ -321,8 +324,24 @@ class BackupService:
             """
         ).fetchall()
         now = datetime.now(timezone.utc)
+        for row in rows:
+            self._validate_config_share_token_policy_shape(row)
         if any(self._config_share_token_is_usable(row, now=now) for row in rows):
             raise ValueError(USABLE_CONFIG_SHARE_TOKEN_ERROR)
+
+    def _validate_config_share_token_policy_shape(self, row: sqlite3.Row) -> None:
+        try:
+            one_time = int(row["one_time"])
+            max_downloads = int(row["max_downloads"])
+            download_count = int(row["download_count"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(MALFORMED_CONFIG_SHARE_TOKEN_POLICY_ERROR) from exc
+        if one_time not in (0, 1):
+            raise ValueError(MALFORMED_CONFIG_SHARE_TOKEN_POLICY_ERROR)
+        if max_downloads <= 0 or download_count < 0:
+            raise ValueError(MALFORMED_CONFIG_SHARE_TOKEN_POLICY_ERROR)
+        if bool(one_time) and max_downloads != 1:
+            raise ValueError(MALFORMED_CONFIG_SHARE_TOKEN_POLICY_ERROR)
 
     def _config_share_token_is_usable(self, row: sqlite3.Row, *, now: datetime) -> bool:
         revoked_at = row["revoked_at"]
