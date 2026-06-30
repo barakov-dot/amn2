@@ -326,6 +326,7 @@ class BackupService:
         now = datetime.now(timezone.utc)
         for row in rows:
             self._validate_config_share_token_policy_shape(row)
+            self._validate_config_share_token_timestamp_shape(row)
         if any(self._config_share_token_is_usable(row, now=now) for row in rows):
             raise ValueError(USABLE_CONFIG_SHARE_TOKEN_ERROR)
 
@@ -342,6 +343,12 @@ class BackupService:
             raise ValueError(MALFORMED_CONFIG_SHARE_TOKEN_POLICY_ERROR)
         if bool(one_time) and max_downloads != 1:
             raise ValueError(MALFORMED_CONFIG_SHARE_TOKEN_POLICY_ERROR)
+
+    def _validate_config_share_token_timestamp_shape(self, row: sqlite3.Row) -> None:
+        self._parse_backup_datetime(row["expires_at"], field_name="expires_at")
+        revoked_at = row["revoked_at"]
+        if revoked_at is not None and str(revoked_at).strip():
+            self._parse_backup_datetime(revoked_at, field_name="revoked_at")
 
     def _config_share_token_is_usable(self, row: sqlite3.Row, *, now: datetime) -> bool:
         revoked_at = row["revoked_at"]
