@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import sqlite3
 import tarfile
 from datetime import datetime, timedelta, timezone
 
@@ -135,6 +136,23 @@ def _update_config_share_token_field(path, field_name, value):
     )
     conn.commit()
     conn.close()
+
+
+def _break_config_share_owner_foreign_key(path):
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            """
+            UPDATE config_share_tokens
+            SET owner_user_id = ?
+            WHERE id = ?
+            """,
+            (999999, "share-token-1"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def _create_database_with_config_share_token_history(path, history_state):
@@ -485,6 +503,21 @@ def test_backup_create_rejects_malformed_config_share_token_expires_at_even_when
         service.create(db_path=db_path, output_dir=tmp_path / "backups")
 
 
+def test_backup_create_rejects_foreign_key_integrity_violations(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
+    db_path = tmp_path / "source.sqlite3"
+    _create_database_with_config_share_token_history(db_path, "expired")
+    _break_config_share_owner_foreign_key(db_path)
+
+    service = BackupService(app_version="0.1.0")
+
+    with pytest.raises(ValueError, match="foreign key integrity"):
+        service.create(db_path=db_path, output_dir=tmp_path / "backups")
+
+
 def test_restore_refuses_overwrite_without_force(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
     db_path = tmp_path / "source.sqlite3"
@@ -692,6 +725,36 @@ def test_restore_rejects_malformed_config_share_token_revoked_at_before_writing_
     service = BackupService(app_version="0.1.0")
 
     with pytest.raises(ValueError, match="config share token.*revoked_at"):
+        service.restore(backup_path=backup_path, target_db_path=target_path)
+
+    assert not target_path.exists()
+
+
+def test_restore_rejects_foreign_key_integrity_violations_before_writing_target(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
+    db_path = tmp_path / "source.sqlite3"
+    target_path = tmp_path / "restored.sqlite3"
+    _create_database_with_config_share_token_history(db_path, "expired")
+    _break_config_share_owner_foreign_key(db_path)
+    database_payload = db_path.read_bytes()
+    manifest = build_manifest(
+        app_version="0.1.0",
+        database_checksum_sha256=hashlib.sha256(database_payload).hexdigest(),
+    )
+    backup_path = _write_encrypted_archive(
+        tmp_path / "broken-foreign-key-backup.tar.enc",
+        [
+            _regular_member("database.sqlite3", database_payload),
+            _regular_member("manifest.json", json.dumps(manifest).encode("utf-8")),
+        ],
+    )
+
+    service = BackupService(app_version="0.1.0")
+
+    with pytest.raises(ValueError, match="foreign key integrity"):
         service.restore(backup_path=backup_path, target_db_path=target_path)
 
     assert not target_path.exists()

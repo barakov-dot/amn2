@@ -59,6 +59,7 @@ MALFORMED_CONFIG_SHARE_TOKEN_SCOPE_METADATA_ERROR = (
 MALFORMED_CONFIG_SHARE_TOKEN_IDENTITY_METADATA_ERROR = (
     "Backup database config share token has invalid identity metadata"
 )
+FOREIGN_KEY_INTEGRITY_ERROR = "Backup database failed foreign key integrity check"
 
 
 class BackupService:
@@ -69,6 +70,7 @@ class BackupService:
         db_path = Path(db_path)
         if not db_path.is_file():
             raise ValueError("database path must be a regular file")
+        self._validate_database_foreign_keys_from_path(db_path)
         self._validate_no_usable_config_share_tokens_from_path(db_path)
 
         output_dir = Path(output_dir)
@@ -201,6 +203,7 @@ class BackupService:
                     raise ValueError(f"Backup database is missing required tables: {missing}")
 
                 self._validate_required_columns(conn)
+                self._validate_database_foreign_keys(conn)
                 self._validate_order_rows(conn)
                 self._validate_active_device_rows(conn)
                 self._validate_device_secrets(conn)
@@ -308,6 +311,21 @@ class BackupService:
             "revoked": "restore-allowed-history-only",
             "exhausted": "restore-allowed-history-only",
         }
+
+    def _validate_database_foreign_keys_from_path(self, db_path: Path) -> None:
+        try:
+            conn = sqlite3.connect(db_path)
+            try:
+                self._validate_database_foreign_keys(conn)
+            finally:
+                conn.close()
+        except sqlite3.DatabaseError as exc:
+            raise ValueError("Backup database is not a usable SQLite database") from exc
+
+    def _validate_database_foreign_keys(self, conn: sqlite3.Connection) -> None:
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise ValueError(FOREIGN_KEY_INTEGRITY_ERROR)
 
     def _validate_no_usable_config_share_tokens_from_path(self, db_path: Path) -> None:
         try:
