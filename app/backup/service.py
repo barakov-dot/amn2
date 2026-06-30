@@ -67,6 +67,9 @@ CHECK_CONSTRAINT_SCHEMA_ERROR = (
 UNIQUE_CONSTRAINT_SCHEMA_ERROR = (
     "Backup database failed unique constraint schema check"
 )
+REQUIRED_OPTIONAL_TABLE_COLUMNS_SCHEMA_ERROR = (
+    "Backup database failed required columns schema check"
+)
 EXPECTED_FOREIGN_KEYS = {
     CONFIG_SHARE_TOKENS_TABLE: (("owner_user_id", "users", "id"),),
 }
@@ -83,6 +86,29 @@ EXPECTED_PRIMARY_KEYS = {
 EXPECTED_UNIQUE_CONSTRAINTS = {
     CONFIG_SHARE_TOKENS_TABLE: (("token_hash",),),
 }
+EXPECTED_OPTIONAL_TABLE_COLUMNS = {
+    CONFIG_SHARE_TOKENS_TABLE: (
+        "id",
+        "token_hash",
+        "token_prefix",
+        "purpose",
+        "created_by_actor",
+        "owner_user_id",
+        "bound_device_ids_json",
+        "bound_server_ids_json",
+        "allowed_artifact_kinds_json",
+        "target_client",
+        "expires_at",
+        "revoked_at",
+        "revoked_by_actor",
+        "one_time",
+        "max_downloads",
+        "download_count",
+        "last_used_at",
+        "last_used_ip_hash",
+        "created_at",
+    ),
+}
 
 
 class BackupService:
@@ -96,6 +122,7 @@ class BackupService:
         self._validate_database_foreign_key_schema_from_path(db_path)
         self._validate_database_check_constraint_schema_from_path(db_path)
         self._validate_database_unique_constraint_schema_from_path(db_path)
+        self._validate_optional_table_columns_schema_from_path(db_path)
         self._validate_database_foreign_keys_from_path(db_path)
         self._validate_no_usable_config_share_tokens_from_path(db_path)
 
@@ -232,6 +259,7 @@ class BackupService:
                 self._validate_database_foreign_key_schema(conn)
                 self._validate_database_check_constraint_schema(conn)
                 self._validate_database_unique_constraint_schema(conn)
+                self._validate_optional_table_columns_schema(conn)
                 self._validate_database_foreign_keys(conn)
                 self._validate_order_rows(conn)
                 self._validate_active_device_rows(conn)
@@ -412,6 +440,33 @@ class BackupService:
         if isinstance(row, sqlite3.Row):
             return row[key]
         return row[index]
+
+    def _validate_optional_table_columns_schema_from_path(
+        self,
+        db_path: Path,
+    ) -> None:
+        try:
+            conn = sqlite3.connect(db_path)
+            try:
+                self._validate_optional_table_columns_schema(conn)
+            finally:
+                conn.close()
+        except sqlite3.DatabaseError as exc:
+            raise ValueError("Backup database is not a usable SQLite database") from exc
+
+    def _validate_optional_table_columns_schema(
+        self,
+        conn: sqlite3.Connection,
+    ) -> None:
+        for table_name, expected_columns in EXPECTED_OPTIONAL_TABLE_COLUMNS.items():
+            if not self._table_exists(conn, table_name):
+                continue
+            actual_columns = {
+                str(self._pragma_row_value(row, "name", 1))
+                for row in conn.execute(f"PRAGMA table_info({table_name})")
+            }
+            if any(column not in actual_columns for column in expected_columns):
+                raise ValueError(REQUIRED_OPTIONAL_TABLE_COLUMNS_SCHEMA_ERROR)
 
     def _validate_database_check_constraint_schema_from_path(
         self,

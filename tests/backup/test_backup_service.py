@@ -391,6 +391,82 @@ def _drop_config_share_unique_constraint_declarations(path):
         conn.close()
 
 
+def _drop_config_share_required_column_declaration(path):
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.executescript(
+            """
+            ALTER TABLE config_share_tokens RENAME TO config_share_tokens_old;
+            CREATE TABLE config_share_tokens (
+                id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL UNIQUE,
+                token_prefix TEXT NOT NULL,
+                purpose TEXT NOT NULL CHECK (purpose IN ('config_share')),
+                created_by_actor TEXT NOT NULL,
+                owner_user_id INTEGER NOT NULL,
+                bound_device_ids_json TEXT NOT NULL,
+                bound_server_ids_json TEXT NOT NULL,
+                allowed_artifact_kinds_json TEXT NOT NULL,
+                target_client TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                revoked_at TEXT,
+                one_time INTEGER NOT NULL DEFAULT 1,
+                max_downloads INTEGER NOT NULL CHECK (max_downloads > 0),
+                download_count INTEGER NOT NULL DEFAULT 0 CHECK (download_count >= 0),
+                last_used_at TEXT,
+                last_used_ip_hash TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+            INSERT INTO config_share_tokens (
+                id,
+                token_hash,
+                token_prefix,
+                purpose,
+                created_by_actor,
+                owner_user_id,
+                bound_device_ids_json,
+                bound_server_ids_json,
+                allowed_artifact_kinds_json,
+                target_client,
+                expires_at,
+                revoked_at,
+                one_time,
+                max_downloads,
+                download_count,
+                last_used_at,
+                last_used_ip_hash,
+                created_at
+            )
+            SELECT
+                id,
+                token_hash,
+                token_prefix,
+                purpose,
+                created_by_actor,
+                owner_user_id,
+                bound_device_ids_json,
+                bound_server_ids_json,
+                allowed_artifact_kinds_json,
+                target_client,
+                expires_at,
+                revoked_at,
+                one_time,
+                max_downloads,
+                download_count,
+                last_used_at,
+                last_used_ip_hash,
+                created_at
+            FROM config_share_tokens_old;
+            DROP TABLE config_share_tokens_old;
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _create_database_with_config_share_token_history(path, history_state):
     now = datetime.now(timezone.utc)
     if history_state == "expired":
@@ -799,6 +875,21 @@ def test_backup_create_rejects_missing_config_share_unique_constraint_declaratio
         service.create(db_path=db_path, output_dir=tmp_path / "backups")
 
 
+def test_backup_create_rejects_missing_config_share_required_column_declarations(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
+    db_path = tmp_path / "source.sqlite3"
+    _create_database_with_config_share_token_history(db_path, "expired")
+    _drop_config_share_required_column_declaration(db_path)
+
+    service = BackupService(app_version="0.1.0")
+
+    with pytest.raises(ValueError, match="required columns"):
+        service.create(db_path=db_path, output_dir=tmp_path / "backups")
+
+
 def test_restore_refuses_overwrite_without_force(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
     db_path = tmp_path / "source.sqlite3"
@@ -1126,6 +1217,36 @@ def test_restore_rejects_missing_config_share_unique_constraint_declarations_bef
     service = BackupService(app_version="0.1.0")
 
     with pytest.raises(ValueError, match="unique constraint schema"):
+        service.restore(backup_path=backup_path, target_db_path=target_path)
+
+    assert not target_path.exists()
+
+
+def test_restore_rejects_missing_config_share_required_column_declarations_before_writing_target(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
+    db_path = tmp_path / "source.sqlite3"
+    target_path = tmp_path / "restored.sqlite3"
+    _create_database_with_config_share_token_history(db_path, "expired")
+    _drop_config_share_required_column_declaration(db_path)
+    database_payload = db_path.read_bytes()
+    manifest = build_manifest(
+        app_version="0.1.0",
+        database_checksum_sha256=hashlib.sha256(database_payload).hexdigest(),
+    )
+    backup_path = _write_encrypted_archive(
+        tmp_path / "missing-required-column-schema-backup.tar.enc",
+        [
+            _regular_member("database.sqlite3", database_payload),
+            _regular_member("manifest.json", json.dumps(manifest).encode("utf-8")),
+        ],
+    )
+
+    service = BackupService(app_version="0.1.0")
+
+    with pytest.raises(ValueError, match="required columns"):
         service.restore(backup_path=backup_path, target_db_path=target_path)
 
     assert not target_path.exists()
