@@ -18,6 +18,7 @@ from app.backup.storage import (
     secret_box_from_env,
 )
 from app.security.crypto import SecretBoxError
+from app.services.config_export import SUPPORTED_ARTIFACTS, SUPPORTED_TARGET_CLIENTS
 from app.vpn.config_versions import SUPPORTED_CONFIG_VERSIONS
 
 
@@ -51,6 +52,9 @@ USABLE_CONFIG_SHARE_TOKEN_ERROR = (
 )
 MALFORMED_CONFIG_SHARE_TOKEN_POLICY_ERROR = (
     "Backup database config share token has invalid policy shape"
+)
+MALFORMED_CONFIG_SHARE_TOKEN_SCOPE_METADATA_ERROR = (
+    "Backup database config share token has invalid scope metadata"
 )
 
 
@@ -319,6 +323,8 @@ class BackupService:
         rows = conn.execute(
             """
             SELECT id, expires_at, revoked_at, one_time, max_downloads, download_count
+                 , bound_device_ids_json, bound_server_ids_json
+                 , allowed_artifact_kinds_json, target_client
             FROM config_share_tokens
             WHERE purpose = 'config_share'
             """
@@ -327,6 +333,7 @@ class BackupService:
         for row in rows:
             self._validate_config_share_token_policy_shape(row)
             self._validate_config_share_token_timestamp_shape(row)
+            self._validate_config_share_token_scope_metadata_shape(row)
         if any(self._config_share_token_is_usable(row, now=now) for row in rows):
             raise ValueError(USABLE_CONFIG_SHARE_TOKEN_ERROR)
 
@@ -349,6 +356,69 @@ class BackupService:
         revoked_at = row["revoked_at"]
         if revoked_at is not None and str(revoked_at).strip():
             self._parse_backup_datetime(revoked_at, field_name="revoked_at")
+
+    def _validate_config_share_token_scope_metadata_shape(
+        self,
+        row: sqlite3.Row,
+    ) -> None:
+        device_ids = self._parse_positive_int_json_array(
+            row["bound_device_ids_json"],
+            field_name="bound_device_ids_json",
+        )
+        server_ids = self._parse_positive_int_json_array(
+            row["bound_server_ids_json"],
+            field_name="bound_server_ids_json",
+        )
+        artifact_kinds = self._parse_string_json_array(
+            row["allowed_artifact_kinds_json"],
+            field_name="allowed_artifact_kinds_json",
+        )
+        target_client = str(row["target_client"]).strip()
+        unsupported_artifacts = set(artifact_kinds) - SUPPORTED_ARTIFACTS
+        if not device_ids or not server_ids or not artifact_kinds:
+            raise ValueError(MALFORMED_CONFIG_SHARE_TOKEN_SCOPE_METADATA_ERROR)
+        if unsupported_artifacts:
+            raise ValueError(MALFORMED_CONFIG_SHARE_TOKEN_SCOPE_METADATA_ERROR)
+        if target_client not in SUPPORTED_TARGET_CLIENTS:
+            raise ValueError(MALFORMED_CONFIG_SHARE_TOKEN_SCOPE_METADATA_ERROR)
+
+    def _parse_positive_int_json_array(
+        self,
+        value: object,
+        *,
+        field_name: str,
+    ) -> tuple[int, ...]:
+        try:
+            parsed = json.loads(str(value))
+            if not isinstance(parsed, list):
+                raise ValueError
+            if any(not isinstance(item, int) or isinstance(item, bool) for item in parsed):
+                raise ValueError
+            result = tuple(parsed)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(MALFORMED_CONFIG_SHARE_TOKEN_SCOPE_METADATA_ERROR) from exc
+        if not result or any(item <= 0 for item in result):
+            raise ValueError(MALFORMED_CONFIG_SHARE_TOKEN_SCOPE_METADATA_ERROR)
+        return result
+
+    def _parse_string_json_array(
+        self,
+        value: object,
+        *,
+        field_name: str,
+    ) -> tuple[str, ...]:
+        try:
+            parsed = json.loads(str(value))
+            if not isinstance(parsed, list):
+                raise ValueError
+            if any(not isinstance(item, str) for item in parsed):
+                raise ValueError
+            result = tuple(item.strip() for item in parsed)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise ValueError(MALFORMED_CONFIG_SHARE_TOKEN_SCOPE_METADATA_ERROR) from exc
+        if not result or any(not item for item in result):
+            raise ValueError(MALFORMED_CONFIG_SHARE_TOKEN_SCOPE_METADATA_ERROR)
+        return result
 
     def _config_share_token_is_usable(self, row: sqlite3.Row, *, now: datetime) -> bool:
         revoked_at = row["revoked_at"]
