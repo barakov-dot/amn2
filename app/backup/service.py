@@ -70,6 +70,9 @@ UNIQUE_CONSTRAINT_SCHEMA_ERROR = (
 REQUIRED_OPTIONAL_TABLE_COLUMNS_SCHEMA_ERROR = (
     "Backup database failed required columns schema check"
 )
+COLUMN_DECLARATION_SCHEMA_ERROR = (
+    "Backup database failed column declaration schema check"
+)
 EXPECTED_FOREIGN_KEYS = {
     CONFIG_SHARE_TOKENS_TABLE: (("owner_user_id", "users", "id"),),
 }
@@ -109,6 +112,29 @@ EXPECTED_OPTIONAL_TABLE_COLUMNS = {
         "created_at",
     ),
 }
+EXPECTED_OPTIONAL_TABLE_COLUMN_DECLARATIONS = {
+    CONFIG_SHARE_TOKENS_TABLE: {
+        "id": ("TEXT", False, None),
+        "token_hash": ("TEXT", True, None),
+        "token_prefix": ("TEXT", True, None),
+        "purpose": ("TEXT", True, None),
+        "created_by_actor": ("TEXT", True, None),
+        "owner_user_id": ("INTEGER", True, None),
+        "bound_device_ids_json": ("TEXT", True, None),
+        "bound_server_ids_json": ("TEXT", True, None),
+        "allowed_artifact_kinds_json": ("TEXT", True, None),
+        "target_client": ("TEXT", True, None),
+        "expires_at": ("TEXT", True, None),
+        "revoked_at": ("TEXT", False, None),
+        "revoked_by_actor": ("TEXT", False, None),
+        "one_time": ("INTEGER", True, "1"),
+        "max_downloads": ("INTEGER", True, None),
+        "download_count": ("INTEGER", True, "0"),
+        "last_used_at": ("TEXT", False, None),
+        "last_used_ip_hash": ("TEXT", False, None),
+        "created_at": ("TEXT", True, "CURRENT_TIMESTAMP"),
+    },
+}
 
 
 class BackupService:
@@ -123,6 +149,7 @@ class BackupService:
         self._validate_database_check_constraint_schema_from_path(db_path)
         self._validate_database_unique_constraint_schema_from_path(db_path)
         self._validate_optional_table_columns_schema_from_path(db_path)
+        self._validate_optional_table_column_declarations_schema_from_path(db_path)
         self._validate_database_foreign_keys_from_path(db_path)
         self._validate_no_usable_config_share_tokens_from_path(db_path)
 
@@ -260,6 +287,7 @@ class BackupService:
                 self._validate_database_check_constraint_schema(conn)
                 self._validate_database_unique_constraint_schema(conn)
                 self._validate_optional_table_columns_schema(conn)
+                self._validate_optional_table_column_declarations_schema(conn)
                 self._validate_database_foreign_keys(conn)
                 self._validate_order_rows(conn)
                 self._validate_active_device_rows(conn)
@@ -467,6 +495,58 @@ class BackupService:
             }
             if any(column not in actual_columns for column in expected_columns):
                 raise ValueError(REQUIRED_OPTIONAL_TABLE_COLUMNS_SCHEMA_ERROR)
+
+    def _validate_optional_table_column_declarations_schema_from_path(
+        self,
+        db_path: Path,
+    ) -> None:
+        try:
+            conn = sqlite3.connect(db_path)
+            try:
+                self._validate_optional_table_column_declarations_schema(conn)
+            finally:
+                conn.close()
+        except sqlite3.DatabaseError as exc:
+            raise ValueError("Backup database is not a usable SQLite database") from exc
+
+    def _validate_optional_table_column_declarations_schema(
+        self,
+        conn: sqlite3.Connection,
+    ) -> None:
+        expected_tables = EXPECTED_OPTIONAL_TABLE_COLUMN_DECLARATIONS.items()
+        for table_name, expected_columns in expected_tables:
+            if not self._table_exists(conn, table_name):
+                continue
+            actual_columns = {
+                str(self._pragma_row_value(row, "name", 1)): row
+                for row in conn.execute(f"PRAGMA table_info({table_name})")
+            }
+            for column_name, expected_declaration in expected_columns.items():
+                row = actual_columns.get(column_name)
+                if row is None:
+                    raise ValueError(COLUMN_DECLARATION_SCHEMA_ERROR)
+                if self._column_declaration(row) != expected_declaration:
+                    raise ValueError(COLUMN_DECLARATION_SCHEMA_ERROR)
+
+    def _column_declaration(
+        self,
+        row: sqlite3.Row | tuple[Any, ...],
+    ) -> tuple[str, bool, str | None]:
+        return (
+            self._normalize_column_declaration_value(
+                self._pragma_row_value(row, "type", 2)
+            )
+            or "",
+            bool(self._pragma_row_value(row, "notnull", 3)),
+            self._normalize_column_declaration_value(
+                self._pragma_row_value(row, "dflt_value", 4)
+            ),
+        )
+
+    def _normalize_column_declaration_value(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        return " ".join(str(value).upper().split())
 
     def _validate_database_check_constraint_schema_from_path(
         self,
