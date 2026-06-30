@@ -60,6 +60,10 @@ MALFORMED_CONFIG_SHARE_TOKEN_IDENTITY_METADATA_ERROR = (
     "Backup database config share token has invalid identity metadata"
 )
 FOREIGN_KEY_INTEGRITY_ERROR = "Backup database failed foreign key integrity check"
+FOREIGN_KEY_SCHEMA_ERROR = "Backup database failed foreign key schema check"
+EXPECTED_FOREIGN_KEYS = {
+    CONFIG_SHARE_TOKENS_TABLE: (("owner_user_id", "users", "id"),),
+}
 
 
 class BackupService:
@@ -70,6 +74,7 @@ class BackupService:
         db_path = Path(db_path)
         if not db_path.is_file():
             raise ValueError("database path must be a regular file")
+        self._validate_database_foreign_key_schema_from_path(db_path)
         self._validate_database_foreign_keys_from_path(db_path)
         self._validate_no_usable_config_share_tokens_from_path(db_path)
 
@@ -203,6 +208,7 @@ class BackupService:
                     raise ValueError(f"Backup database is missing required tables: {missing}")
 
                 self._validate_required_columns(conn)
+                self._validate_database_foreign_key_schema(conn)
                 self._validate_database_foreign_keys(conn)
                 self._validate_order_rows(conn)
                 self._validate_active_device_rows(conn)
@@ -311,6 +317,35 @@ class BackupService:
             "revoked": "restore-allowed-history-only",
             "exhausted": "restore-allowed-history-only",
         }
+
+    def _validate_database_foreign_key_schema_from_path(self, db_path: Path) -> None:
+        try:
+            conn = sqlite3.connect(db_path)
+            try:
+                self._validate_database_foreign_key_schema(conn)
+            finally:
+                conn.close()
+        except sqlite3.DatabaseError as exc:
+            raise ValueError("Backup database is not a usable SQLite database") from exc
+
+    def _validate_database_foreign_key_schema(self, conn: sqlite3.Connection) -> None:
+        for table_name, expected_keys in EXPECTED_FOREIGN_KEYS.items():
+            if not self._table_exists(conn, table_name):
+                continue
+            actual_keys = {
+                self._foreign_key_identity(row)
+                for row in conn.execute(f"PRAGMA foreign_key_list({table_name})")
+            }
+            if any(expected_key not in actual_keys for expected_key in expected_keys):
+                raise ValueError(FOREIGN_KEY_SCHEMA_ERROR)
+
+    def _foreign_key_identity(
+        self,
+        row: sqlite3.Row | tuple[Any, ...],
+    ) -> tuple[str, str, str]:
+        if isinstance(row, sqlite3.Row):
+            return (str(row["from"]), str(row["table"]), str(row["to"]))
+        return (str(row[3]), str(row[2]), str(row[4]))
 
     def _validate_database_foreign_keys_from_path(self, db_path: Path) -> None:
         try:
