@@ -47,7 +47,15 @@ def _create_database_with_encrypted_device(path, app_secret=STRONG_SECRET):
     conn.close()
 
 
-def _create_database_with_usable_config_share_token(path):
+def _create_database_with_config_share_token(
+    path,
+    *,
+    expires_at=None,
+    revoked_at=None,
+    download_count=0,
+    max_downloads=1,
+    one_time=True,
+):
     conn = connect(path)
     initialize_schema(conn)
     repo = Repository(conn)
@@ -59,6 +67,7 @@ def _create_database_with_usable_config_share_token(path):
     )
     server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
     now = datetime.now(timezone.utc)
+    token_expires_at = expires_at or (now + timedelta(minutes=30)).isoformat()
     repo.create_config_share_token(
         token_id="share-token-1",
         token_hash=hash_config_share_token("backup-redaction-token"),
@@ -70,12 +79,49 @@ def _create_database_with_usable_config_share_token(path):
         bound_server_ids=[server_id],
         allowed_artifact_kinds=["wireguard_conf"],
         target_client="amnezia_generic",
-        expires_at=(now + timedelta(minutes=30)).isoformat(),
+        expires_at=token_expires_at,
         created_at=now.isoformat(),
-        one_time=True,
-        max_downloads=1,
+        one_time=one_time,
+        max_downloads=max_downloads,
     )
+    conn.execute(
+        """
+        UPDATE config_share_tokens
+        SET revoked_at = ?, download_count = ?
+        WHERE id = ?
+        """,
+        (revoked_at, download_count, "share-token-1"),
+    )
+    conn.commit()
     conn.close()
+
+
+def _create_database_with_usable_config_share_token(path):
+    _create_database_with_config_share_token(path)
+
+
+def _create_database_with_config_share_token_history(path, history_state):
+    now = datetime.now(timezone.utc)
+    if history_state == "expired":
+        _create_database_with_config_share_token(
+            path,
+            expires_at=(now - timedelta(minutes=1)).isoformat(),
+        )
+        return
+    if history_state == "revoked":
+        _create_database_with_config_share_token(
+            path,
+            revoked_at=now.isoformat(),
+        )
+        return
+    if history_state == "exhausted":
+        _create_database_with_config_share_token(
+            path,
+            download_count=1,
+            max_downloads=1,
+        )
+        return
+    raise ValueError(f"unknown config share token history state: {history_state}")
 
 
 def _drop_table(path, table_name):
@@ -387,6 +433,59 @@ def test_restore_usable_config_share_tokens_dangerous_mode_gate_is_closed():
         "requires_explicit_operator_gate": True,
         "restores_usable_config_share_token_hashes": False,
     }
+
+
+def test_config_share_restore_history_policy_documents_allowed_non_usable_states():
+    service = BackupService(app_version="0.1.0")
+
+    policy = service.config_share_restore_history_policy()
+
+    assert policy == {
+        "usable": "blocked-without-dangerous-mode",
+        "expired": "restore-allowed-history-only",
+        "revoked": "restore-allowed-history-only",
+        "exhausted": "restore-allowed-history-only",
+    }
+
+
+@pytest.mark.parametrize("history_state", ["expired", "revoked", "exhausted"])
+def test_restore_accepts_config_share_token_history_without_dangerous_mode(
+    tmp_path,
+    monkeypatch,
+    history_state,
+):
+    monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
+    db_path = tmp_path / "source.sqlite3"
+    target_path = tmp_path / "restored.sqlite3"
+    _create_database_with_config_share_token_history(db_path, history_state)
+
+    service = BackupService(app_version="0.1.0")
+    backup_path = service.create(db_path=db_path, output_dir=tmp_path / "backups")
+
+    restored_path = service.restore(
+        backup_path=backup_path,
+        target_db_path=target_path,
+    )
+
+    assert restored_path == target_path
+    conn = connect(target_path)
+    restored = conn.execute(
+        """
+        SELECT revoked_at, download_count, max_downloads, expires_at
+        FROM config_share_tokens
+        WHERE id = ?
+        """,
+        ("share-token-1",),
+    ).fetchone()
+    conn.close()
+    assert restored is not None
+    if history_state == "revoked":
+        assert restored["revoked_at"] is not None
+    if history_state == "exhausted":
+        assert restored["download_count"] == restored["max_downloads"]
+    if history_state == "expired":
+        expires_at = datetime.fromisoformat(restored["expires_at"])
+        assert expires_at <= datetime.now(timezone.utc)
 
 
 def test_restore_rejects_explicit_share_token_dangerous_mode_before_writing_target(

@@ -291,6 +291,14 @@ class BackupService:
             "restores_usable_config_share_token_hashes": False,
         }
 
+    def config_share_restore_history_policy(self) -> dict[str, str]:
+        return {
+            "usable": "blocked-without-dangerous-mode",
+            "expired": "restore-allowed-history-only",
+            "revoked": "restore-allowed-history-only",
+            "exhausted": "restore-allowed-history-only",
+        }
+
     def _validate_no_usable_config_share_tokens_from_path(self, db_path: Path) -> None:
         try:
             conn = sqlite3.connect(db_path)
