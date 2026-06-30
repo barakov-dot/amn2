@@ -61,8 +61,18 @@ MALFORMED_CONFIG_SHARE_TOKEN_IDENTITY_METADATA_ERROR = (
 )
 FOREIGN_KEY_INTEGRITY_ERROR = "Backup database failed foreign key integrity check"
 FOREIGN_KEY_SCHEMA_ERROR = "Backup database failed foreign key schema check"
+CHECK_CONSTRAINT_SCHEMA_ERROR = (
+    "Backup database failed check constraint schema check"
+)
 EXPECTED_FOREIGN_KEYS = {
     CONFIG_SHARE_TOKENS_TABLE: (("owner_user_id", "users", "id"),),
+}
+EXPECTED_CHECK_CONSTRAINTS = {
+    CONFIG_SHARE_TOKENS_TABLE: (
+        "purpose TEXT NOT NULL CHECK (purpose IN ('config_share'))",
+        "max_downloads INTEGER NOT NULL CHECK (max_downloads > 0)",
+        "download_count INTEGER NOT NULL DEFAULT 0 CHECK (download_count >= 0)",
+    ),
 }
 
 
@@ -75,6 +85,7 @@ class BackupService:
         if not db_path.is_file():
             raise ValueError("database path must be a regular file")
         self._validate_database_foreign_key_schema_from_path(db_path)
+        self._validate_database_check_constraint_schema_from_path(db_path)
         self._validate_database_foreign_keys_from_path(db_path)
         self._validate_no_usable_config_share_tokens_from_path(db_path)
 
@@ -209,6 +220,7 @@ class BackupService:
 
                 self._validate_required_columns(conn)
                 self._validate_database_foreign_key_schema(conn)
+                self._validate_database_check_constraint_schema(conn)
                 self._validate_database_foreign_keys(conn)
                 self._validate_order_rows(conn)
                 self._validate_active_device_rows(conn)
@@ -317,6 +329,52 @@ class BackupService:
             "revoked": "restore-allowed-history-only",
             "exhausted": "restore-allowed-history-only",
         }
+
+    def _validate_database_check_constraint_schema_from_path(
+        self,
+        db_path: Path,
+    ) -> None:
+        try:
+            conn = sqlite3.connect(db_path)
+            try:
+                self._validate_database_check_constraint_schema(conn)
+            finally:
+                conn.close()
+        except sqlite3.DatabaseError as exc:
+            raise ValueError("Backup database is not a usable SQLite database") from exc
+
+    def _validate_database_check_constraint_schema(
+        self,
+        conn: sqlite3.Connection,
+    ) -> None:
+        for table_name, expected_constraints in EXPECTED_CHECK_CONSTRAINTS.items():
+            table_sql = self._table_sql(conn, table_name)
+            if table_sql is None:
+                continue
+            normalized_sql = self._normalize_schema_sql(table_sql)
+            expected = {
+                self._normalize_schema_sql(constraint)
+                for constraint in expected_constraints
+            }
+            if any(constraint not in normalized_sql for constraint in expected):
+                raise ValueError(CHECK_CONSTRAINT_SCHEMA_ERROR)
+
+    def _table_sql(self, conn: sqlite3.Connection, table_name: str) -> str | None:
+        row = conn.execute(
+            """
+            SELECT sql
+            FROM sqlite_master
+            WHERE type = 'table'
+              AND name = ?
+            """,
+            (table_name,),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row["sql"] if isinstance(row, sqlite3.Row) else row[0])
+
+    def _normalize_schema_sql(self, value: str) -> str:
+        return " ".join(value.lower().split())
 
     def _validate_database_foreign_key_schema_from_path(self, db_path: Path) -> None:
         try:
