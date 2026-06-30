@@ -56,6 +56,9 @@ MALFORMED_CONFIG_SHARE_TOKEN_POLICY_ERROR = (
 MALFORMED_CONFIG_SHARE_TOKEN_SCOPE_METADATA_ERROR = (
     "Backup database config share token has invalid scope metadata"
 )
+MALFORMED_CONFIG_SHARE_TOKEN_IDENTITY_METADATA_ERROR = (
+    "Backup database config share token has invalid identity metadata"
+)
 
 
 class BackupService:
@@ -322,7 +325,8 @@ class BackupService:
             return
         rows = conn.execute(
             """
-            SELECT id, expires_at, revoked_at, one_time, max_downloads, download_count
+            SELECT id, token_hash, token_prefix, created_by_actor, owner_user_id
+                 , expires_at, revoked_at, one_time, max_downloads, download_count
                  , bound_device_ids_json, bound_server_ids_json
                  , allowed_artifact_kinds_json, target_client
             FROM config_share_tokens
@@ -331,11 +335,40 @@ class BackupService:
         ).fetchall()
         now = datetime.now(timezone.utc)
         for row in rows:
+            self._validate_config_share_token_identity_metadata_shape(row)
             self._validate_config_share_token_policy_shape(row)
             self._validate_config_share_token_timestamp_shape(row)
             self._validate_config_share_token_scope_metadata_shape(row)
         if any(self._config_share_token_is_usable(row, now=now) for row in rows):
             raise ValueError(USABLE_CONFIG_SHARE_TOKEN_ERROR)
+
+    def _validate_config_share_token_identity_metadata_shape(
+        self,
+        row: sqlite3.Row,
+    ) -> None:
+        token_id = str(row["id"]).strip()
+        token_hash = str(row["token_hash"]).strip()
+        token_prefix = str(row["token_prefix"]).strip()
+        created_by_actor = str(row["created_by_actor"]).strip()
+        try:
+            owner_user_id = int(row["owner_user_id"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(MALFORMED_CONFIG_SHARE_TOKEN_IDENTITY_METADATA_ERROR) from exc
+        if not token_id or not token_prefix or not created_by_actor:
+            raise ValueError(MALFORMED_CONFIG_SHARE_TOKEN_IDENTITY_METADATA_ERROR)
+        if owner_user_id <= 0:
+            raise ValueError(MALFORMED_CONFIG_SHARE_TOKEN_IDENTITY_METADATA_ERROR)
+        if not self._is_config_share_token_hash_shape(token_hash):
+            raise ValueError(MALFORMED_CONFIG_SHARE_TOKEN_IDENTITY_METADATA_ERROR)
+
+    def _is_config_share_token_hash_shape(self, value: str) -> bool:
+        prefix = "sha256:"
+        if not value.startswith(prefix):
+            return False
+        digest = value[len(prefix):]
+        return len(digest) == 64 and all(
+            char in "0123456789abcdef" for char in digest
+        )
 
     def _validate_config_share_token_policy_shape(self, row: sqlite3.Row) -> None:
         try:

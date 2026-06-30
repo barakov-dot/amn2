@@ -105,11 +105,30 @@ def _update_config_share_token_field(path, field_name, value):
         "allowed_artifact_kinds_json",
         "bound_device_ids_json",
         "bound_server_ids_json",
+        "created_by_actor",
+        "id",
+        "owner_user_id",
         "target_client",
+        "token_hash",
+        "token_prefix",
     }
     if field_name not in allowed_fields:
         raise ValueError(f"unsupported config share token field: {field_name}")
     conn = connect(path)
+    if field_name == "owner_user_id" and value == 0:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO users (
+                id,
+                telegram_id,
+                username,
+                first_name,
+                last_name
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (0, 9000, "zero", "Zero", None),
+        )
     conn.execute(
         f"UPDATE config_share_tokens SET {field_name} = ? WHERE id = ?",
         (value, "share-token-1"),
@@ -398,6 +417,33 @@ def test_backup_create_rejects_malformed_config_share_token_policy_shape(
 @pytest.mark.parametrize(
     ("field_name", "field_value"),
     [
+        ("id", ""),
+        ("token_hash", "not-a-sha256-hash"),
+        ("token_prefix", ""),
+        ("created_by_actor", ""),
+        ("owner_user_id", 0),
+    ],
+)
+def test_backup_create_rejects_malformed_config_share_token_identity_metadata(
+    tmp_path,
+    monkeypatch,
+    field_name,
+    field_value,
+):
+    monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
+    db_path = tmp_path / "source.sqlite3"
+    _create_database_with_config_share_token(db_path)
+    _update_config_share_token_field(db_path, field_name, field_value)
+
+    service = BackupService(app_version="0.1.0")
+
+    with pytest.raises(ValueError, match="config share token.*identity metadata"):
+        service.create(db_path=db_path, output_dir=tmp_path / "backups")
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    [
         ("bound_device_ids_json", "[]"),
         ("bound_server_ids_json", "[0]"),
         ("allowed_artifact_kinds_json", '["unknown_artifact"]'),
@@ -531,6 +577,48 @@ def test_restore_rejects_malformed_config_share_token_policy_shape_before_writin
     service = BackupService(app_version="0.1.0")
 
     with pytest.raises(ValueError, match="config share token.*policy shape"):
+        service.restore(backup_path=backup_path, target_db_path=target_path)
+
+    assert not target_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    [
+        ("id", ""),
+        ("token_hash", "not-a-sha256-hash"),
+        ("token_prefix", ""),
+        ("created_by_actor", ""),
+        ("owner_user_id", 0),
+    ],
+)
+def test_restore_rejects_malformed_config_share_token_identity_metadata_before_writing_target(
+    tmp_path,
+    monkeypatch,
+    field_name,
+    field_value,
+):
+    monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
+    db_path = tmp_path / "source.sqlite3"
+    target_path = tmp_path / "restored.sqlite3"
+    _create_database_with_config_share_token(db_path)
+    _update_config_share_token_field(db_path, field_name, field_value)
+    database_payload = db_path.read_bytes()
+    manifest = build_manifest(
+        app_version="0.1.0",
+        database_checksum_sha256=hashlib.sha256(database_payload).hexdigest(),
+    )
+    backup_path = _write_encrypted_archive(
+        tmp_path / "malformed-share-token-identity-backup.tar.enc",
+        [
+            _regular_member("database.sqlite3", database_payload),
+            _regular_member("manifest.json", json.dumps(manifest).encode("utf-8")),
+        ],
+    )
+
+    service = BackupService(app_version="0.1.0")
+
+    with pytest.raises(ValueError, match="config share token.*identity metadata"):
         service.restore(backup_path=backup_path, target_db_path=target_path)
 
     assert not target_path.exists()
