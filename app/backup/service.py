@@ -64,6 +64,9 @@ FOREIGN_KEY_SCHEMA_ERROR = "Backup database failed foreign key schema check"
 CHECK_CONSTRAINT_SCHEMA_ERROR = (
     "Backup database failed check constraint schema check"
 )
+UNIQUE_CONSTRAINT_SCHEMA_ERROR = (
+    "Backup database failed unique constraint schema check"
+)
 EXPECTED_FOREIGN_KEYS = {
     CONFIG_SHARE_TOKENS_TABLE: (("owner_user_id", "users", "id"),),
 }
@@ -73,6 +76,12 @@ EXPECTED_CHECK_CONSTRAINTS = {
         "max_downloads INTEGER NOT NULL CHECK (max_downloads > 0)",
         "download_count INTEGER NOT NULL DEFAULT 0 CHECK (download_count >= 0)",
     ),
+}
+EXPECTED_PRIMARY_KEYS = {
+    CONFIG_SHARE_TOKENS_TABLE: ("id",),
+}
+EXPECTED_UNIQUE_CONSTRAINTS = {
+    CONFIG_SHARE_TOKENS_TABLE: (("token_hash",),),
 }
 
 
@@ -86,6 +95,7 @@ class BackupService:
             raise ValueError("database path must be a regular file")
         self._validate_database_foreign_key_schema_from_path(db_path)
         self._validate_database_check_constraint_schema_from_path(db_path)
+        self._validate_database_unique_constraint_schema_from_path(db_path)
         self._validate_database_foreign_keys_from_path(db_path)
         self._validate_no_usable_config_share_tokens_from_path(db_path)
 
@@ -221,6 +231,7 @@ class BackupService:
                 self._validate_required_columns(conn)
                 self._validate_database_foreign_key_schema(conn)
                 self._validate_database_check_constraint_schema(conn)
+                self._validate_database_unique_constraint_schema(conn)
                 self._validate_database_foreign_keys(conn)
                 self._validate_order_rows(conn)
                 self._validate_active_device_rows(conn)
@@ -329,6 +340,78 @@ class BackupService:
             "revoked": "restore-allowed-history-only",
             "exhausted": "restore-allowed-history-only",
         }
+
+    def _validate_database_unique_constraint_schema_from_path(
+        self,
+        db_path: Path,
+    ) -> None:
+        try:
+            conn = sqlite3.connect(db_path)
+            try:
+                self._validate_database_unique_constraint_schema(conn)
+            finally:
+                conn.close()
+        except sqlite3.DatabaseError as exc:
+            raise ValueError("Backup database is not a usable SQLite database") from exc
+
+    def _validate_database_unique_constraint_schema(
+        self,
+        conn: sqlite3.Connection,
+    ) -> None:
+        for table_name, expected_columns in EXPECTED_PRIMARY_KEYS.items():
+            if not self._table_exists(conn, table_name):
+                continue
+            primary_key_columns = self._primary_key_columns(conn, table_name)
+            if any(column not in primary_key_columns for column in expected_columns):
+                raise ValueError(UNIQUE_CONSTRAINT_SCHEMA_ERROR)
+
+        for table_name, expected_constraints in EXPECTED_UNIQUE_CONSTRAINTS.items():
+            if not self._table_exists(conn, table_name):
+                continue
+            unique_constraints = self._unique_constraint_columns(conn, table_name)
+            if any(
+                expected_constraint not in unique_constraints
+                for expected_constraint in expected_constraints
+            ):
+                raise ValueError(UNIQUE_CONSTRAINT_SCHEMA_ERROR)
+
+    def _primary_key_columns(
+        self,
+        conn: sqlite3.Connection,
+        table_name: str,
+    ) -> set[str]:
+        return {
+            str(self._pragma_row_value(row, "name", 1))
+            for row in conn.execute(f"PRAGMA table_info({table_name})")
+            if int(self._pragma_row_value(row, "pk", 5) or 0) > 0
+        }
+
+    def _unique_constraint_columns(
+        self,
+        conn: sqlite3.Connection,
+        table_name: str,
+    ) -> set[tuple[str, ...]]:
+        constraints: set[tuple[str, ...]] = set()
+        for index_row in conn.execute(f"PRAGMA index_list({table_name})"):
+            if int(self._pragma_row_value(index_row, "unique", 2) or 0) != 1:
+                continue
+            index_name = str(self._pragma_row_value(index_row, "name", 1))
+            columns = tuple(
+                str(self._pragma_row_value(row, "name", 2))
+                for row in conn.execute(f"PRAGMA index_info({index_name})")
+            )
+            constraints.add(columns)
+        return constraints
+
+    def _pragma_row_value(
+        self,
+        row: sqlite3.Row | tuple[Any, ...],
+        key: str,
+        index: int,
+    ) -> Any:
+        if isinstance(row, sqlite3.Row):
+            return row[key]
+        return row[index]
 
     def _validate_database_check_constraint_schema_from_path(
         self,
