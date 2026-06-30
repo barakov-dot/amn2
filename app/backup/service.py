@@ -67,6 +67,9 @@ CHECK_CONSTRAINT_SCHEMA_ERROR = (
 UNIQUE_CONSTRAINT_SCHEMA_ERROR = (
     "Backup database failed unique constraint schema check"
 )
+INDEX_DECLARATION_SCHEMA_ERROR = (
+    "Backup database failed index declaration schema check"
+)
 REQUIRED_OPTIONAL_TABLE_COLUMNS_SCHEMA_ERROR = (
     "Backup database failed required columns schema check"
 )
@@ -88,6 +91,11 @@ EXPECTED_PRIMARY_KEYS = {
 }
 EXPECTED_UNIQUE_CONSTRAINTS = {
     CONFIG_SHARE_TOKENS_TABLE: (("token_hash",),),
+}
+EXPECTED_UNIQUE_INDEX_DECLARATIONS = {
+    CONFIG_SHARE_TOKENS_TABLE: {
+        (("token_hash",), "u", False, False),
+    },
 }
 EXPECTED_OPTIONAL_TABLE_COLUMNS = {
     CONFIG_SHARE_TOKENS_TABLE: (
@@ -148,6 +156,7 @@ class BackupService:
         self._validate_database_foreign_key_schema_from_path(db_path)
         self._validate_database_check_constraint_schema_from_path(db_path)
         self._validate_database_unique_constraint_schema_from_path(db_path)
+        self._validate_database_index_declaration_schema_from_path(db_path)
         self._validate_optional_table_columns_schema_from_path(db_path)
         self._validate_optional_table_column_declarations_schema_from_path(db_path)
         self._validate_database_foreign_keys_from_path(db_path)
@@ -286,6 +295,7 @@ class BackupService:
                 self._validate_database_foreign_key_schema(conn)
                 self._validate_database_check_constraint_schema(conn)
                 self._validate_database_unique_constraint_schema(conn)
+                self._validate_database_index_declaration_schema(conn)
                 self._validate_optional_table_columns_schema(conn)
                 self._validate_optional_table_column_declarations_schema(conn)
                 self._validate_database_foreign_keys(conn)
@@ -405,6 +415,7 @@ class BackupService:
             conn = sqlite3.connect(db_path)
             try:
                 self._validate_database_unique_constraint_schema(conn)
+                self._validate_database_index_declaration_schema(conn)
             finally:
                 conn.close()
         except sqlite3.DatabaseError as exc:
@@ -430,6 +441,57 @@ class BackupService:
                 for expected_constraint in expected_constraints
             ):
                 raise ValueError(UNIQUE_CONSTRAINT_SCHEMA_ERROR)
+
+    def _validate_database_index_declaration_schema_from_path(
+        self,
+        db_path: Path,
+    ) -> None:
+        try:
+            conn = sqlite3.connect(db_path)
+            try:
+                self._validate_database_index_declaration_schema(conn)
+            finally:
+                conn.close()
+        except sqlite3.DatabaseError as exc:
+            raise ValueError("Backup database is not a usable SQLite database") from exc
+
+    def _validate_database_index_declaration_schema(
+        self,
+        conn: sqlite3.Connection,
+    ) -> None:
+        for table_name, expected_declarations in EXPECTED_UNIQUE_INDEX_DECLARATIONS.items():
+            if not self._table_exists(conn, table_name):
+                continue
+            actual_declarations = self._unique_index_declarations(conn, table_name)
+            if any(
+                expected_declaration not in actual_declarations
+                for expected_declaration in expected_declarations
+            ):
+                raise ValueError(INDEX_DECLARATION_SCHEMA_ERROR)
+
+    def _unique_index_declarations(
+        self,
+        conn: sqlite3.Connection,
+        table_name: str,
+    ) -> set[tuple[tuple[str, ...], str, bool, bool]]:
+        declarations: set[tuple[tuple[str, ...], str, bool, bool]] = set()
+        for index_row in conn.execute(f"PRAGMA index_list({table_name})"):
+            if int(self._pragma_row_value(index_row, "unique", 2) or 0) != 1:
+                continue
+            index_name = str(self._pragma_row_value(index_row, "name", 1))
+            origin = str(self._pragma_row_value(index_row, "origin", 3) or "")
+            partial = bool(int(self._pragma_row_value(index_row, "partial", 4) or 0))
+            has_expression = False
+            columns: list[str] = []
+            for index_column_row in conn.execute(f"PRAGMA index_xinfo({index_name})"):
+                cid = int(self._pragma_row_value(index_column_row, "cid", 1) or -1)
+                name = self._pragma_row_value(index_column_row, "name", 2)
+                if cid < 0 or name is None:
+                    has_expression = True
+                if cid >= 0 and name is not None:
+                    columns.append(str(name))
+            declarations.add((tuple(columns), origin, partial, has_expression))
+        return declarations
 
     def _primary_key_columns(
         self,
