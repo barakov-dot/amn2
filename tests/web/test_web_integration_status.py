@@ -62,6 +62,10 @@ def test_integration_status_page_renders_gate_without_secret_markers(tmp_path: P
     assert "automatic activation enabled" in response.text
     assert "fresh-install-wizard-ready" in response.text
     assert "local-only-dry-run" in response.text
+    assert "Current source head" in response.text
+    assert "Prebuilt artifact head" in response.text
+    assert "Current source package status" in response.text
+    assert "b121865" in response.text
     assert "public-docs-api-taxonomy-ready" in response.text
     assert "publication enabled" in response.text
     assert "destructive-cleanup-checklist-ready" in response.text

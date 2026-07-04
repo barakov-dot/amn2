@@ -477,6 +477,18 @@
             <td>Runbook</td>
             <td><code>{{ report.fresh_install_wizard_boundary.docs.runbook }}</code></td>
           </tr>
+          <tr>
+            <td>Current source head</td>
+            <td><code>{{ report.fresh_install_wizard_boundary.current_head_package_preflight.current_source_head }}</code></td>
+          </tr>
+          <tr>
+            <td>Prebuilt artifact head</td>
+            <td><code>{{ report.fresh_install_wizard_boundary.current_head_package_preflight.prebuilt_artifact_head }}</code></td>
+          </tr>
+          <tr>
+            <td>Current source package status</td>
+            <td>{{ report.fresh_install_wizard_boundary.current_head_package_preflight.package_status_for_current_source_head|replace("_", "-") }}</td>
+          </tr>
         </tbody>
       </table>
     </div>
