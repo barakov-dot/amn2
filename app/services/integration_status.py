@@ -5,7 +5,10 @@ from pathlib import Path
 from typing import Any
 
 from app.db.repositories import Repository
-from app.services.fresh_install_wizard import build_fresh_install_wizard_boundary
+from app.services.fresh_install_wizard import (
+    build_fresh_install_manifest,
+    build_fresh_install_wizard_boundary,
+)
 from app.services.privacy_status_boundary import build_privacy_status_boundary
 from app.services.productization_boundary import build_productization_boundary
 from app.services.public_productization_boundaries import (
@@ -16,8 +19,10 @@ from app.services.reconciliation_release_boundary import (
     build_reconciliation_release_boundary,
 )
 from app.services.telemetry_retention_policy import build_telemetry_retention_policy
+from app.security.surface_policy import SURFACE_POLICIES
 from app.vpn.client_compatibility import (
     CLIENT_COMPATIBILITY_MATRIX,
+    CLIENT_COMPATIBILITY_WATCH,
     recommended_delivery_order,
 )
 
@@ -158,6 +163,25 @@ def build_integration_status(repo: Repository) -> dict[str, Any]:
         "telemetry_retention_policy": build_telemetry_retention_policy(),
         "client_compatibility_boundary": build_client_compatibility_boundary(),
         "fresh_install_wizard_boundary": build_fresh_install_wizard_boundary(),
+        "public_config_write_prerequisite_split": build_fresh_install_manifest()[
+            "public_config_write_prerequisite_split"
+        ],
+        "public_exposure_readiness_design": build_fresh_install_manifest()[
+            "public_exposure_readiness_design"
+        ],
+        "config_delivery_channel_readiness": (
+            build_config_delivery_channel_readiness_api_boundary()
+        ),
+        "write_api_scope_decision": build_fresh_install_manifest()[
+            "write_api_scope_decision"
+        ],
+        "backup_restore_import_readiness": build_fresh_install_manifest()[
+            "backup_restore_import_readiness"
+        ],
+        "telegram_identity_readiness": build_fresh_install_manifest()[
+            "telegram_identity_readiness"
+        ],
+        "api_docs_taxonomy_rc_drift_check": build_api_docs_taxonomy_rc_drift_check(),
         "public_docs_api_taxonomy_boundary": build_public_docs_api_taxonomy_boundary(),
         "destructive_cleanup_gate_checklist": build_destructive_cleanup_gate_checklist(),
         "aggregate_state": _load_aggregate_state(repo),
@@ -183,12 +207,61 @@ def build_client_compatibility_boundary() -> dict[str, Any]:
             "supported_path": CLIENT_COMPATIBILITY_MATRIX["amneziawg_android"].label,
         },
         "fallback_order": recommended_delivery_order("defaultvpn_ios_ru"),
+        "watch_refresh": dict(CLIENT_COMPATIBILITY_WATCH),
         "one_tap_copy": {
             "telegram_copy_text_limit": 256,
             "full_import_link_copy_when_too_long": False,
             "short_delivery_link_requires_gate": "P6-C002 Config delivery gate",
         },
         "live_client_import_verified": False,
+    }
+
+
+def build_config_delivery_channel_readiness_api_boundary() -> dict[str, Any]:
+    readiness = dict(build_fresh_install_manifest()["config_delivery_channel_readiness"])
+    safe_checklists: list[dict[str, Any]] = []
+    for checklist in readiness["checklists"]:
+        safe_checklist = dict(checklist)
+        forbidden_evidence = safe_checklist.pop("forbidden_evidence", None)
+        if forbidden_evidence is not None:
+            safe_checklist["forbidden_evidence_count"] = len(forbidden_evidence)
+            safe_checklist["evidence_policy"] = "names_redacted_from_api_status"
+        safe_checklists.append(safe_checklist)
+    readiness["checklists"] = safe_checklists
+    return readiness
+
+
+def build_api_docs_taxonomy_rc_drift_check() -> dict[str, Any]:
+    implemented_api_routes = [
+        policy
+        for policy in SURFACE_POLICIES
+        if policy.surface == "api" and policy.implementation_mode == "implemented"
+    ]
+    blocked_api_routes = [
+        policy
+        for policy in SURFACE_POLICIES
+        if policy.surface == "api" and policy.implementation_mode == "blocked-future"
+    ]
+    return {
+        "status": "taxonomy_rc_drift_check_ready",
+        "mode": "local_only",
+        "public_openapi_publication_allowed": False,
+        "new_route_exposure_allowed": False,
+        "write_route_enablement_allowed": False,
+        "required_checks": [
+            "surface_policy_route_order",
+            "integration_status_safe_payload",
+            "public_docs_publication_flags_disabled",
+            "safe_metadata_marker_vocabulary",
+        ],
+        "surface_policy_counts": {
+            "implemented_api_routes": len(implemented_api_routes),
+            "blocked_future_api_routes": len(blocked_api_routes),
+        },
+        "safe_metadata_marker_guard": {
+            "forbidden_marker_words_allowed": False,
+            "error_mode": "field_or_category_only",
+        },
     }
 
 

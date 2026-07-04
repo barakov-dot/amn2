@@ -10,10 +10,25 @@ PLAN_SCHEMA_VERSION = "fresh-install-plan.v1"
 READINESS_SCHEMA_VERSION = "fresh-install-readiness.v1"
 EVIDENCE_SCHEMA_VERSION = "fresh-install-evidence.v1"
 PACKAGE_PREFLIGHT_SCHEMA_VERSION = "fresh-install-package-preflight.v1"
+RC_ACCEPTANCE_SCHEMA_VERSION = "clean-installer-rc-acceptance.v1"
+PUBLIC_CONFIG_WRITE_SPLIT_SCHEMA_VERSION = "public-config-write-prerequisite-split.v1"
+PUBLIC_EXPOSURE_READINESS_SCHEMA_VERSION = "public-exposure-readiness-design.v1"
+CONFIG_DELIVERY_CHANNEL_READINESS_SCHEMA_VERSION = (
+    "config-delivery-channel-readiness.v1"
+)
+WRITE_API_SCOPE_DECISION_SCHEMA_VERSION = "write-api-scope-decision.v1"
+BACKUP_RESTORE_IMPORT_READINESS_SCHEMA_VERSION = (
+    "backup-restore-import-prerequisite-checklist.v1"
+)
+TELEGRAM_IDENTITY_READINESS_SCHEMA_VERSION = (
+    "telegram-identity-profile-media-prerequisite-checklist.v1"
+)
 SECRET_HANDOFF_POLICY_DOC = "docs/AMN2_SECRET_HANDOFF_PROTOCOL.ru.md"
 FRESH_INSTALLER_OPERATOR_INDEX_DOC = "docs/FRESH_INSTALLER_OPERATOR_INDEX.ru.md"
-CURRENT_PACKAGE_PREFLIGHT_HEAD = "ff77d4c"
-LATEST_VPS_SMOKED_PACKAGE_HEAD = "c46f664"
+MULTI_INSTANCE_IPAM_MODEL_DOC = "docs/MULTI_INSTANCE_IPAM_CONFLICT_MODEL.ru.md"
+CURRENT_PACKAGE_PREFLIGHT_HEAD = "b121865"
+LATEST_VPS_SMOKED_PACKAGE_HEAD = "b121865"
+CURRENT_SOURCE_ZIP_SHA256 = "D0FB561D5A12C3B2C095521C3B44923B001F49C8E94CA5C13DB1E811ABB17647"
 
 DEFAULT_FRESH_INSTALL_ANSWERS: dict[str, str] = {
     "project_name": "AMN2",
@@ -59,35 +74,35 @@ _QUESTION_FIELDS: tuple[dict[str, Any], ...] = (
     },
     {
         "key": "public_exposure",
-        "prompt": "Открывать публичный доступ сейчас? yes/no",
+        "prompt": "Открывать публичный доступ сейчас (yes/no)",
         "required": True,
         "allowed_values": ["no", "yes"],
-        "gate": "P6-C001",
+        "gate": "P7-C002",
     },
     {
         "key": "config_delivery",
-        "prompt": "Включать реальную выдачу конфигов сейчас? yes/no",
+        "prompt": "Включать выдачу реальных конфигов сейчас (yes/no)",
         "required": True,
         "allowed_values": ["no", "yes"],
-        "gate": "P6-C002",
+        "gate": "P7-C003",
     },
     {
         "key": "write_api",
-        "prompt": "Включать production write API сейчас? yes/no",
+        "prompt": "Включать write API для установки сейчас (yes/no)",
         "required": True,
         "allowed_values": ["no", "yes"],
-        "gate": "P6-C003",
+        "gate": "P7-C005",
     },
     {
         "key": "destructive_cleanup",
-        "prompt": "Запускать destructive cleanup/reinstall сейчас? yes/no",
+        "prompt": "Запускать очистку или переустановку сейчас (yes/no)",
         "required": True,
         "allowed_values": ["no", "yes"],
-        "gate": "P6-C007",
+        "gate": "P7-C004",
     },
     {
         "key": "telegram_bot",
-        "prompt": "Режим Telegram bot credential",
+        "prompt": "Режим Telegram-бота",
         "required": True,
         "allowed_values": ["not_configured", "operator_local"],
         "gate": None,
@@ -117,13 +132,13 @@ _ALLOWED_VALUES: dict[str, set[str]] = {
 }
 
 _STOP_LINES: tuple[tuple[str, str, str], ...] = (
-    ("public_exposure", "P6-C001", "P6-C001 required before public exposure"),
-    ("config_delivery", "P6-C002", "P6-C002 required before config delivery"),
-    ("write_api", "P6-C003", "P6-C003 required before write API"),
+    ("public_exposure", "P7-C002", "P7-C002 required before public exposure"),
+    ("config_delivery", "P7-C003", "P7-C003 required before config delivery"),
+    ("write_api", "P7-C005", "P7-C005 required before write API"),
     (
         "destructive_cleanup",
-        "P6-C007",
-        "P6-C007 required before destructive cleanup/reinstall",
+        "P7-C004",
+        "P7-C004 required before destructive cleanup/reinstall",
     ),
 )
 
@@ -137,6 +152,22 @@ _FORBIDDEN_IN_PLAN: list[str] = [
     "qr_payload",
     "vpn://",
 ]
+
+_SECRET_INPUT_MARKERS = (
+    ".env",
+    ".conf",
+    "servers.yml",
+    "telegram_bot_token",
+    "web_admin_password",
+    "session_secret",
+    "client_config",
+    "qr_payload",
+    "vpn://",
+    "PrivateKey",
+    "PresharedKey",
+    "Authorization",
+    "token_hash",
+)
 
 _LOCAL_DRY_RUN_STEPS = [
     "python -m app.toolchain check",
@@ -250,6 +281,50 @@ _ASSET_PATH_PREFLIGHT_REQUIRED_CHECKS = [
     "package_manifest_paths_match_archive",
     "source_zip_paths_match_manifest",
     "no_secret_material_in_asset_manifest",
+    "package_local_helper_defaults_match_commit",
+]
+
+_RC_ACCEPTANCE_SECTIONS = [
+    "answers",
+    "target_preflight",
+    "package_preflight",
+    "smoke_evidence",
+    "secret_handoff",
+    "rollback",
+    "stop_lines",
+]
+
+_RC_REQUIRED_EVIDENCE = [
+    "rendered_plan_secret_free",
+    "package_sha256_recorded",
+    "source_sha256_recorded",
+    "operator_runbook_paths_verified",
+    "helper_default_bindings_verified",
+    "known_good_baseline_preserved",
+    "multi_instance_ipam_conflict_model_reviewed",
+]
+
+_MULTI_INSTANCE_IPAM_REQUIRED_CHECKS = [
+    "unique_runtime_instance_id",
+    "unique_listen_port_per_instance",
+    "non_overlapping_vpn_cidr",
+    "unique_interface_name",
+    "endpoint_pair_review",
+    "dns_ipv6_policy_review",
+]
+
+_MULTI_INSTANCE_IPAM_SAFE_OUTPUTS = [
+    "conflict_report",
+    "operator_notes",
+    "blocked_gate_summary",
+]
+
+_MULTI_INSTANCE_IPAM_BLOCKED_OUTPUTS = [
+    "runtime_config_write",
+    "firewall_change",
+    "peer_migration",
+    "config_delivery",
+    "service_restart",
 ]
 
 _SMOKE_EVIDENCE_REQUIRED_SECTIONS = [
@@ -278,6 +353,436 @@ _RECONCILIATION_BLOCKED_OUTPUTS = [
     "peer_removal",
 ]
 
+_PUBLIC_CONFIG_WRITE_OBSERVED_BLOCKERS = [
+    "web_loopback_only",
+    "external_public_probes_closed",
+    "web_admin_username_missing",
+    "smtp_config_missing",
+    "vps_apply_enabled_false",
+    "local_agent_disabled",
+    "write_api_route_count_zero",
+]
+
+_PUBLIC_CONFIG_WRITE_BLOCKED_ACTIONS = [
+    "public_listener_change",
+    "domain_tls_reverse_proxy_apply",
+    "config_artifact_output",
+    "write_api_route_enablement",
+    "vps_apply_enabled_true",
+    "local_agent_mutation",
+    "live_peer_user_mutation",
+]
+
+_PUBLIC_CONFIG_WRITE_READINESS_TRACKS: list[dict[str, Any]] = [
+    {
+        "id": "public-exposure-readiness",
+        "gate": "P7-C002",
+        "status": "blocked",
+        "required_decisions": [
+            "admin_credential_contract",
+            "domain_tls_reverse_proxy_plan",
+            "firewall_listener_plan",
+            "public_probe_matrix",
+            "rollback_to_loopback",
+        ],
+        "live_enable_allowed": False,
+    },
+    {
+        "id": "config-delivery-channel-readiness",
+        "gate": "P7-C003",
+        "status": "blocked",
+        "required_decisions": [
+            "smtp_or_operator_local_channel",
+            "secret_safe_evidence_protocol",
+            "client_import_matrix",
+            "one_time_delivery_policy",
+            "delivery_revocation_story",
+        ],
+        "live_enable_allowed": False,
+    },
+    {
+        "id": "write-api-scope-decision",
+        "gate": "P7-C005",
+        "status": "blocked",
+        "decision_options": [
+            "keep_public_api_read_only_for_rc",
+            "add_separate_write_api_implementation_slice",
+            "operator_only_web_write_window",
+        ],
+        "required_decisions": [
+            "route_scope_inventory",
+            "mutation_idempotency_policy",
+            "audit_redaction_contract",
+            "vps_apply_enabled_window",
+            "rollback_or_reconcile_plan",
+        ],
+        "live_enable_allowed": False,
+    },
+]
+
+_PUBLIC_EXPOSURE_READINESS_CHECKLISTS: list[dict[str, Any]] = [
+    {
+        "id": "admin-credential-contract",
+        "status": "required_before_apply",
+        "required": [
+            "WEB_ADMIN_USERNAME present",
+            "WEB_ADMIN_PASSWORD_HASH present",
+            "APP_SECRET_KEY present",
+            "no raw credential value in evidence",
+        ],
+        "safe_evidence": [
+            "presence_only",
+            "boolean_flags_only",
+            "no_hash_or_secret_value",
+        ],
+    },
+    {
+        "id": "domain-tls-reverse-proxy-plan",
+        "status": "required_before_apply",
+        "requires_operator_inputs": [
+            "domain_name",
+            "tls_mode",
+            "reverse_proxy_kind",
+        ],
+        "allowed_proxy_targets": [
+            "127.0.0.1:3030",
+        ],
+        "blocked_proxy_targets": [
+            "127.0.0.1:3040",
+            "0.0.0.0:3040",
+        ],
+    },
+    {
+        "id": "firewall-listener-plan",
+        "status": "required_before_apply",
+        "backend_listener": "127.0.0.1:3030",
+        "blocked_direct_listeners": [
+            "0.0.0.0:3030",
+            "0.0.0.0:3040",
+        ],
+        "allowed_public_ports_after_apply": [
+            "80",
+            "443",
+        ],
+    },
+    {
+        "id": "external-probe-matrix",
+        "status": "required_before_apply",
+        "expected_before_apply": {
+            "3030": "closed",
+            "3040": "closed",
+            "80": "closed_or_proxy_planned",
+            "443": "closed_or_proxy_planned",
+        },
+        "expected_after_apply": {
+            "3030": "closed",
+            "3040": "closed",
+            "80": "redirect_or_challenge",
+            "443": "login_or_auth_challenge",
+        },
+    },
+    {
+        "id": "rollback-to-loopback",
+        "status": "required_before_apply",
+        "rollback_goal": "web_loopback_only",
+        "required_checks": [
+            "disable_public_proxy",
+            "restore_firewall_closed_3030_3040",
+            "verify_loopback_login_200",
+            "verify_external_3030_3040_closed",
+        ],
+    },
+]
+
+_PUBLIC_EXPOSURE_BLOCKED_ACTIONS = [
+    "public_listener_change",
+    "firewall_apply",
+    "reverse_proxy_apply",
+    "tls_certificate_issue",
+    "public_openapi_publication",
+    "direct_public_api_3040",
+]
+
+_CONFIG_DELIVERY_CHANNEL_CHECKLISTS: list[dict[str, Any]] = [
+    {
+        "id": "delivery-channel-decision",
+        "status": "required_before_apply",
+        "allowed_channels": ["smtp_email", "operator_local"],
+        "requires_operator_inputs": [
+            "selected_channel",
+            "recipient_identity_policy",
+            "fallback_channel",
+        ],
+    },
+    {
+        "id": "secret-safe-evidence-protocol",
+        "status": "required_before_apply",
+        "forbidden_evidence": [
+            "client_config_body",
+            "qr_payload",
+            "vpn_import_uri",
+            "private_key",
+            "preshared_key",
+            "smtp_secret",
+        ],
+        "safe_evidence": [
+            "delivery_status_code",
+            "artifact_type_counts",
+            "redacted_audit_summary",
+        ],
+    },
+    {
+        "id": "client-import-matrix",
+        "status": "required_before_apply",
+        "required_artifacts": [
+            "conf_file",
+            "vpn_import_link",
+            "qr_vpn_import_link",
+        ],
+        "compatibility_notes": [
+            "conf_file_primary",
+            "vpn_import_link_copyable",
+            "qr_not_universal",
+        ],
+    },
+    {
+        "id": "one-time-delivery-policy",
+        "status": "required_before_apply",
+        "required_properties": [
+            "single_use",
+            "short_ttl",
+            "purpose_bound",
+            "audit_redacted",
+        ],
+        "blocked_defaults": [
+            "long_lived_public_link",
+            "reusable_token",
+            "secret_in_logs",
+        ],
+    },
+    {
+        "id": "delivery-revocation-story",
+        "status": "required_before_apply",
+        "required_steps": [
+            "disable_delivery_channel",
+            "revoke_or_expire_delivery_token",
+            "record_safe_revocation_summary",
+        ],
+        "rollback_goal": "no_active_public_config_delivery",
+    },
+]
+
+_CONFIG_DELIVERY_BLOCKED_ACTIONS = [
+    "config_artifact_output",
+    "smtp_send",
+    "telegram_config_send",
+    "public_config_link_issue",
+    "public_config_link_redeem",
+    "qr_generation_for_delivery",
+]
+
+_WRITE_API_DECISION_OPTIONS: list[dict[str, Any]] = [
+    {
+        "id": "keep-public-api-read-only-for-rc",
+        "selected": True,
+        "status": "selected_for_rc",
+        "write_routes_enabled": False,
+        "requires_new_named_gate": None,
+        "notes": [
+            "preserve existing read-only API scope model",
+            "use loopback/operator web surfaces for manual RC validation",
+        ],
+    },
+    {
+        "id": "separate-write-api-implementation-slice",
+        "selected": False,
+        "status": "deferred",
+        "write_routes_enabled": False,
+        "requires_new_named_gate": "P7-C005",
+        "required_scope_decisions": [
+            "route_allowlist",
+            "write_auth_scopes",
+            "idempotency_model",
+            "audit_redaction_model",
+            "rollback_or_compensating_action",
+        ],
+    },
+    {
+        "id": "operator-only-web-write-window",
+        "selected": False,
+        "status": "deferred",
+        "write_routes_enabled": False,
+        "requires_new_named_gate": "P7-C005",
+        "required_scope_decisions": [
+            "loopback_access_window",
+            "operator_confirmation_copy",
+            "post_window_relock_check",
+        ],
+    },
+]
+
+_WRITE_API_REQUIRED_BEFORE_ANY_WRITE = [
+    "route_inventory_still_zero_or_explicitly_scoped",
+    "auth_scope_model_for_write",
+    "idempotency_and_audit_contract",
+    "rollback_or_compensating_action_story",
+    "operator_confirmation_boundary",
+    "safe_evidence_no_secret_or_peer_material",
+]
+
+_WRITE_API_BLOCKED_ACTIONS = [
+    "write_api_route_enablement",
+    "api_clients_crud",
+    "install_mutation_route",
+    "local_agent_mutation",
+    "vps_apply_enabled_true",
+    "production_peer_user_mutation",
+    "server_config_rewrite",
+]
+
+_BACKUP_RESTORE_IMPORT_CHECKLISTS: list[dict[str, Any]] = [
+    {
+        "id": "backup-scope-decision",
+        "status": "required_before_apply",
+        "required_decisions": [
+            "source_state_scope",
+            "artifact_inventory",
+            "operator_retention_choice",
+        ],
+        "safe_outputs": [
+            "aggregate_state_scope",
+            "artifact_type_counts",
+            "retention_label",
+        ],
+    },
+    {
+        "id": "encryption-and-retention-policy",
+        "status": "required_before_apply",
+        "required_properties": [
+            "encrypted_at_rest",
+            "operator_local_secret_handoff",
+            "retention_window_declared",
+            "safe_evidence_only",
+        ],
+        "blocked_defaults": [
+            "plain_archive",
+            "unbounded_retention",
+            "secret_value_in_evidence",
+        ],
+    },
+    {
+        "id": "restore-preview-safety",
+        "status": "required_before_apply",
+        "required_steps": [
+            "restore_preview_only",
+            "target_isolation_confirmed",
+            "no_overwrite_without_named_gate",
+        ],
+        "apply_allowed": False,
+    },
+    {
+        "id": "import-source-validation",
+        "status": "required_before_apply",
+        "required_checks": [
+            "source_integrity_check",
+            "schema_version_check",
+            "operator_ownership_check",
+            "safe_manifest_only",
+        ],
+        "import_apply_allowed": False,
+    },
+    {
+        "id": "disaster-recovery-drill-plan",
+        "status": "required_before_apply",
+        "required_steps": [
+            "drill_scope_declared",
+            "rollback_stop_line_declared",
+            "post_drill_relock_check",
+        ],
+        "reboot_allowed": False,
+    },
+]
+
+_BACKUP_RESTORE_IMPORT_BLOCKED_ACTIONS = [
+    "backup_archive_create",
+    "restore_apply",
+    "archive_import_apply",
+    "reboot",
+    "destructive_migration",
+    "remote_backup_download",
+]
+
+_TELEGRAM_IDENTITY_CHECKLISTS: list[dict[str, Any]] = [
+    {
+        "id": "telegram-identity-scope-decision",
+        "status": "required_before_apply",
+        "required_decisions": [
+            "bot_identity_target",
+            "allowed_profile_fields",
+            "operator_approval_window",
+        ],
+        "safe_outputs": [
+            "target_label",
+            "field_allowlist",
+            "approval_window_label",
+        ],
+    },
+    {
+        "id": "credential-handoff-and-storage-policy",
+        "status": "required_before_apply",
+        "required_properties": [
+            "operator_local_secret_handoff",
+            "no_token_in_evidence",
+            "no_token_in_rendered_plan",
+            "credential_rotation_story",
+        ],
+        "blocked_defaults": [
+            "token_in_file",
+            "token_in_log",
+            "token_in_status_payload",
+        ],
+    },
+    {
+        "id": "profile-media-asset-plan",
+        "status": "required_before_apply",
+        "required_artifacts": [
+            "profile_display_name_plan",
+            "profile_description_plan",
+            "profile_media_asset_reference",
+        ],
+        "live_upload_allowed": False,
+    },
+    {
+        "id": "operator-preview-and-rollback",
+        "status": "required_before_apply",
+        "required_steps": [
+            "operator_preview_only",
+            "before_after_summary_plan",
+            "rollback_or_revert_story",
+        ],
+        "profile_apply_allowed": False,
+    },
+    {
+        "id": "post-mutation-relock-audit",
+        "status": "required_before_apply",
+        "required_steps": [
+            "disable_token_access_after_window",
+            "record_safe_audit_summary",
+            "verify_no_live_send_needed",
+        ],
+        "live_bot_send_allowed": False,
+    },
+]
+
+_TELEGRAM_IDENTITY_BLOCKED_ACTIONS = [
+    "telegram_token_use",
+    "live_bot_send",
+    "profile_name_mutation",
+    "profile_description_mutation",
+    "profile_photo_mutation",
+    "media_upload",
+]
+
 
 def build_fresh_install_manifest() -> dict[str, Any]:
     return {
@@ -289,6 +794,21 @@ def build_fresh_install_manifest() -> dict[str, Any]:
         ),
         "installer_evidence": _build_installer_evidence(),
         "current_head_package_preflight": _build_current_head_package_preflight(),
+        "clean_installer_rc_acceptance": _build_rc_acceptance_checklist(),
+        "multi_instance_ipam_rc_decision": _build_multi_instance_ipam_rc_decision(),
+        "public_config_write_prerequisite_split": (
+            _build_public_config_write_prerequisite_split()
+        ),
+        "public_exposure_readiness_design": _build_public_exposure_readiness_design(),
+        "config_delivery_channel_readiness": (
+            _build_config_delivery_channel_readiness()
+        ),
+        "write_api_scope_decision": _build_write_api_scope_decision(),
+        "backup_restore_import_readiness": (
+            _build_backup_restore_import_readiness()
+        ),
+        "telegram_identity_readiness": _build_telegram_identity_readiness(),
+        "secret_input_contract": _build_secret_input_contract(),
         "secret_handoff_policy": {
             "policy_doc": SECRET_HANDOFF_POLICY_DOC,
             "mode": DEFAULT_FRESH_INSTALL_ANSWERS["secret_handoff"],
@@ -344,6 +864,9 @@ def build_fresh_install_plan(answers: dict[str, str]) -> dict[str, Any]:
         "installer_readiness": _build_installer_readiness(normalized),
         "installer_evidence": _build_installer_evidence(),
         "current_head_package_preflight": _build_current_head_package_preflight(),
+        "clean_installer_rc_acceptance": _build_rc_acceptance_checklist(),
+        "multi_instance_ipam_rc_decision": _build_multi_instance_ipam_rc_decision(),
+        "secret_input_contract": _build_secret_input_contract(),
         "rendered_plan": _build_rendered_plan(normalized, required_gates, stop_lines),
         "stop_lines": stop_lines,
         "local_dry_run_steps": list(_LOCAL_DRY_RUN_STEPS),
@@ -374,6 +897,9 @@ def _normalize_answers(answers: dict[str, str]) -> dict[str, str]:
     for key in ("project_name", "server_name"):
         if not normalized[key]:
             raise ValueError(f"{key} cannot be blank")
+    for key, value in normalized.items():
+        if _contains_secret_marker(value):
+            raise ValueError(f"secret-bearing installer input is not allowed: {key}")
     for key, allowed in _ALLOWED_VALUES.items():
         value = normalized[key]
         if value not in allowed:
@@ -464,6 +990,49 @@ def _build_rendered_plan(
                 "required_checks": list(_ASSET_PATH_PREFLIGHT_REQUIRED_CHECKS),
             },
             {
+                "id": "clean-installer-rc-acceptance",
+                "status": "local_only",
+                "live_apply_allowed": False,
+                "acceptance_sections": list(_RC_ACCEPTANCE_SECTIONS),
+                "required_evidence": list(_RC_REQUIRED_EVIDENCE),
+            },
+            {
+                "id": "multi-instance-ipam-rc-decision",
+                **_build_multi_instance_ipam_rc_decision(),
+                "status": "local_plan_only",
+            },
+            {
+                "id": "public-config-write-prerequisite-split",
+                **_build_public_config_write_prerequisite_split(),
+            },
+            {
+                "id": "public-exposure-readiness-design",
+                **_build_public_exposure_readiness_design(),
+            },
+            {
+                "id": "config-delivery-channel-readiness",
+                **_build_config_delivery_channel_readiness_plan_view(),
+            },
+            {
+                "id": "write-api-scope-decision",
+                **_build_write_api_scope_decision(),
+            },
+            {
+                "id": "backup-restore-import-readiness",
+                **_build_backup_restore_import_readiness(),
+            },
+            {
+                "id": "telegram-identity-readiness",
+                **_build_telegram_identity_readiness(),
+            },
+            {
+                "id": "secret-input-contract",
+                "status": "local_only_security",
+                "raw_secret_input_allowed": False,
+                "blocks_fields": list(DEFAULT_FRESH_INSTALL_ANSWERS),
+                "safe_error_mode": "field_only_no_value_echo",
+            },
+            {
                 "id": "smoke-evidence-template",
                 "status": "local_template_only",
                 "secret_payload_allowed": False,
@@ -546,7 +1115,7 @@ def _build_current_head_package_preflight() -> dict[str, Any]:
         "required_checks": list(_CURRENT_HEAD_PACKAGE_PREFLIGHT_REQUIRED_CHECKS),
         "asset_path_preflight": _build_asset_path_preflight(),
         "requires_named_gate_for_live_apply": (
-            f"current-head live apply/smoke gate for {CURRENT_PACKAGE_PREFLIGHT_HEAD}"
+            f"P7-C001 live package/apply/smoke gate for {CURRENT_PACKAGE_PREFLIGHT_HEAD}"
         ),
     }
 
@@ -557,7 +1126,227 @@ def _build_asset_path_preflight() -> dict[str, Any]:
         "gate": "package/preflight only",
         "live_apply_allowed": False,
         "required_checks": list(_ASSET_PATH_PREFLIGHT_REQUIRED_CHECKS),
+        "artifacts": {
+            "package_zip": "dist/amn2-vps-update-and-smoke-kit-b121865.zip",
+            "package_sha256_file": "dist/amn2-vps-update-and-smoke-kit-b121865.zip.sha256.txt",
+            "source_zip": "dist/amn2-codex-vps-test-prep-b121865-source.zip",
+            "source_sha256_file": "dist/amn2-codex-vps-test-prep-b121865-source.zip.sha256.txt",
+            "operator_runbook": (
+                "dist/amn2-vps-update-and-smoke-kit-b121865/"
+                "AMN2_VPS_UPDATE_AND_SMOKE_b121865.ru.md"
+            ),
+            "apply_script": "dist/amn2-vps-update-and-smoke-kit-b121865/amn2_apply_source_zip.sh",
+            "smoke_script": "dist/amn2-vps-update-and-smoke-kit-b121865/amn2_api_loopback_smoke.sh",
+        },
+        "helper_default_bindings": {
+            "source_zip_commit": CURRENT_PACKAGE_PREFLIGHT_HEAD,
+            "source_sha256": CURRENT_SOURCE_ZIP_SHA256,
+            "expected_commit": CURRENT_PACKAGE_PREFLIGHT_HEAD,
+        },
     }
+
+
+def _build_rc_acceptance_checklist() -> dict[str, Any]:
+    return {
+        "schema_version": RC_ACCEPTANCE_SCHEMA_VERSION,
+        "mode": "local_only",
+        "status": "rc_checklist_ready",
+        "target_head": CURRENT_PACKAGE_PREFLIGHT_HEAD,
+        "known_good_vps_head": LATEST_VPS_SMOKED_PACKAGE_HEAD,
+        "live_apply_allowed": False,
+        "acceptance_sections": list(_RC_ACCEPTANCE_SECTIONS),
+        "required_evidence": list(_RC_REQUIRED_EVIDENCE),
+        "named_live_gate_required": (
+            f"P7-C001 live package/apply/smoke gate for {CURRENT_PACKAGE_PREFLIGHT_HEAD}"
+        ),
+    }
+
+
+def _build_multi_instance_ipam_rc_decision() -> dict[str, Any]:
+    return {
+        "status": "multi_instance_ipam_rc_decision_ready",
+        "mode": "local_plan_only",
+        "policy_doc": MULTI_INSTANCE_IPAM_MODEL_DOC,
+        "gate": "local-only/docs/tests",
+        "live_multi_instance_apply_allowed": False,
+        "runtime_config_write_allowed": False,
+        "firewall_change_allowed": False,
+        "peer_migration_allowed": False,
+        "config_delivery_allowed": False,
+        "service_restart_allowed": False,
+        "required_checks": list(_MULTI_INSTANCE_IPAM_REQUIRED_CHECKS),
+        "safe_outputs": list(_MULTI_INSTANCE_IPAM_SAFE_OUTPUTS),
+        "blocked_outputs": list(_MULTI_INSTANCE_IPAM_BLOCKED_OUTPUTS),
+    }
+
+
+def _build_public_config_write_prerequisite_split() -> dict[str, Any]:
+    return {
+        "schema_version": PUBLIC_CONFIG_WRITE_SPLIT_SCHEMA_VERSION,
+        "status": "blocked_by_preconditions",
+        "mode": "local_only_docs_tests",
+        "gate": "P7-I004",
+        "source_evidence": (
+            "research/amn2/phase-7-public-config-write-preflight-b121865-2026-06-14.md"
+        ),
+        "combined_gate_retry_allowed": False,
+        "live_changes_allowed": False,
+        "readiness_tracks": [
+            dict(track) for track in _PUBLIC_CONFIG_WRITE_READINESS_TRACKS
+        ],
+        "observed_blockers": list(_PUBLIC_CONFIG_WRITE_OBSERVED_BLOCKERS),
+        "blocked_actions": list(_PUBLIC_CONFIG_WRITE_BLOCKED_ACTIONS),
+    }
+
+
+def _build_public_exposure_readiness_design() -> dict[str, Any]:
+    return {
+        "schema_version": PUBLIC_EXPOSURE_READINESS_SCHEMA_VERSION,
+        "status": "readiness_design_ready",
+        "mode": "local_only_docs_tests",
+        "gate": "P7-I005",
+        "target_gate": "P7-C002",
+        "source_evidence": (
+            "research/amn2/phase-7-public-config-write-preflight-b121865-2026-06-14.md"
+        ),
+        "live_exposure_allowed": False,
+        "requires_named_gate_for_apply": "P7-C002 public exposure gate",
+        "checklists": [
+            dict(checklist) for checklist in _PUBLIC_EXPOSURE_READINESS_CHECKLISTS
+        ],
+        "blocked_actions": list(_PUBLIC_EXPOSURE_BLOCKED_ACTIONS),
+    }
+
+
+def _build_config_delivery_channel_readiness() -> dict[str, Any]:
+    return {
+        "schema_version": CONFIG_DELIVERY_CHANNEL_READINESS_SCHEMA_VERSION,
+        "status": "readiness_design_ready",
+        "mode": "local_only_docs_tests",
+        "gate": "P7-I006",
+        "target_gate": "P7-C003",
+        "source_evidence": (
+            "research/amn2/phase-7-public-config-write-preflight-b121865-2026-06-14.md"
+        ),
+        "live_delivery_allowed": False,
+        "requires_named_gate_for_apply": "P7-C003 config delivery gate",
+        "checklists": [
+            dict(checklist) for checklist in _CONFIG_DELIVERY_CHANNEL_CHECKLISTS
+        ],
+        "blocked_actions": list(_CONFIG_DELIVERY_BLOCKED_ACTIONS),
+    }
+
+
+def _build_config_delivery_channel_readiness_plan_view() -> dict[str, Any]:
+    readiness = dict(_build_config_delivery_channel_readiness())
+    plan_checklists: list[dict[str, Any]] = []
+    for checklist in readiness["checklists"]:
+        plan_checklist = dict(checklist)
+        forbidden_evidence = plan_checklist.pop("forbidden_evidence", None)
+        if forbidden_evidence is not None:
+            plan_checklist["forbidden_evidence_count"] = len(forbidden_evidence)
+            plan_checklist["evidence_policy"] = "names_redacted_from_rendered_plan"
+        plan_checklists.append(plan_checklist)
+    readiness["checklists"] = plan_checklists
+    return readiness
+
+
+def _build_write_api_scope_decision() -> dict[str, Any]:
+    return {
+        "schema_version": WRITE_API_SCOPE_DECISION_SCHEMA_VERSION,
+        "status": "decision_ready",
+        "mode": "local_only_docs_tests",
+        "gate": "P7-I007",
+        "target_gate": "P7-C005",
+        "source_evidence": (
+            "research/amn2/phase-7-public-config-write-preflight-b121865-2026-06-14.md"
+        ),
+        "selected_policy": "keep_public_api_read_only_for_rc",
+        "write_api_enabled": False,
+        "public_write_routes_allowed": False,
+        "local_agent_mutation_allowed": False,
+        "production_peer_user_mutation_allowed": False,
+        "requires_named_gate_for_apply": "P7-C005 write API / install mutation gate",
+        "decision_options": [
+            dict(option) for option in _WRITE_API_DECISION_OPTIONS
+        ],
+        "required_before_any_write": list(_WRITE_API_REQUIRED_BEFORE_ANY_WRITE),
+        "blocked_actions": list(_WRITE_API_BLOCKED_ACTIONS),
+    }
+
+
+def _build_backup_restore_import_readiness() -> dict[str, Any]:
+    return {
+        "schema_version": BACKUP_RESTORE_IMPORT_READINESS_SCHEMA_VERSION,
+        "status": "readiness_checklist_ready",
+        "mode": "local_only_docs_tests",
+        "gate": "P7-I008",
+        "target_gate": "P7-C006",
+        "source_evidence": (
+            "research/amn2/phase-7-public-config-write-preflight-b121865-2026-06-14.md"
+        ),
+        "live_backup_allowed": False,
+        "restore_apply_allowed": False,
+        "archive_import_allowed": False,
+        "reboot_allowed": False,
+        "requires_named_gate_for_apply": "P7-C006 backup/restore/import gate",
+        "checklists": [
+            dict(checklist) for checklist in _BACKUP_RESTORE_IMPORT_CHECKLISTS
+        ],
+        "blocked_actions": list(_BACKUP_RESTORE_IMPORT_BLOCKED_ACTIONS),
+    }
+
+
+def _build_telegram_identity_readiness() -> dict[str, Any]:
+    return {
+        "schema_version": TELEGRAM_IDENTITY_READINESS_SCHEMA_VERSION,
+        "status": "readiness_checklist_ready",
+        "mode": "local_only_docs_tests",
+        "gate": "P7-I009",
+        "target_gate": "P7-C007",
+        "source_evidence": (
+            "research/amn2/phase-7-public-config-write-preflight-b121865-2026-06-14.md"
+        ),
+        "telegram_api_enabled": False,
+        "token_use_allowed": False,
+        "profile_mutation_allowed": False,
+        "media_mutation_allowed": False,
+        "live_bot_send_allowed": False,
+        "requires_named_gate_for_apply": (
+            "P7-C007 Telegram identity/profile/media mutation gate"
+        ),
+        "checklists": [
+            dict(checklist) for checklist in _TELEGRAM_IDENTITY_CHECKLISTS
+        ],
+        "blocked_actions": list(_TELEGRAM_IDENTITY_BLOCKED_ACTIONS),
+    }
+
+
+def _build_secret_input_contract() -> dict[str, Any]:
+    return {
+        "status": "secret_input_contract_ready",
+        "raw_secret_input_allowed": False,
+        "blocks_fields": list(DEFAULT_FRESH_INSTALL_ANSWERS),
+        "safe_error_mode": "field_only_no_value_echo",
+        "forbidden_marker_categories": [
+            "env_file",
+            "client_config",
+            "qr_payload",
+            "vpn_import_uri",
+            "key_material",
+            "shared_secret_material",
+            "auth_header_material",
+            "token_material",
+        ],
+    }
+
+
+def _contains_secret_marker(value: str) -> bool:
+    candidate = value.strip()
+    if not candidate:
+        return False
+    candidate_lower = candidate.lower()
+    return any(marker.lower() in candidate_lower for marker in _SECRET_INPUT_MARKERS)
 
 
 def _build_target_preflight() -> dict[str, Any]:

@@ -11,6 +11,7 @@ from app.config.settings import Settings
 from app.db.connection import connect
 from app.db.repositories import Repository
 from app.db.schema import initialize_schema
+from app.security.surface_policy import SURFACE_POLICIES
 from app.services.api_tokens import hash_api_token
 
 
@@ -169,6 +170,125 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
         ]
         is False
     )
+    split = payload["public_config_write_prerequisite_split"]
+    assert split["status"] == "blocked_by_preconditions"
+    assert split["mode"] == "local_only_docs_tests"
+    assert split["source_evidence"] == (
+        "research/amn2/phase-7-public-config-write-preflight-b121865-2026-06-14.md"
+    )
+    assert split["combined_gate_retry_allowed"] is False
+    assert split["live_changes_allowed"] is False
+    assert [item["gate"] for item in split["readiness_tracks"]] == [
+        "P7-C002",
+        "P7-C003",
+        "P7-C005",
+    ]
+    assert "write_api_route_count_zero" in split["observed_blockers"]
+    public_readiness = payload["public_exposure_readiness_design"]
+    assert public_readiness["status"] == "readiness_design_ready"
+    assert public_readiness["mode"] == "local_only_docs_tests"
+    assert public_readiness["target_gate"] == "P7-C002"
+    assert public_readiness["live_exposure_allowed"] is False
+    assert public_readiness["requires_named_gate_for_apply"] == (
+        "P7-C002 public exposure gate"
+    )
+    assert [check["id"] for check in public_readiness["checklists"]] == [
+        "admin-credential-contract",
+        "domain-tls-reverse-proxy-plan",
+        "firewall-listener-plan",
+        "external-probe-matrix",
+        "rollback-to-loopback",
+    ]
+    assert "direct_public_api_3040" in public_readiness["blocked_actions"]
+    config_readiness = payload["config_delivery_channel_readiness"]
+    assert config_readiness["status"] == "readiness_design_ready"
+    assert config_readiness["mode"] == "local_only_docs_tests"
+    assert config_readiness["target_gate"] == "P7-C003"
+    assert config_readiness["live_delivery_allowed"] is False
+    assert config_readiness["requires_named_gate_for_apply"] == (
+        "P7-C003 config delivery gate"
+    )
+    assert [check["id"] for check in config_readiness["checklists"]] == [
+        "delivery-channel-decision",
+        "secret-safe-evidence-protocol",
+        "client-import-matrix",
+        "one-time-delivery-policy",
+        "delivery-revocation-story",
+    ]
+    assert "smtp_send" in config_readiness["blocked_actions"]
+    write_decision = payload["write_api_scope_decision"]
+    assert write_decision["status"] == "decision_ready"
+    assert write_decision["mode"] == "local_only_docs_tests"
+    assert write_decision["target_gate"] == "P7-C005"
+    assert write_decision["selected_policy"] == "keep_public_api_read_only_for_rc"
+    assert write_decision["write_api_enabled"] is False
+    assert write_decision["public_write_routes_allowed"] is False
+    assert write_decision["local_agent_mutation_allowed"] is False
+    assert write_decision["production_peer_user_mutation_allowed"] is False
+    assert write_decision["requires_named_gate_for_apply"] == (
+        "P7-C005 write API / install mutation gate"
+    )
+    assert [option["id"] for option in write_decision["decision_options"]] == [
+        "keep-public-api-read-only-for-rc",
+        "separate-write-api-implementation-slice",
+        "operator-only-web-write-window",
+    ]
+    assert write_decision["decision_options"][0]["selected"] is True
+    assert "write_api_route_enablement" in write_decision["blocked_actions"]
+    backup_readiness = payload["backup_restore_import_readiness"]
+    assert backup_readiness["status"] == "readiness_checklist_ready"
+    assert backup_readiness["mode"] == "local_only_docs_tests"
+    assert backup_readiness["target_gate"] == "P7-C006"
+    assert backup_readiness["live_backup_allowed"] is False
+    assert backup_readiness["restore_apply_allowed"] is False
+    assert backup_readiness["archive_import_allowed"] is False
+    assert backup_readiness["reboot_allowed"] is False
+    assert backup_readiness["requires_named_gate_for_apply"] == (
+        "P7-C006 backup/restore/import gate"
+    )
+    assert [check["id"] for check in backup_readiness["checklists"]] == [
+        "backup-scope-decision",
+        "encryption-and-retention-policy",
+        "restore-preview-safety",
+        "import-source-validation",
+        "disaster-recovery-drill-plan",
+    ]
+    assert "restore_apply" in backup_readiness["blocked_actions"]
+    telegram_readiness = payload["telegram_identity_readiness"]
+    assert telegram_readiness["status"] == "readiness_checklist_ready"
+    assert telegram_readiness["mode"] == "local_only_docs_tests"
+    assert telegram_readiness["target_gate"] == "P7-C007"
+    assert telegram_readiness["telegram_api_enabled"] is False
+    assert telegram_readiness["token_use_allowed"] is False
+    assert telegram_readiness["profile_mutation_allowed"] is False
+    assert telegram_readiness["media_mutation_allowed"] is False
+    assert telegram_readiness["live_bot_send_allowed"] is False
+    assert telegram_readiness["requires_named_gate_for_apply"] == (
+        "P7-C007 Telegram identity/profile/media mutation gate"
+    )
+    assert [check["id"] for check in telegram_readiness["checklists"]] == [
+        "telegram-identity-scope-decision",
+        "credential-handoff-and-storage-policy",
+        "profile-media-asset-plan",
+        "operator-preview-and-rollback",
+        "post-mutation-relock-audit",
+    ]
+    assert "profile_photo_mutation" in telegram_readiness["blocked_actions"]
+    assert payload["api_docs_taxonomy_rc_drift_check"]["status"] == (
+        "taxonomy_rc_drift_check_ready"
+    )
+    assert payload["api_docs_taxonomy_rc_drift_check"]["mode"] == "local_only"
+    assert payload["api_docs_taxonomy_rc_drift_check"]["public_openapi_publication_allowed"] is False
+    assert payload["api_docs_taxonomy_rc_drift_check"]["new_route_exposure_allowed"] is False
+    assert payload["api_docs_taxonomy_rc_drift_check"]["safe_metadata_marker_guard"][
+        "forbidden_marker_words_allowed"
+    ] is False
+    assert payload["api_docs_taxonomy_rc_drift_check"]["surface_policy_counts"][
+        "implemented_api_routes"
+    ] == _implemented_api_route_count()
+    assert "safe_metadata_marker_vocabulary" in payload["api_docs_taxonomy_rc_drift_check"][
+        "required_checks"
+    ]
     assert payload["public_docs_api_taxonomy_boundary"]["status"] == (
         "public_docs_api_taxonomy_ready"
     )
@@ -240,6 +360,15 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
         "vpn_import_link",
         "qr_vpn_import_link",
     ]
+    assert payload["client_compatibility_boundary"]["watch_refresh"]["status"] == (
+        "watch_only_refresh_ready"
+    )
+    assert payload["client_compatibility_boundary"]["watch_refresh"]["signals"][
+        "amneziawg_android_release"
+    ] == "2.0.1"
+    assert payload["client_compatibility_boundary"]["watch_refresh"][
+        "config_delivery_allowed"
+    ] is False
     assert payload["client_compatibility_boundary"]["live_client_import_verified"] is False
     assert payload["next_gate"] == (
         "Phase 6 default local-only queue empty; named gate required for live/public/destructive work"
@@ -366,3 +495,13 @@ def _expected_git_head() -> str:
         text=True,
     )
     return result.stdout.strip()
+
+
+def _implemented_api_route_count() -> int:
+    return len(
+        [
+            policy
+            for policy in SURFACE_POLICIES
+            if policy.surface == "api" and policy.implementation_mode == "implemented"
+        ]
+    )

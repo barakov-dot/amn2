@@ -26,6 +26,22 @@ AMN2_DELIVERY_ARTIFACTS = (
     "qr_vpn_import_link",
 )
 
+CLIENT_COMPATIBILITY_WATCH = {
+    "status": "watch_only_refresh_ready",
+    "date": "2026-06-14",
+    "source_evidence": (
+        "research/upstreams/amnezia-vpn-client-defaultvpn-refresh-2026-06-14.md"
+    ),
+    "config_delivery_allowed": False,
+    "live_client_import_verified": False,
+    "signals": {
+        "amnezia_client_release": "4.8.18.0",
+        "defaultvpn_commit": "d139fb5",
+        "amneziawg_android_release": "2.0.1",
+        "amneziawg_apple_commit": "0c4d98d",
+    },
+}
+
 _SUPPORT_ORDER = {
     SUPPORT_RECOMMENDED: 0,
     SUPPORT_SUPPORTED: 1,

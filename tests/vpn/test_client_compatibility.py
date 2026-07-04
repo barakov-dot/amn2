@@ -1,6 +1,7 @@
 from app.vpn.client_compatibility import (
     AMN2_DELIVERY_ARTIFACTS,
     CLIENT_COMPATIBILITY_MATRIX,
+    CLIENT_COMPATIBILITY_WATCH,
     CLIENT_ROLE_ANDROID_SUPPORTED,
     CLIENT_ROLE_EXPERIMENTAL_IOS,
     CLIENT_ROLE_INSTALLED_LEGACY,
@@ -63,6 +64,22 @@ def test_amneziawg_android_is_separate_supported_path():
 
     assert android.client_role == CLIENT_ROLE_ANDROID_SUPPORTED
     assert "Android standalone AWG path" in android.platform_constraints
+
+
+def test_phase_7_watch_refresh_records_latest_local_intake_without_delivery_gate():
+    assert CLIENT_COMPATIBILITY_WATCH["status"] == "watch_only_refresh_ready"
+    assert CLIENT_COMPATIBILITY_WATCH["date"] == "2026-06-14"
+    assert CLIENT_COMPATIBILITY_WATCH["config_delivery_allowed"] is False
+    assert CLIENT_COMPATIBILITY_WATCH["live_client_import_verified"] is False
+    assert CLIENT_COMPATIBILITY_WATCH["source_evidence"] == (
+        "research/upstreams/amnezia-vpn-client-defaultvpn-refresh-2026-06-14.md"
+    )
+    assert CLIENT_COMPATIBILITY_WATCH["signals"] == {
+        "amnezia_client_release": "4.8.18.0",
+        "defaultvpn_commit": "d139fb5",
+        "amneziawg_android_release": "2.0.1",
+        "amneziawg_apple_commit": "0c4d98d",
+    }
 
 
 def test_release_platform_constraints_are_machine_checkable():
