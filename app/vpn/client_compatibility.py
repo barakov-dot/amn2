@@ -14,6 +14,11 @@ CLIENT_ROLE_EXPERIMENTAL_IOS = "experimental_ios"
 CLIENT_ROLE_INSTALLED_LEGACY = "installed_legacy"
 CLIENT_ROLE_ANDROID_SUPPORTED = "android_supported"
 CLIENT_ROLE_GENERAL = "general"
+DISPLAY_NAME_FILENAME_STEM = "filename_stem"
+DISPLAY_NAME_MANUAL_PROMPT = "manual_prompt"
+DISPLAY_NAME_CLIENT_GENERATED_SERVER_N = "client_generated_server_n"
+DISPLAY_NAME_MANUAL_RENAME_FALLBACK = "manual_rename_fallback"
+DISPLAY_NAME_UNPROVEN = "unproven"
 
 AMN2_DELIVERY_ARTIFACTS = (
     "conf_file",
@@ -45,6 +50,8 @@ class ClientCompatibility:
     platform_constraints: tuple[str, ...]
     artifact_support: dict[str, ArtifactSupport]
     notes_ru: tuple[str, ...] = ()
+    display_name_policy: dict[str, str] | None = None
+    display_name_notes_ru: tuple[str, ...] = ()
 
 
 CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
@@ -82,6 +89,19 @@ CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
         notes_ru=(
             "Не обещать один универсальный путь установки для всех OS/version.",
         ),
+        display_name_policy={
+            "conf_file": DISPLAY_NAME_CLIENT_GENERATED_SERVER_N,
+            "vpn_import_link": DISPLAY_NAME_CLIENT_GENERATED_SERVER_N,
+            "qr_vpn_import_link": DISPLAY_NAME_CLIENT_GENERATED_SERVER_N,
+        },
+        display_name_notes_ru=(
+            "Upstream AmneziaVPN импортирует native WireGuard/AWG как server config "
+            "и назначает description через nextAvailableServerName(), то есть "
+            "наблюдаемый результат вида 'Сервер N' является client-generated.",
+            "Filename stem не является надежным способом задать display name в "
+            "AmneziaVPN; для целевого NeobyatnayaNET/НеобъятнаяNET нужен manual "
+            "rename или отдельный upstream/API-format gate.",
+        ),
     ),
     "defaultvpn_ios_ru": ClientCompatibility(
         label="DefaultVPN",
@@ -112,6 +132,15 @@ CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
                 "Изучать только после compatibility matrix и config-delivery design gate.",
             ),
         },
+        display_name_policy={
+            "conf_file": DISPLAY_NAME_MANUAL_RENAME_FALLBACK,
+            "vpn_import_link": DISPLAY_NAME_MANUAL_RENAME_FALLBACK,
+            "qr_vpn_import_link": DISPLAY_NAME_UNPROVEN,
+        },
+        display_name_notes_ru=(
+            "DefaultVPN display-name source не доказан в текущем AMN2 evidence. "
+            "Не обещать автоматическое имя без отдельного real-device result.",
+        ),
     ),
     "amneziawg_android": ClientCompatibility(
         label="AmneziaWG Android",
@@ -136,6 +165,17 @@ CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
                 "Допустимый QR path для AWG importer tests, но не universal promise.",
             ),
         },
+        display_name_policy={
+            "conf_file": DISPLAY_NAME_FILENAME_STEM,
+            "vpn_import_link": DISPLAY_NAME_MANUAL_PROMPT,
+            "qr_vpn_import_link": DISPLAY_NAME_MANUAL_PROMPT,
+        },
+        display_name_notes_ru=(
+            "Standalone AmneziaWG Android file import derives tunnel name from "
+            "OpenableColumns.DISPLAY_NAME / filename and strips .conf.",
+            "QR/text import validates config then opens a naming dialog; there is "
+            "no automatic display-name field in AMN2 vpn:// payload.",
+        ),
     ),
     "amneziawg_apple": ClientCompatibility(
         label="AmneziaWG Apple",
@@ -161,6 +201,15 @@ CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
                 "Допустимый QR path для AWG importer tests, но не universal promise.",
             ),
         },
+        display_name_policy={
+            "conf_file": DISPLAY_NAME_FILENAME_STEM,
+            "vpn_import_link": DISPLAY_NAME_UNPROVEN,
+            "qr_vpn_import_link": DISPLAY_NAME_UNPROVEN,
+        },
+        display_name_notes_ru=(
+            "Standalone AmneziaWG Apple filename/display-name behavior remains "
+            "unproven until source or real-device evidence is added.",
+        ),
     ),
     "amneziawg_windows": ClientCompatibility(
         label="AmneziaWG Windows",
@@ -184,6 +233,15 @@ CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
                 "Desktop QR flow не считать основным путем установки.",
             ),
         },
+        display_name_policy={
+            "conf_file": DISPLAY_NAME_FILENAME_STEM,
+            "vpn_import_link": DISPLAY_NAME_UNPROVEN,
+            "qr_vpn_import_link": DISPLAY_NAME_UNPROVEN,
+        },
+        display_name_notes_ru=(
+            "Standalone AmneziaWG Windows file import derives tunnel name from "
+            "the .conf filename stem before creating the tunnel.",
+        ),
     ),
 }
 
@@ -209,6 +267,20 @@ def recommended_delivery_order(client_id: str) -> list[str]:
     )
 
 
+def display_name_policy_for(client_id: str, artifact: str) -> str:
+    client = CLIENT_COMPATIBILITY_MATRIX[client_id]
+    policy = client.display_name_policy or {}
+    return policy.get(artifact, DISPLAY_NAME_UNPROVEN)
+
+
+def display_name_guidance_for(client_id: str) -> str:
+    client = CLIENT_COMPATIBILITY_MATRIX[client_id]
+    notes = "\n".join(client.display_name_notes_ru)
+    if not notes:
+        notes = "Display-name behavior не доказан для этого клиента."
+    return notes
+
+
 def render_ru_install_guidance() -> str:
     return "\n\n".join(
         [
@@ -230,6 +302,11 @@ def render_ru_install_guidance() -> str:
                 "Android 9+, macOS 13+, Linux x64 tar с GUI dependencies required "
                 "и временно недоступные Android 7/8, macOS 10.15-12; "
                 "distro-specific Linux packages не обещать."
+            ),
+            (
+                "Display name: для standalone AmneziaWG Android/Windows использовать "
+                "имя .conf файла без расширения; для AmneziaVPN ожидать client-generated "
+                "'Сервер N' и manual rename fallback."
             ),
         ]
     )
