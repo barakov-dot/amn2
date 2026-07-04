@@ -1081,6 +1081,24 @@ def test_backup_create_rejects_weakened_config_share_index_declaration_shape(
         service.create(db_path=db_path, output_dir=tmp_path / "backups")
 
 
+def test_backup_index_declaration_schema_accepts_sqlite_autoindex_auxiliary_row(
+    tmp_path,
+):
+    db_path = tmp_path / "source.sqlite3"
+    _create_database(db_path)
+
+    conn = connect(db_path)
+    try:
+        declarations = BackupService(app_version="0.1.0")._unique_index_declarations(
+            conn,
+            "config_share_tokens",
+        )
+    finally:
+        conn.close()
+
+    assert (("token_hash",), "u", False, False) in declarations
+
+
 def test_restore_refuses_overwrite_without_force(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
     db_path = tmp_path / "source.sqlite3"

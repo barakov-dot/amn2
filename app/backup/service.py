@@ -486,6 +486,9 @@ class BackupService:
             for index_column_row in conn.execute(f"PRAGMA index_xinfo({index_name})"):
                 cid = int(self._pragma_row_value(index_column_row, "cid", 1) or -1)
                 name = self._pragma_row_value(index_column_row, "name", 2)
+                key = int(self._pragma_row_value(index_column_row, "key", 5) or 0)
+                if key == 0:
+                    continue
                 if cid < 0 or name is None:
                     has_expression = True
                 if cid >= 0 and name is not None:
