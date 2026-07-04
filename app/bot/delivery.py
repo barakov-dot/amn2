@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-import re
 from dataclasses import dataclass
 from string import Formatter
 
@@ -30,6 +29,7 @@ QR_CODE_CAPTION = (
 )
 IMPORT_LINK_COPY_BUTTON_TEXT = "Скопировать ссылку"
 TELEGRAM_COPY_TEXT_MAX_LENGTH = 256
+CANONICAL_STANDALONE_AWG_IMPORT_BASENAME = "NeobyatnayaNET"
 
 DEFAULT_CONFIG_READY_TEMPLATE = """Ваш VPN-конфиг готов.
 
@@ -78,7 +78,8 @@ def build_config_delivery(
 ) -> ConfigDeliveryPackage:
     vpn_import_link = build_vpn_import_link(config_text)
     vpn_import_link_copy_text = _copyable_vpn_import_link(vpn_import_link)
-    basename = _artifact_basename(device_name=device_name, device_id=device_id)
+    basename = CANONICAL_STANDALONE_AWG_IMPORT_BASENAME
+    vpn_import_link_copy_text = _copyable_vpn_import_link(vpn_import_link)
     context = {
         "device_id": str(device_id),
         "device_name": device_name or f"device-{device_id}",
@@ -158,12 +159,6 @@ def _render_vpn_import_link_text(*, vpn_import_link: str, is_copyable: bool) -> 
         "предназначен для сканера внутри VPN-клиента, а не для обычной камеры телефона.\n\n"
         f"{vpn_import_link}"
     )
-
-
-def _artifact_basename(*, device_name: str | None, device_id: int) -> str:
-    source = (device_name or "").strip() or f"device-{device_id}"
-    basename = re.sub(r"[^A-Za-z0-9._-]+", "-", source).strip(".-_")
-    return basename or f"device-{device_id}"
 
 
 def _render_app_links() -> str:

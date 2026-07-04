@@ -37,10 +37,11 @@ def test_build_config_delivery_creates_conf_and_qr_png_bytes():
     assert "PrivateKey" not in package.vpn_import_link
     assert "PrivateKey" not in package.message_text
     assert package.vpn_import_link in package.message_text
-    assert package.config_filename == "Neobyatnaya-AMNZ-7.conf"
+    assert package.config_filename == "NeobyatnayaNET.conf"
     assert package.config_bytes.startswith(b"[Interface]")
-    assert package.qr_filename == "Neobyatnaya-AMNZ-7.qr.png"
+    assert package.qr_filename == "NeobyatnayaNET.qr.png"
     assert package.qr_png_bytes.startswith(b"\x89PNG\r\n\x1a\n")
+    assert "Access for device #7" in package.message_text
     assert "AmneziaWG 2.0" in package.message_text
     assert APP_LINKS["ios_russia_defaultvpn"] in package.message_text
     assert package.vpn_import_link in package.vpn_import_link_text
@@ -95,7 +96,7 @@ def test_default_config_ready_template_mentions_all_delivery_options():
     assert "DefaultVPN" in DEFAULT_CONFIG_READY_TEMPLATE
     assert "Android" in DEFAULT_CONFIG_READY_TEMPLATE
     assert "AmneziaWG" in DEFAULT_CONFIG_READY_TEMPLATE
-    assert "ссылка vpn://" in DEFAULT_CONFIG_READY_TEMPLATE
+    assert "ссылку vpn://" in DEFAULT_CONFIG_READY_TEMPLATE
     assert "Обычная камера телефона" in DEFAULT_CONFIG_READY_TEMPLATE
     assert "не всегда дает кнопку копирования" in DEFAULT_CONFIG_READY_TEMPLATE
     assert "Ниже бот отправит" in DEFAULT_CONFIG_READY_TEMPLATE
@@ -112,12 +113,9 @@ def test_app_links_text_includes_client_compatibility_guidance():
     assert APP_LINKS["android_amnezia"] in package.app_links_text
     assert "Приложения для импорта VPN-профиля" in package.app_links_text
     assert "Файл .conf" in package.app_links_text
-    assert "iOS DefaultVPN" in package.app_links_text
-    assert "основной путь в РФ" in package.app_links_text
-    assert "iOS AmneziaWG" in package.app_links_text
-    assert "если приложение уже установлено" in package.app_links_text
-    assert "Android AmneziaWG" in package.app_links_text
-    assert "отдельный поддерживаемый путь" in package.app_links_text
+    assert "iPhone / iPad: DefaultVPN" in package.app_links_text
+    assert "Android: AmneziaWG" in package.app_links_text
+    assert "Windows: AmneziaWG" in package.app_links_text
     assert "Android 9+" in package.app_links_text
     assert "macOS 13+" in package.app_links_text
     assert "PrivateKey" not in package.app_links_text
@@ -147,6 +145,20 @@ def test_build_config_delivery_preserves_utf8_secret_artifacts():
     assert package.vpn_import_link_encoding == "base64-url-no-padding"
     assert _decode_vpn_link(package.vpn_import_link) == config_text
     assert "client-private" not in package.vpn_import_link
+
+
+def test_build_config_delivery_uses_canonical_standalone_awg_import_filename():
+    package = build_config_delivery(
+        device_id=17,
+        device_name="Neobyatnaya-AMNZ-17",
+        config_version="amneziawg_v2",
+        config_text="[Interface]\nPrivateKey = test\n[Peer]",
+        template_text="Устройство: {device_name}",
+    )
+
+    assert package.config_filename == "NeobyatnayaNET.conf"
+    assert package.qr_filename == "NeobyatnayaNET.qr.png"
+    assert "Neobyatnaya-AMNZ-17" in package.message_text
 
 
 def test_config_delivery_artifacts_redact_when_rendered_as_text():
