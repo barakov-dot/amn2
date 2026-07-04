@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 
@@ -28,6 +30,7 @@ FRESH_INSTALLER_OPERATOR_INDEX_DOC = "docs/FRESH_INSTALLER_OPERATOR_INDEX.ru.md"
 MULTI_INSTANCE_IPAM_MODEL_DOC = "docs/MULTI_INSTANCE_IPAM_CONFLICT_MODEL.ru.md"
 CURRENT_PACKAGE_PREFLIGHT_HEAD = "b121865"
 LATEST_VPS_SMOKED_PACKAGE_HEAD = "b121865"
+PACKAGE_STATUS_FOR_CURRENT_SOURCE_HEAD = "not_package_rebuilt_not_vps_smoked"
 CURRENT_SOURCE_ZIP_SHA256 = "D0FB561D5A12C3B2C095521C3B44923B001F49C8E94CA5C13DB1E811ABB17647"
 
 DEFAULT_FRESH_INSTALL_ANSWERS: dict[str, str] = {
@@ -975,8 +978,13 @@ def _build_rendered_plan(
             {
                 "id": "current-head-package-preflight",
                 "status": "local_plan_only",
+                "current_source_head": _current_source_head(),
                 "target_head": CURRENT_PACKAGE_PREFLIGHT_HEAD,
                 "latest_vps_smoked_head": LATEST_VPS_SMOKED_PACKAGE_HEAD,
+                "package_status_for_current_source_head": (
+                    PACKAGE_STATUS_FOR_CURRENT_SOURCE_HEAD
+                ),
+                "prebuilt_artifact_head": CURRENT_PACKAGE_PREFLIGHT_HEAD,
                 "package_build_allowed": False,
                 "live_apply_allowed": False,
                 "live_smoke_allowed": False,
@@ -1106,8 +1114,11 @@ def _build_current_head_package_preflight() -> dict[str, Any]:
     return {
         "schema_version": PACKAGE_PREFLIGHT_SCHEMA_VERSION,
         "mode": "local_plan_only",
+        "current_source_head": _current_source_head(),
         "target_head": CURRENT_PACKAGE_PREFLIGHT_HEAD,
         "latest_vps_smoked_head": LATEST_VPS_SMOKED_PACKAGE_HEAD,
+        "package_status_for_current_source_head": PACKAGE_STATUS_FOR_CURRENT_SOURCE_HEAD,
+        "prebuilt_artifact_head": CURRENT_PACKAGE_PREFLIGHT_HEAD,
         "package_build_allowed_by_default": False,
         "live_apply_allowed_by_default": False,
         "live_smoke_allowed_by_default": False,
@@ -1144,6 +1155,21 @@ def _build_asset_path_preflight() -> dict[str, Any]:
             "expected_commit": CURRENT_PACKAGE_PREFLIGHT_HEAD,
         },
     }
+
+
+def _current_source_head() -> str:
+    repo_root = Path(__file__).resolve().parents[2]
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--short", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "unknown"
+    return result.stdout.strip() or "unknown"
 
 
 def _build_rc_acceptance_checklist() -> dict[str, Any]:

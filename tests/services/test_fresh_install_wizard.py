@@ -1,4 +1,5 @@
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -192,11 +193,18 @@ def test_build_fresh_install_manifest_includes_read_only_preflight_runtime_and_p
 def test_manifest_includes_current_head_package_preflight_plan_without_live_apply():
     manifest = build_fresh_install_manifest()
     package_preflight = manifest["current_head_package_preflight"]
+    expected_head = _expected_git_head()
 
     assert package_preflight["schema_version"] == "fresh-install-package-preflight.v1"
     assert package_preflight["mode"] == "local_plan_only"
+    assert package_preflight["current_source_head"] == expected_head
     assert package_preflight["target_head"] == "b121865"
     assert package_preflight["latest_vps_smoked_head"] == "b121865"
+    assert (
+        package_preflight["package_status_for_current_source_head"]
+        == "not_package_rebuilt_not_vps_smoked"
+    )
+    assert package_preflight["prebuilt_artifact_head"] == "b121865"
     assert package_preflight["package_build_allowed_by_default"] is False
     assert package_preflight["live_apply_allowed_by_default"] is False
     assert package_preflight["live_smoke_allowed_by_default"] is False
@@ -722,6 +730,7 @@ def test_fresh_install_plan_renders_rc_acceptance_and_secret_input_contract():
 
 def test_fresh_install_plan_renders_readiness_phases_without_live_commands():
     plan = build_fresh_install_plan(DEFAULT_FRESH_INSTALL_ANSWERS)
+    expected_head = _expected_git_head()
 
     phases = {phase["id"]: phase for phase in plan["rendered_plan"]["phases"]}
 
@@ -731,7 +740,13 @@ def test_fresh_install_plan_renders_readiness_phases_without_live_commands():
     assert phases["package-hygiene-checklist"]["package_rebuild_allowed"] is False
     assert "markdown_hygiene" in phases["package-hygiene-checklist"]["required_checks"]
     assert phases["current-head-package-preflight"]["status"] == "local_plan_only"
+    assert phases["current-head-package-preflight"]["current_source_head"] == expected_head
     assert phases["current-head-package-preflight"]["target_head"] == "b121865"
+    assert (
+        phases["current-head-package-preflight"]["package_status_for_current_source_head"]
+        == "not_package_rebuilt_not_vps_smoked"
+    )
+    assert phases["current-head-package-preflight"]["prebuilt_artifact_head"] == "b121865"
     assert phases["current-head-package-preflight"]["live_apply_allowed"] is False
     assert phases["current-head-package-preflight"]["live_smoke_allowed"] is False
     assert phases["package-asset-path-preflight"]["status"] == "local_plan_only"
@@ -864,3 +879,13 @@ def test_fresh_install_plan_rejects_secret_bearing_answers():
     }.items():
         with pytest.raises(ValueError, match=f"secret-bearing installer input is not allowed: {key}"):
             build_fresh_install_plan({**DEFAULT_FRESH_INSTALL_ANSWERS, key: value})
+
+
+def _expected_git_head() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
