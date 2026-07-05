@@ -3,6 +3,7 @@ from pathlib import Path
 
 from app.cli import build_parser
 from app.cli import run_fresh_install_plan
+from app.cli import run_fresh_install_wizard
 
 
 def test_cli_accepts_install_wizard_and_plan_commands():
@@ -50,3 +51,19 @@ def test_run_fresh_install_plan_reads_answers_file_and_outputs_safe_plan(tmp_pat
     assert payload["safety"]["live_vps_commands_enabled"] is False
     assert payload["safety"]["vps_apply_enabled_default"] is False
     assert "telegram_bot_token" not in json.dumps(payload, ensure_ascii=False)
+
+
+def test_run_fresh_install_wizard_uses_defaults_on_eof(monkeypatch):
+    def eof_input(_prompt: str = "") -> str:
+        raise EOFError
+
+    monkeypatch.setattr("builtins.input", eof_input)
+
+    payload = json.loads(run_fresh_install_wizard(pretty=True))
+
+    assert payload["status"] == "fresh_install_wizard_ready"
+    assert payload["mode"] == "local_only_dry_run"
+    assert payload["operator_inputs"]["project_name"] == "AMN2"
+    assert payload["operator_inputs"]["runtime"] == "docker"
+    assert payload["operator_inputs"]["vpn_protocol"] == "amneziawg"
+    assert payload["safety"]["live_vps_commands_enabled"] is False

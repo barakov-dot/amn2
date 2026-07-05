@@ -833,9 +833,21 @@ def collect_fresh_install_answers(
     answers: dict[str, str] = {}
     for key, label in QUESTION_PROMPTS:
         default = DEFAULT_FRESH_INSTALL_ANSWERS[key]
-        raw = input_fn(f"{label} [{default}]: ").strip()
+        raw = _read_input_with_default(input_fn=input_fn, label=label, default=default)
         answers[key] = raw or default
     return answers
+
+
+def _read_input_with_default(
+    *,
+    input_fn: Callable[[str], str],
+    label: str,
+    default: str,
+) -> str:
+    try:
+        return input_fn(f"{label} [{default}]: ").strip()
+    except (EOFError, OSError):
+        return ""
 
 
 def build_fresh_install_plan(answers: dict[str, str]) -> dict[str, Any]:
