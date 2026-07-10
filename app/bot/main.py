@@ -8,6 +8,7 @@ from app.bot.handlers import (
     handle_admin_approve,
     handle_admin_create_order,
     handle_admin_grant,
+    handle_admin_integrations,
     handle_admin_pending,
     handle_admin_servers,
     handle_admin_status,
@@ -32,6 +33,7 @@ from app.bot.handlers import (
 )
 from app.bot.ux import (
     ADMIN_APPROVE_PREFIX,
+    ADMIN_INTEGRATIONS_CALLBACK,
     ADMIN_PENDING_CALLBACK,
     ADMIN_SERVERS_CALLBACK,
     ADMIN_STATUS_CALLBACK,
@@ -135,6 +137,10 @@ def create_dispatcher(*, workflow=None) -> Dispatcher:
     @router.callback_query(F.data == ADMIN_SERVERS_CALLBACK)
     async def admin_servers(callback: CallbackQuery) -> None:
         await handle_admin_servers(callback, workflow=workflow)
+
+    @router.callback_query(F.data == ADMIN_INTEGRATIONS_CALLBACK)
+    async def admin_integrations(callback: CallbackQuery) -> None:
+        await handle_admin_integrations(callback, workflow=workflow)
 
     @router.callback_query(F.data == ADMIN_TRAFFIC_CALLBACK)
     async def admin_traffic(callback: CallbackQuery) -> None:

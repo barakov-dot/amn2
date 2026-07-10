@@ -2,6 +2,7 @@ import sqlite3
 from types import SimpleNamespace
 
 from app.bot.ux import (
+    ADMIN_INTEGRATIONS_CALLBACK,
     ADMIN_PENDING_CALLBACK,
     ADMIN_SERVERS_CALLBACK,
     ADMIN_STATUS_CALLBACK,
@@ -34,6 +35,7 @@ from app.bot.ux import (
     build_user_devices_reset_keyboard,
     parse_language_callback,
     render_admin_approval,
+    render_admin_integrations,
     render_admin_pending_orders,
     render_admin_servers,
     render_admin_status,
@@ -46,6 +48,7 @@ from app.bot.ux import (
     render_user_traffic,
 )
 from app.services.traffic import DeviceTrafficView
+from app.services.operator_credential_status import OperatorCredentialStatusView
 from app.services.operator_server_status import OperatorServerStatusView
 
 
@@ -276,6 +279,7 @@ def test_admin_traffic_keyboard_links_pending_orders_and_traffic():
         [ADMIN_PENDING_CALLBACK],
         [ADMIN_STATUS_CALLBACK],
         [ADMIN_SERVERS_CALLBACK],
+        [ADMIN_INTEGRATIONS_CALLBACK],
         [ADMIN_TRAFFIC_CALLBACK],
         [ADMIN_TEMPLATES_CALLBACK],
         [ADMIN_USERS_CALLBACK],
@@ -290,6 +294,7 @@ def test_admin_traffic_respects_operator_locale():
         ["Pending orders"],
         ["Status"],
         ["Servers"],
+        ["Integrations"],
         ["Traffic"],
         ["Templates"],
         ["Users"],
@@ -323,6 +328,32 @@ def test_render_admin_servers_shows_only_safe_stored_health_fields():
     assert [ADMIN_SERVERS_CALLBACK] in _callback_data(keyboard)
 
 
+def test_render_admin_integrations_shows_hash_free_lifecycle_fields():
+    rendered, keyboard = render_admin_integrations(
+        [
+            OperatorCredentialStatusView(
+                name="monitor",
+                owner_label="operations",
+                integration_kind="monitoring",
+                purpose="health dashboards",
+                scopes=("server:read", "metrics:read"),
+                status="rotation-due",
+                expires_at="2026-07-15T00:00:00Z",
+                last_used_at=None,
+                created_at="2026-07-01T00:00:00Z",
+            )
+        ]
+    )
+
+    assert "Интеграции AMN2" in rendered
+    assert "monitoring" in rendered
+    assert "rotation-due" in rendered
+    assert "server:read, metrics:read" in rendered
+    assert "token_hash" not in rendered
+    assert "raw_token" not in rendered
+    assert [ADMIN_INTEGRATIONS_CALLBACK] in _callback_data(keyboard)
+
+
 def test_admin_navigation_includes_templates_and_traffic_actions():
     from app.bot.ux import build_admin_navigation_keyboard
 
@@ -332,6 +363,7 @@ def test_admin_navigation_includes_templates_and_traffic_actions():
         ["Заявки"],
         ["Состояние"],
         ["Серверы"],
+        ["Интеграции"],
         ["Трафик"],
         ["Шаблоны"],
         ["Пользователи"],
@@ -340,6 +372,7 @@ def test_admin_navigation_includes_templates_and_traffic_actions():
         [ADMIN_PENDING_CALLBACK],
         [ADMIN_STATUS_CALLBACK],
         [ADMIN_SERVERS_CALLBACK],
+        [ADMIN_INTEGRATIONS_CALLBACK],
         [ADMIN_TRAFFIC_CALLBACK],
         [ADMIN_TEMPLATES_CALLBACK],
         [ADMIN_USERS_CALLBACK],
@@ -402,6 +435,7 @@ def test_render_admin_users_lists_users_and_device_counts():
         [ADMIN_PENDING_CALLBACK],
         [ADMIN_STATUS_CALLBACK],
         [ADMIN_SERVERS_CALLBACK],
+        [ADMIN_INTEGRATIONS_CALLBACK],
         [ADMIN_TRAFFIC_CALLBACK],
         [ADMIN_TEMPLATES_CALLBACK],
         [ADMIN_USERS_CALLBACK],

@@ -13,6 +13,7 @@ from app.bot.handlers import (
     handle_admin_add_user,
     handle_admin_create_order,
     handle_admin_grant,
+    handle_admin_integrations,
     handle_config_request,
     handle_admin_users,
     handle_language_choice,
@@ -759,6 +760,41 @@ def test_handle_admin_servers_rejects_non_admin_without_reading_summaries():
     assert callback.answered is True
 
 
+def test_handle_admin_integrations_returns_hash_free_lifecycle_for_admin():
+    callback = FakeCallback(
+        data="admin:integrations",
+        user_id=9001,
+        username="admin",
+        first_name="Admin",
+    )
+    workflow = FakeWorkflow(admin_ids={9001})
+
+    asyncio.run(handle_admin_integrations(callback, workflow=workflow))
+
+    rendered = callback.message.answers[0]["text"]
+    assert "Интеграции AMN2" in rendered
+    assert "monitor" in rendered
+    assert "rotation-due" in rendered
+    assert "token_hash" not in rendered
+    assert "raw_token" not in rendered
+    assert workflow.integration_status_reads == [9001]
+
+
+def test_handle_admin_integrations_rejects_non_admin_without_registry_read():
+    callback = FakeCallback(
+        data="admin:integrations",
+        user_id=1001,
+        username="alice",
+        first_name="Alice",
+    )
+    workflow = FakeWorkflow(admin_ids={9001})
+
+    asyncio.run(handle_admin_integrations(callback, workflow=workflow))
+
+    assert callback.message.answers[0]["text"] == "Нужны права администратора."
+    assert workflow.integration_status_reads == []
+
+
 def test_handle_admin_traffic_renders_read_only_views_for_admin():
     callback = FakeCallback(
         data="admin:traffic",
@@ -953,6 +989,7 @@ class FakeWorkflow:
         self.locales = []
         self.status_reads = []
         self.server_status_reads = []
+        self.integration_status_reads = []
         self.admin_traffic_reads = []
 
     def is_admin(self, telegram_id):
@@ -996,6 +1033,24 @@ class FakeWorkflow:
                 health_ssh_ok=True,
                 health_awg_ok=True,
                 health_udp_port_ok=False,
+            )
+        ]
+
+    def get_operator_credential_statuses(self, *, admin_telegram_id, limit=20):
+        if not self.is_admin(admin_telegram_id):
+            return None
+        self.integration_status_reads.append(admin_telegram_id)
+        return [
+            SimpleNamespace(
+                name="monitor",
+                owner_label="operations",
+                integration_kind="monitoring",
+                purpose="health dashboards",
+                scopes=("server:read", "metrics:read"),
+                status="rotation-due",
+                expires_at="2026-07-15T00:00:00Z",
+                last_used_at="2026-07-09T00:00:00Z",
+                created_at="2026-07-01T00:00:00Z",
             )
         ]
 

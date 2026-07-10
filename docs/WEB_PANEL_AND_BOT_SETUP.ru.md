@@ -519,6 +519,19 @@ health error. Раздел доступен только Telegram-админис
 `bot_admin_servers_read` сохраняет только количество серверов и фиксированный
 локальный источник без имен и health-значений.
 
+### Read-only состояние интеграций
+
+Кнопка `Интеграции` показывает administrator-only lifecycle view для API
+credentials: name, owner label, integration kind, purpose, scopes, status,
+expiry и last-used. Статус вычисляется как `revoked`, `expired`,
+`rotation-due` или `active` по тем же правилам, что web registry.
+
+Telegram view не содержит token id, owner user id, raw token, token hash,
+revoke reason или rotation lineage. Callback не умеет issue, rotate или revoke
+credentials. Audit `bot_admin_integrations_read` хранит только количество
+credentials и фиксированный локальный источник без имен, scopes и lifecycle
+значений.
+
 ## 11. Подготовить `servers.yml`
 
 Файл `servers.yml` хранит параметры VPS и VPN-сервера. Его не коммитить в GitHub.

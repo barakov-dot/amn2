@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.texts import DEFAULT_LOCALE, text
+from app.services.operator_credential_status import OperatorCredentialStatusView
 from app.services.operator_server_status import OperatorServerStatusView
 from app.services.traffic import DeviceTrafficView
 from app.vpn.config_versions import SUPPORTED_CONFIG_VERSIONS
@@ -25,6 +26,7 @@ USER_RESET_DEVICES_CONFIRM_CALLBACK = "user:reset_devices_confirm"
 ADMIN_PENDING_CALLBACK = "admin:pending"
 ADMIN_STATUS_CALLBACK = "admin:status"
 ADMIN_SERVERS_CALLBACK = "admin:servers"
+ADMIN_INTEGRATIONS_CALLBACK = "admin:integrations"
 ADMIN_TRAFFIC_CALLBACK = "admin:traffic"
 ADMIN_TEMPLATES_CALLBACK = "admin:templates"
 ADMIN_USERS_CALLBACK = "admin:users"
@@ -269,6 +271,12 @@ def build_admin_navigation_keyboard(
                 InlineKeyboardButton(
                     text=text("button.servers", locale=locale),
                     callback_data=ADMIN_SERVERS_CALLBACK,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=text("button.integrations", locale=locale),
+                    callback_data=ADMIN_INTEGRATIONS_CALLBACK,
                 )
             ],
             [
@@ -609,6 +617,58 @@ def render_admin_servers(
         )
     if not has_servers:
         lines.append(text("admin.no_servers", locale=locale))
+    return "\n".join(lines), build_admin_navigation_keyboard(locale=locale)
+
+
+def render_admin_integrations(
+    statuses: Iterable[OperatorCredentialStatusView],
+    *,
+    locale: str = DEFAULT_LOCALE,
+) -> tuple[str, InlineKeyboardMarkup]:
+    unknown = text("common.unknown", locale=locale)
+    lines = [text("admin.integrations_title", locale=locale)]
+    has_credentials = False
+    for status in statuses:
+        has_credentials = True
+        lines.extend(
+            [
+                "",
+                status.name,
+                text("admin.integration_owner", locale=locale, owner=status.owner_label),
+                text(
+                    "admin.integration_kind",
+                    locale=locale,
+                    kind=status.integration_kind,
+                ),
+                text(
+                    "admin.integration_purpose",
+                    locale=locale,
+                    purpose=status.purpose,
+                ),
+                text(
+                    "admin.integration_scopes",
+                    locale=locale,
+                    scopes=", ".join(status.scopes),
+                ),
+                text(
+                    "admin.integration_status",
+                    locale=locale,
+                    status=status.status,
+                ),
+                text(
+                    "admin.integration_expires",
+                    locale=locale,
+                    expires_at=status.expires_at or unknown,
+                ),
+                text(
+                    "admin.integration_last_used",
+                    locale=locale,
+                    last_used_at=status.last_used_at or unknown,
+                ),
+            ]
+        )
+    if not has_credentials:
+        lines.append(text("admin.no_integrations", locale=locale))
     return "\n".join(lines), build_admin_navigation_keyboard(locale=locale)
 
 

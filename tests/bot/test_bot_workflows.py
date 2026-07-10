@@ -240,6 +240,40 @@ def test_operator_server_status_requires_admin_and_records_safe_audit(tmp_path):
     assert "primary" not in str(audit["metadata_json"])
 
 
+def test_operator_credential_status_requires_admin_and_records_hash_free_audit(tmp_path):
+    repo = _repo(tmp_path)
+    repo.create_api_token(
+        token_id="hidden-id",
+        name="monitor",
+        owner_user_id=None,
+        token_hash="hidden-hash",
+        scopes=["server:read"],
+        owner_label="operations",
+        integration_kind="monitoring",
+        purpose="health dashboards",
+        expires_at="2026-08-01T00:00:00Z",
+    )
+    workflow = BotWorkflow(repo=repo, admin_telegram_ids={9001})
+
+    assert workflow.get_operator_credential_statuses(
+        admin_telegram_id=1001,
+    ) is None
+    statuses = workflow.get_operator_credential_statuses(
+        admin_telegram_id=9001,
+    )
+
+    assert statuses is not None
+    assert statuses[0].name == "monitor"
+    assert not hasattr(statuses[0], "token_hash")
+    assert not hasattr(statuses[0], "token_id")
+    audit = repo._conn.execute(
+        "SELECT * FROM admin_actions WHERE action = 'bot_admin_integrations_read'"
+    ).fetchone()
+    assert audit is not None
+    assert '"credential_count": 1' in str(audit["metadata_json"])
+    assert "monitor" not in str(audit["metadata_json"])
+
+
 def test_build_admin_traffic_views_reads_active_devices(tmp_path):
     repo = _repo(tmp_path)
     user_id = repo.upsert_user(

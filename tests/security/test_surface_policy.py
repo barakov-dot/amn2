@@ -46,6 +46,7 @@ REQUIRED_POLICY_IDS = {
     "web.servers.missing_devices.add",
     "web.servers.health_run",
     "bot.admin.approve_order",
+    "bot.admin.integrations",
     "bot.admin.status",
     "bot.admin.servers",
     "bot.admin.traffic",
