@@ -5,6 +5,7 @@ from app.bot.handlers import (
     handle_admin_approve,
     handle_admin_pending,
     handle_admin_status,
+    handle_admin_traffic,
     handle_admin_resend_config,
     handle_admin_reset_template,
     handle_admin_template,
@@ -721,6 +722,39 @@ def test_handle_admin_status_rejects_non_admin_without_reading_status():
     assert callback.answered is True
 
 
+def test_handle_admin_traffic_renders_read_only_views_for_admin():
+    callback = FakeCallback(
+        data="admin:traffic",
+        user_id=9001,
+        username="admin",
+        first_name="Admin",
+    )
+    workflow = FakeWorkflow(admin_ids={9001}, traffic_text_marker="phone")
+
+    asyncio.run(handle_admin_traffic(callback, workflow=workflow))
+
+    assert "Трафик пользователей" in callback.message.answers[0]["text"]
+    assert "phone" in callback.message.answers[0]["text"]
+    assert workflow.admin_traffic_reads == [9001]
+    assert callback.answered is True
+
+
+def test_handle_admin_traffic_rejects_non_admin_without_reading_views():
+    callback = FakeCallback(
+        data="admin:traffic",
+        user_id=1001,
+        username="alice",
+        first_name="Alice",
+    )
+    workflow = FakeWorkflow(admin_ids={9001}, traffic_text_marker="phone")
+
+    asyncio.run(handle_admin_traffic(callback, workflow=workflow))
+
+    assert callback.message.answers[0]["text"] == "Нужны права администратора."
+    assert workflow.admin_traffic_reads == []
+    assert callback.answered is True
+
+
 def test_handle_admin_template_shows_editable_template_and_reset_button():
     callback = FakeCallback(
         data="admin:templates",
@@ -881,6 +915,7 @@ class FakeWorkflow:
         self.registered_users = []
         self.locales = []
         self.status_reads = []
+        self.admin_traffic_reads = []
 
     def is_admin(self, telegram_id):
         return telegram_id in self._admin_ids
@@ -952,6 +987,12 @@ class FakeWorkflow:
                 is_stale=False,
             )
         ]
+
+    def build_admin_traffic_views(self, *, admin_telegram_id, now=None):
+        if not self.is_admin(admin_telegram_id):
+            return []
+        self.admin_traffic_reads.append(admin_telegram_id)
+        return self.build_user_traffic_views(telegram_id=admin_telegram_id, now=now)
 
     def list_user_devices(self, *, telegram_id):
         if self._devices is not None:

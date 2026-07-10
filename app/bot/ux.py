@@ -471,15 +471,17 @@ def render_admin_pending_orders(orders: Iterable[Mapping[str, object]]) -> str:
 
 def render_admin_traffic(
     views: Iterable[DeviceTrafficView],
+    *,
+    locale: str = DEFAULT_LOCALE,
 ) -> tuple[str, InlineKeyboardMarkup]:
-    lines = [text("traffic.admin_title")]
+    lines = [text("traffic.admin_title", locale=locale)]
     has_devices = False
     for view in views:
         has_devices = True
-        lines.extend(_render_device_traffic_lines(view))
+        lines.extend(_render_device_traffic_lines(view, locale=locale))
     if not has_devices:
-        lines.append(text("my_devices.empty"))
-    return "\n".join(lines), build_admin_navigation_keyboard()
+        lines.append(text("my_devices.empty", locale=locale))
+    return "\n".join(lines), build_admin_navigation_keyboard(locale=locale)
 
 
 def render_admin_status(
@@ -591,27 +593,35 @@ def parse_admin_approve_callback(data: str) -> tuple[int, str] | None:
     return int(parts[0]), parts[1]
 
 
-def _render_device_traffic_lines(view: DeviceTrafficView) -> list[str]:
+def _render_device_traffic_lines(
+    view: DeviceTrafficView,
+    *,
+    locale: str = DEFAULT_LOCALE,
+) -> list[str]:
+    connected_key = (
+        "common.yes" if getattr(view, "is_connected", False) else "common.no"
+    )
     lines = [
         "",
         f"{view.device_name} ({_version_label(view.config_version)})",
-        f"Status: {view.status}",
-        f"{text('common.connected')}: {text('common.yes') if getattr(view, 'is_connected', False) else text('common.no')}",
+        f"{text('common.status', locale=locale)}: {view.status}",
+        f"{text('common.connected', locale=locale)}: "
+        f"{text(connected_key, locale=locale)}",
     ]
     if not view.is_available:
-        lines.append(text("traffic.no_data"))
+        lines.append(text("traffic.no_data", locale=locale))
         return lines
 
     lines.extend(
         [
-            f"{text('common.received')}: {view.rx}",
-            f"{text('common.sent')}: {view.tx}",
-            f"{text('common.total')}: {view.total}",
-            f"{text('common.updated')}: {view.collected_at}",
+            f"{text('common.received', locale=locale)}: {view.rx}",
+            f"{text('common.sent', locale=locale)}: {view.tx}",
+            f"{text('common.total', locale=locale)}: {view.total}",
+            f"{text('common.updated', locale=locale)}: {view.collected_at}",
         ]
     )
     if view.is_stale:
-        lines.append(text("traffic.stale"))
+        lines.append(text("traffic.stale", locale=locale))
     return lines
 
 

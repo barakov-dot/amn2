@@ -278,6 +278,19 @@ def test_admin_traffic_keyboard_links_pending_orders_and_traffic():
     ]
 
 
+def test_admin_traffic_respects_operator_locale():
+    rendered, keyboard = render_admin_traffic([], locale="en")
+
+    assert rendered == "Admin traffic\nNo active devices yet."
+    assert _button_texts(keyboard) == [
+        ["Pending orders"],
+        ["Status"],
+        ["Traffic"],
+        ["Templates"],
+        ["Users"],
+    ]
+
+
 def test_admin_navigation_includes_templates_and_traffic_actions():
     from app.bot.ux import build_admin_navigation_keyboard
 

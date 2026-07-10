@@ -295,7 +295,7 @@ class BotWorkflow:
     ) -> list[DeviceTrafficView]:
         if not self.is_admin(admin_telegram_id):
             return []
-        return [
+        views = [
             build_device_traffic_view(
                 device,
                 self._repo.get_latest_device_traffic(int(device["id"])),
@@ -303,6 +303,15 @@ class BotWorkflow:
             )
             for device in self._repo.list_active_devices_with_users()
         ]
+        self._repo.record_admin_action(
+            admin_telegram_id=admin_telegram_id,
+            action="bot_admin_traffic_read",
+            metadata={
+                "device_count": len(views),
+                "source": "local_traffic_snapshots",
+            },
+        )
+        return views
 
     def list_pending_orders(self, *, admin_telegram_id: int):
         if not self.is_admin(admin_telegram_id):

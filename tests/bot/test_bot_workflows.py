@@ -237,6 +237,12 @@ def test_build_admin_traffic_views_reads_active_devices(tmp_path):
     assert views[0].device_name == "phone"
     assert views[0].config_version == "amneziawg_v2"
     assert views[0].is_available is False
+    audit = repo._conn.execute(
+        "SELECT * FROM admin_actions WHERE action = 'bot_admin_traffic_read'"
+    ).fetchone()
+    assert audit is not None
+    assert '"device_count": 1' in str(audit["metadata_json"])
+    assert "PrivateKey" not in str(dict(audit))
 
 
 def test_approve_order_creates_device_with_selected_config_version(tmp_path):
