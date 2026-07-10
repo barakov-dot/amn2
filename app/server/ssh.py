@@ -19,6 +19,34 @@ class SshClient(Protocol):
         pass
 
 
+class LocalCommandClient:
+    def __init__(self, *, timeout_seconds: int = 20) -> None:
+        self._timeout_seconds = timeout_seconds
+
+    def run(self, command: str, stdin: str | None = None) -> CommandResult:
+        try:
+            completed = subprocess.run(
+                command,
+                shell=True,
+                capture_output=True,
+                check=False,
+                input=stdin,
+                text=True,
+                timeout=self._timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            return CommandResult(
+                exit_code=124,
+                stdout="",
+                stderr=f"local command timed out after {self._timeout_seconds} seconds",
+            )
+        return CommandResult(
+            exit_code=completed.returncode,
+            stdout=completed.stdout,
+            stderr=completed.stderr,
+        )
+
+
 class SystemSshClient:
     def __init__(
         self,

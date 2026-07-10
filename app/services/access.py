@@ -36,6 +36,18 @@ class IpAllocationConflict(RuntimeError):
     pass
 
 
+class OperatorOwnerNotFound(LookupError):
+    pass
+
+
+class OperatorOwnerNotActive(ValueError):
+    pass
+
+
+class OperatorPeerApplierRequired(RuntimeError):
+    pass
+
+
 class RemoteOperationPartialFailure(RuntimeError):
     def __init__(self, result: RemoteMutationResult, cause: Exception) -> None:
         super().__init__(f"{result.operation_id} partial failure: {result.recovery_note}")
@@ -47,6 +59,13 @@ class RemoteOperationPartialFailure(RuntimeError):
 class AccessApprovalResult:
     device_id: int
     config_text: str
+
+
+@dataclass(frozen=True)
+class OperatorDeviceCreateResult:
+    device_id: int
+    config_text: str
+    config_artifact_path: str | None
 
 
 class PeerApplier(Protocol):
@@ -114,6 +133,155 @@ class AccessService:
                 raise RemoteOperationPartialFailure(remote_mutation, exc) from exc
             raise
 
+    def _record_operator_partial_failure(
+        self,
+        *,
+        owner_user_id: int,
+        server_id: int,
+        admin_telegram_id: int,
+        result: RemoteMutationResult,
+    ) -> None:
+        try:
+            self._repo.record_admin_action(
+                admin_telegram_id=admin_telegram_id,
+                action="access.create_operator_device.partial_failure",
+                target_user_id=owner_user_id,
+                metadata={
+                    "server_id": server_id,
+                    "operation_id": result.operation_id,
+                    "consistency_status": result.consistency_status,
+                    "remote_applied": result.remote_applied,
+                    "local_applied": result.local_applied,
+                    "recovery_note": result.recovery_note,
+                },
+            )
+        except Exception:
+            # Preserve the original partial-failure result if the audit backend is down.
+            return
+
+    def create_operator_device(
+        self,
+        *,
+        owner_user_id: int,
+        server_id: int,
+        device_name: str,
+        duration_days: int,
+        admin_telegram_id: int,
+        config_version: str = "amneziawg_v2",
+        config_artifact_writer: Callable[[str], str | Path] | None = None,
+    ) -> OperatorDeviceCreateResult:
+        remote_mutation: RemoteMutationResult | None = None
+
+        def record_remote_mutation(result: RemoteMutationResult) -> None:
+            nonlocal remote_mutation
+            remote_mutation = result
+
+        try:
+            with self._repo.transaction():
+                return self._create_operator_device(
+                    owner_user_id=owner_user_id,
+                    server_id=server_id,
+                    device_name=device_name,
+                    duration_days=duration_days,
+                    admin_telegram_id=admin_telegram_id,
+                    config_version=config_version,
+                    config_artifact_writer=config_artifact_writer,
+                    remote_mutation_observer=record_remote_mutation,
+                )
+        except Exception as exc:
+            if remote_mutation is not None and not remote_mutation.local_applied:
+                self._record_operator_partial_failure(
+                    owner_user_id=owner_user_id,
+                    server_id=server_id,
+                    admin_telegram_id=admin_telegram_id,
+                    result=remote_mutation,
+                )
+                raise RemoteOperationPartialFailure(remote_mutation, exc) from exc
+            raise
+
+    def _create_operator_device(
+        self,
+        *,
+        owner_user_id: int,
+        server_id: int,
+        device_name: str,
+        duration_days: int,
+        admin_telegram_id: int,
+        config_version: str,
+        config_artifact_writer: Callable[[str], str | Path] | None,
+        remote_mutation_observer: Callable[[RemoteMutationResult], None] | None,
+    ) -> OperatorDeviceCreateResult:
+        normalized_device_name = device_name.strip()
+        if admin_telegram_id <= 0:
+            raise ValueError("admin_telegram_id must be positive")
+        if not normalized_device_name:
+            raise ValueError("device_name must be non-blank")
+        if duration_days <= 0:
+            raise ValueError("duration_days must be positive")
+        config_version = validate_config_version(config_version)
+
+        try:
+            owner = self._repo.get_user(owner_user_id)
+        except LookupError as exc:
+            raise OperatorOwnerNotFound(
+                f"Operator device owner {owner_user_id} does not exist"
+            ) from exc
+        if str(owner["status"]) != "active":
+            raise OperatorOwnerNotActive(
+                f"Operator device owner {owner_user_id} is not active"
+            )
+        if self._repo.count_active_devices(owner_user_id) >= self._max_devices_per_user:
+            raise MaxDevicesReached("User has reached the maximum number of active devices")
+        if self._peer_applier is None:
+            raise OperatorPeerApplierRequired(
+                "Operator device creation requires an explicit live peer applier"
+            )
+
+        server = self._repo.get_server(server_id)
+        keypair = generate_keypair()
+        preshared_key = generate_key()
+        device_id, config_text = self._create_device_with_allocated_ip(
+            user_id=owner_user_id,
+            server_id=server_id,
+            device_name=normalized_device_name,
+            server=server,
+            duration_days=duration_days,
+            private_key=keypair.private_key,
+            public_key=keypair.public_key,
+            preshared_key=preshared_key,
+            config_version=config_version,
+            remote_operation_id="access.create_operator_device",
+            remote_recovery_note=lambda created_device_id: (
+                "Remote peer was applied before operator device creation completed. "
+                f"Reconcile device {created_device_id} against the explicit owner "
+                f"{owner_user_id} and server {server_id}; revoke the remote peer if "
+                "the local device record was rolled back, and inspect the private "
+                "artifact path because a completed file may still exist."
+            ),
+            remote_mutation_observer=remote_mutation_observer,
+        )
+
+        self._repo.record_admin_action(
+            admin_telegram_id=admin_telegram_id,
+            action="access.create_operator_device",
+            target_user_id=owner_user_id,
+            target_device_id=device_id,
+            metadata={
+                "server_id": server_id,
+                "duration_days": duration_days,
+                "config_version": config_version,
+                "config_artifact_written": config_artifact_writer is not None,
+            },
+        )
+        artifact_path = None
+        if config_artifact_writer is not None:
+            artifact_path = str(config_artifact_writer(config_text))
+        return OperatorDeviceCreateResult(
+            device_id=device_id,
+            config_text=config_text,
+            config_artifact_path=artifact_path,
+        )
+
     def _approve_order(
         self,
         *,
@@ -156,7 +324,12 @@ class AccessService:
             public_key=keypair.public_key,
             preshared_key=preshared_key,
             config_version=config_version,
-            order_id=order_id,
+            remote_operation_id="access.approve_order",
+            remote_recovery_note=lambda created_device_id: (
+                "Remote peer was applied before local approval completed. "
+                f"Put order {order_id} and device {created_device_id} into manual "
+                "review, verify the server peer, and reconcile local state."
+            ),
             remote_mutation_observer=remote_mutation_observer,
         )
         self._repo.mark_order_fulfilled(order_id, device_id)
@@ -182,7 +355,8 @@ class AccessService:
         public_key: str,
         preshared_key: str,
         config_version: str,
-        order_id: int,
+        remote_operation_id: str,
+        remote_recovery_note: Callable[[int], str],
         remote_mutation_observer: Callable[[RemoteMutationResult], None] | None,
     ) -> tuple[int, str]:
         last_error: sqlite3.IntegrityError | None = None
@@ -258,13 +432,8 @@ class AccessService:
                     if remote_mutation_observer is not None:
                         remote_mutation_observer(
                             remote_changed_local_failed_result(
-                                operation_id="access.approve_order",
-                                recovery_note=(
-                                    "Remote peer was applied before local approval "
-                                    f"completed. Put order {order_id} and device "
-                                    f"{device_id} into manual review, verify the "
-                                    "server peer, and reconcile local state."
-                                ),
+                                operation_id=remote_operation_id,
+                                recovery_note=remote_recovery_note(device_id),
                             )
                         )
                 return device_id, config_text

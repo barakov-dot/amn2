@@ -24,17 +24,24 @@ from app.db.repositories import Repository
 from app.db.repositories import DEVICE_STATUSES
 from app.db.schema import initialize_schema
 from app.main import check_bot_network
+from app.security.crypto import SecretBox
 from app.server.checks import planned_check_commands, run_server_checks
 from app.server.peer_apply import (
     PeerApplyInput,
+    ServerConfigPeerApplier,
     apply_peer,
     build_peer_apply_dry_run,
     build_peer_revoke_dry_run,
     revoke_peer,
 )
-from app.server.ssh import SystemSshClient
+from app.server.ssh import LocalCommandClient, SshClient, SystemSshClient
 from app.server_config.loader import load_server_config, select_server
 from app.server_config.models import ServerConfig
+from app.services.access import (
+    AccessService,
+    OperatorOwnerNotActive,
+    OperatorOwnerNotFound,
+)
 from app.services.api_tokens import create_route_api_token
 from app.services.api_tokens import revoke_api_token
 from app.services.api_smoke import validate_api_smoke_responses
@@ -44,6 +51,10 @@ from app.services.fresh_install_wizard import (
     collect_fresh_install_answers,
 )
 from app.services.peer_inventory import AwgDumpPeerInventoryCollector, PeerInventoryService
+from app.services.private_config_artifact import (
+    validate_private_config_artifact_target,
+    write_private_config_artifact,
+)
 from app.services.traffic import AwgDumpTrafficCollector, TrafficService
 from app.web.auth import create_password_hash
 from app.vpn.config_versions import validate_config_version
@@ -136,6 +147,26 @@ def build_parser() -> argparse.ArgumentParser:
     backfill_mode.add_argument("--dry-run", action="store_true")
     backfill_mode.add_argument("--apply", action="store_true")
     backfill_external.add_argument("--pretty", action="store_true")
+
+    create_operator = device_sub.add_parser("create-operator")
+    create_operator.add_argument("--db", default="data/amneziya.sqlite3")
+    create_operator.add_argument("--config", default="servers.yml")
+    create_operator.add_argument("--server", required=True)
+    create_operator.add_argument("--owner-user-id", type=int, required=True)
+    create_operator.add_argument("--name", required=True)
+    create_operator.add_argument("--duration-days", type=int, required=True)
+    create_operator.add_argument("--config-version", default="amneziawg_v2")
+    create_operator.add_argument("--output", required=True)
+    create_operator.add_argument("--admin-telegram-id", type=int, required=True)
+    create_operator.add_argument(
+        "--execution-target",
+        choices=("local", "remote-ssh"),
+        required=True,
+    )
+    create_operator_mode = create_operator.add_mutually_exclusive_group(required=True)
+    create_operator_mode.add_argument("--dry-run", action="store_true")
+    create_operator_mode.add_argument("--apply", action="store_true")
+    create_operator.add_argument("--pretty", action="store_true")
 
     server = sub.add_parser("server")
     server_sub = server.add_subparsers(dest="server_command", required=True)
@@ -311,6 +342,47 @@ def main() -> None:
                 pretty=args.pretty,
             )
         )
+    elif args.command == "device" and args.device_command == "create-operator":
+        if args.dry_run:
+            print(
+                build_operator_device_create_plan(
+                    owner_user_id=args.owner_user_id,
+                    server_name=args.server,
+                    device_name=args.name,
+                    duration_days=args.duration_days,
+                    config_version=args.config_version,
+                    output_path=Path(args.output),
+                    admin_telegram_id=args.admin_telegram_id,
+                    execution_target=args.execution_target,
+                    pretty=args.pretty,
+                )
+            )
+        else:
+            require_vps_apply_enabled_for_cli_apply()
+            settings = Settings()
+            server_config = select_server(
+                load_server_config(Path(args.config)), args.server
+            )
+            print(
+                run_operator_device_create(
+                    db_path=Path(args.db),
+                    server=server_config,
+                    owner_user_id=args.owner_user_id,
+                    device_name=args.name,
+                    duration_days=args.duration_days,
+                    config_version=args.config_version,
+                    output_path=Path(args.output),
+                    admin_telegram_id=args.admin_telegram_id,
+                    app_secret_key=settings.app_secret_key,
+                    authorized_admin_telegram_ids=set(settings.admin_ids),
+                    max_devices_per_user=settings.max_devices_per_user,
+                    vps_ssh_password=settings.vps_ssh_password,
+                    client_config_template_dir=settings.client_config_template_dir,
+                    client_config_defaults=settings.client_config_defaults,
+                    execution_target=args.execution_target,
+                    pretty=args.pretty,
+                )
+            )
     elif args.command == "server" and args.server_command == "check":
         config = load_server_config(Path(args.config))
         server = select_server(config, args.server)
@@ -549,6 +621,187 @@ def run_device_import_external(
         return _json_dumps(payload, pretty=pretty)
     finally:
         conn.close()
+
+
+def build_operator_device_create_plan(
+    *,
+    owner_user_id: int,
+    server_name: str,
+    device_name: str,
+    duration_days: int,
+    config_version: str,
+    output_path: Path,
+    admin_telegram_id: int,
+    execution_target: str,
+    pretty: bool = False,
+) -> str:
+    _validate_operator_execution_target(execution_target)
+    if owner_user_id <= 0:
+        raise ValueError("owner_user_id must be positive")
+    if admin_telegram_id <= 0:
+        raise ValueError("admin_telegram_id must be positive")
+    if duration_days <= 0:
+        raise ValueError("duration_days must be positive")
+    normalized_name = device_name.strip()
+    if not normalized_name:
+        raise ValueError("device_name must be non-blank")
+    version = validate_config_version(config_version)
+    return _json_dumps(
+        {
+            "action": "device.create_operator",
+            "mode": "dry-run",
+            "owner_user_id": owner_user_id,
+            "server_name": server_name,
+            "device_name": normalized_name,
+            "duration_days": duration_days,
+            "config_version": version,
+            "output": str(output_path),
+            "admin_actor_provided": True,
+            "execution_target": execution_target,
+            "remote_mutation": False,
+            "database_mutation": False,
+            "config_artifact_written": False,
+            "config_payload_output": False,
+            "next": "rerun with --apply only after the exact one-device gate is open",
+        },
+        pretty=pretty,
+    )
+
+
+def run_operator_device_create(
+    *,
+    db_path: Path,
+    server: ServerConfig,
+    owner_user_id: int,
+    device_name: str,
+    duration_days: int,
+    config_version: str,
+    output_path: Path,
+    admin_telegram_id: int,
+    app_secret_key: str,
+    authorized_admin_telegram_ids: set[int],
+    max_devices_per_user: int,
+    vps_ssh_password: str = "",
+    client_config_template_dir: str | Path | None = None,
+    client_config_defaults=None,
+    execution_target: str,
+    command_client: SshClient | None = None,
+    config_artifact_writer: Callable[[Path, str], Path] | None = None,
+    pretty: bool = False,
+) -> str:
+    _validate_operator_execution_target(execution_target)
+    _validate_operator_server_for_apply(server)
+    if config_artifact_writer is None:
+        validate_private_config_artifact_target(output_path)
+        config_artifact_writer = write_private_config_artifact
+    elif output_path.exists():
+        raise FileExistsError(f"Refusing to overwrite private config artifact: {output_path}")
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    try:
+        initialize_schema(conn)
+        repo = Repository(conn)
+        if not _is_authorized_operator_admin(
+            repo,
+            admin_telegram_id=admin_telegram_id,
+            configured_admin_ids=authorized_admin_telegram_ids,
+        ):
+            raise PermissionError("admin_telegram_id is not an authorized operator admin")
+        try:
+            owner = repo.get_user(owner_user_id)
+        except LookupError as exc:
+            raise OperatorOwnerNotFound(
+                f"Operator device owner {owner_user_id} does not exist"
+            ) from exc
+        if str(owner["status"]) != "active":
+            raise OperatorOwnerNotActive(
+                f"Operator device owner {owner_user_id} is not active"
+            )
+        server_id = _sync_server_row(repo, server)
+        if command_client is None:
+            if execution_target == "local":
+                command_client = LocalCommandClient()
+            elif execution_target == "remote-ssh":
+                command_client = SystemSshClient(
+                    server,
+                    password=vps_ssh_password,
+                )
+            else:
+                raise ValueError(f"Unsupported execution_target: {execution_target}")
+        service = AccessService(
+            repo=repo,
+            secret_box=SecretBox.from_app_secret(app_secret_key),
+            max_devices_per_user=max_devices_per_user,
+            duration_days=duration_days,
+            peer_applier=ServerConfigPeerApplier(
+                server,
+                ssh_client=command_client,
+            ),
+            client_config_template_dir=client_config_template_dir,
+            client_config_defaults=client_config_defaults,
+        )
+        result = service.create_operator_device(
+            owner_user_id=owner_user_id,
+            server_id=server_id,
+            device_name=device_name,
+            duration_days=duration_days,
+            admin_telegram_id=admin_telegram_id,
+            config_version=config_version,
+            config_artifact_writer=lambda config_text: config_artifact_writer(
+                output_path, config_text
+            ),
+        )
+        device = repo.get_device(result.device_id)
+        return _json_dumps(
+            {
+                "action": "device.create_operator",
+                "mode": "apply",
+                "status": "passed",
+                "device_id": result.device_id,
+                "owner_user_id": owner_user_id,
+                "server_name": server.name,
+                "execution_target": execution_target,
+                "device_name": str(device["name"]),
+                "duration_days": int(device["duration_days"]),
+                "config_version": str(device["config_version"]),
+                "config_material_status": str(device["config_material_status"]),
+                "output": result.config_artifact_path,
+                "remote_peer_apply": True,
+                "admin_audit_recorded": True,
+                "config_payload_output": False,
+            },
+            pretty=pretty,
+        )
+    finally:
+        conn.close()
+
+
+def _validate_operator_execution_target(execution_target: str) -> None:
+    if execution_target not in {"local", "remote-ssh"}:
+        raise ValueError(f"Unsupported execution_target: {execution_target}")
+
+
+def _is_authorized_operator_admin(
+    repo: Repository,
+    *,
+    admin_telegram_id: int,
+    configured_admin_ids: set[int],
+) -> bool:
+    if admin_telegram_id in configured_admin_ids:
+        return True
+    user = repo.get_user_by_telegram_id(admin_telegram_id)
+    return bool(
+        user is not None
+        and str(user["status"]) == "active"
+        and bool(user["is_admin"])
+    )
+
+
+def _validate_operator_server_for_apply(server: ServerConfig) -> None:
+    if server.vpn.port == "auto":
+        raise ValueError("operator device apply requires a fixed vpn.port")
+    if not server.vpn.server_public_key:
+        raise ValueError("operator device apply requires vpn.server_public_key")
 
 
 def run_device_backfill_external(

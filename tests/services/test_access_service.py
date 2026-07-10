@@ -13,6 +13,9 @@ from app.services.access import (
     AccessService,
     IpAllocationConflict,
     MaxDevicesReached,
+    OperatorOwnerNotActive,
+    OperatorOwnerNotFound,
+    OperatorPeerApplierRequired,
     OrderAlreadyFulfilled,
     OrderNotApprovable,
     RemoteOperationPartialFailure,
@@ -442,3 +445,311 @@ class LastFreeIpConsumedRepository(Repository):
     def create_device(self, **kwargs):
         self._duplicate_seen = True
         raise sqlite3.IntegrityError("UNIQUE constraint failed: devices.server_id, devices.vpn_ip")
+
+
+def test_create_operator_device_uses_explicit_owner_and_records_audit(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    owner_user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="alice",
+        first_name="Alice",
+        last_name=None,
+    )
+    other_user_id = repo.upsert_user(
+        telegram_id=1002,
+        username="bob",
+        first_name="Bob",
+        last_name=None,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    peer_applier = RecordingPeerApplier()
+    written_configs = []
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=peer_applier,
+    )
+
+    result = service.create_operator_device(
+        owner_user_id=owner_user_id,
+        server_id=server_id,
+        device_name="Neobyatnaya-AMNZ-N-android-tv-02",
+        duration_days=365,
+        admin_telegram_id=999,
+        config_version="amneziawg_v2",
+        config_artifact_writer=lambda text: written_configs.append(text)
+        or "private/device.conf",
+    )
+
+    device = repo.get_device(result.device_id)
+    assert int(device["user_id"]) == owner_user_id
+    assert int(device["user_id"]) != other_user_id
+    assert int(device["duration_days"]) == 365
+    assert device["config_version"] == "amneziawg_v2"
+    assert result.config_artifact_path == "private/device.conf"
+    assert written_configs == [result.config_text]
+    audit = conn.execute(
+        "SELECT action, target_user_id, target_device_id, metadata_json "
+        "FROM admin_actions WHERE target_device_id = ?",
+        (result.device_id,),
+    ).fetchone()
+    assert audit["action"] == "access.create_operator_device"
+    assert int(audit["target_user_id"]) == owner_user_id
+    assert int(audit["target_device_id"]) == result.device_id
+    assert "server_id" in audit["metadata_json"]
+    assert peer_applier.calls
+    assert conn.execute(
+        "SELECT COUNT(*) FROM orders WHERE device_id = ?", (result.device_id,)
+    ).fetchone()[0] == 0
+
+
+def test_create_operator_device_rejects_non_active_owner_without_remote_apply(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    owner_user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="alice",
+        first_name="Alice",
+        last_name=None,
+    )
+    repo.set_user_status_for_admin(owner_user_id, "blocked")
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    peer_applier = RecordingPeerApplier()
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=peer_applier,
+    )
+
+    with pytest.raises(OperatorOwnerNotActive):
+        service.create_operator_device(
+            owner_user_id=owner_user_id,
+            server_id=server_id,
+            device_name="Android TV",
+            duration_days=30,
+            admin_telegram_id=999,
+        )
+
+    assert repo.count_active_devices(owner_user_id) == 0
+    assert peer_applier.calls == []
+
+
+def test_create_operator_device_rejects_missing_owner_without_remote_apply(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    peer_applier = RecordingPeerApplier()
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=peer_applier,
+    )
+
+    with pytest.raises(OperatorOwnerNotFound):
+        service.create_operator_device(
+            owner_user_id=9999,
+            server_id=server_id,
+            device_name="Android TV",
+            duration_days=30,
+            admin_telegram_id=999,
+        )
+
+    assert peer_applier.calls == []
+
+
+def test_create_operator_device_enforces_device_limit(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    owner_user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="alice",
+        first_name="Alice",
+        last_name=None,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        max_devices_per_user=1,
+        peer_applier=RecordingPeerApplier(),
+    )
+    service.create_operator_device(
+        owner_user_id=owner_user_id,
+        server_id=server_id,
+        device_name="First",
+        duration_days=30,
+        admin_telegram_id=999,
+    )
+
+    with pytest.raises(MaxDevicesReached):
+        service.create_operator_device(
+            owner_user_id=owner_user_id,
+            server_id=server_id,
+            device_name="Second",
+            duration_days=30,
+            admin_telegram_id=999,
+        )
+
+
+def test_create_operator_device_requires_live_peer_applier(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    owner_user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="alice",
+        first_name="Alice",
+        last_name=None,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+    )
+
+    with pytest.raises(OperatorPeerApplierRequired):
+        service.create_operator_device(
+            owner_user_id=owner_user_id,
+            server_id=server_id,
+            device_name="Android TV",
+            duration_days=30,
+            admin_telegram_id=999,
+        )
+
+    assert repo.count_active_devices(owner_user_id) == 0
+
+
+def test_create_operator_device_reports_partial_failure_after_remote_apply(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = FailingAdminActionRepository(conn)
+    owner_user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="alice",
+        first_name="Alice",
+        last_name=None,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    peer_applier = RecordingPeerApplier()
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=peer_applier,
+    )
+
+    with pytest.raises(RemoteOperationPartialFailure) as exc_info:
+        service.create_operator_device(
+            owner_user_id=owner_user_id,
+            server_id=server_id,
+            device_name="Android TV",
+            duration_days=30,
+            admin_telegram_id=999,
+        )
+
+    failure = exc_info.value.result
+    assert failure.operation_id == "access.create_operator_device"
+    assert failure.consistency_status == "remote-changed-local-failed"
+    assert failure.remote_applied is True
+    assert failure.local_applied is False
+    assert "explicit owner" in failure.recovery_note.lower()
+    assert peer_applier.calls
+    assert repo.count_active_devices(owner_user_id) == 0
+
+
+def test_create_operator_device_does_not_apply_peer_when_render_fails(
+    tmp_path, monkeypatch
+):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    owner_user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="alice",
+        first_name="Alice",
+        last_name=None,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    peer_applier = RecordingPeerApplier()
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=peer_applier,
+    )
+    monkeypatch.setattr(
+        "app.services.access.render_client_config_for_version",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("render failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="render failed"):
+        service.create_operator_device(
+            owner_user_id=owner_user_id,
+            server_id=server_id,
+            device_name="Android TV",
+            duration_days=30,
+            admin_telegram_id=999,
+        )
+
+    assert peer_applier.calls == []
+    assert repo.count_active_devices(owner_user_id) == 0
+
+
+def test_create_operator_device_artifact_failure_is_partial_after_remote_apply(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    owner_user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="alice",
+        first_name="Alice",
+        last_name=None,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    peer_applier = RecordingPeerApplier()
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=peer_applier,
+    )
+
+    with pytest.raises(RemoteOperationPartialFailure) as exc_info:
+        service.create_operator_device(
+            owner_user_id=owner_user_id,
+            server_id=server_id,
+            device_name="Android TV",
+            duration_days=30,
+            admin_telegram_id=999,
+            config_artifact_writer=lambda _text: (_ for _ in ()).throw(
+                OSError("artifact write failed")
+            ),
+        )
+
+    assert exc_info.value.result.operation_id == "access.create_operator_device"
+    assert peer_applier.calls
+    assert repo.count_active_devices(owner_user_id) == 0
+    reconciliation = conn.execute(
+        "SELECT action, metadata_json FROM admin_actions WHERE target_user_id = ?",
+        (owner_user_id,),
+    ).fetchone()
+    assert reconciliation["action"] == "access.create_operator_device.partial_failure"
+    assert "remote-changed-local-failed" in reconciliation["metadata_json"]

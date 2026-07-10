@@ -33,6 +33,7 @@
 - [Beginner guide RU](docs/NEXT_STAGE_BEGINNER_GUIDE.ru.md)
 - [Beginner guide EN](docs/NEXT_STAGE_BEGINNER_GUIDE.en.md)
 - [Runtime/toolchain contract RU](docs/RUNTIME_TOOLCHAIN.ru.md)
+- [Operator single-device create RU](docs/OPERATOR_SINGLE_DEVICE_CREATE.ru.md)
 - [Открытые вопросы](docs/OPEN_QUESTIONS.md)
 
 ## VPS Preflight
