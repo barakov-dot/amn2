@@ -171,6 +171,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             name TEXT NOT NULL,
             owner_user_id INTEGER,
             owner_label TEXT NOT NULL,
+            integration_kind TEXT NOT NULL DEFAULT 'operator_automation',
+            purpose TEXT NOT NULL DEFAULT 'legacy-api-access',
             token_hash TEXT NOT NULL UNIQUE,
             scopes_json TEXT NOT NULL,
             expires_at TEXT,
@@ -234,6 +236,18 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "devices", "last_connected_at", "TEXT")
     _ensure_column(conn, "api_tokens", "revoke_reason", "TEXT")
     _ensure_column(conn, "api_tokens", "rotated_from_token_id", "TEXT")
+    _ensure_column(
+        conn,
+        "api_tokens",
+        "integration_kind",
+        "TEXT NOT NULL DEFAULT 'operator_automation'",
+    )
+    _ensure_column(
+        conn,
+        "api_tokens",
+        "purpose",
+        "TEXT NOT NULL DEFAULT 'legacy-api-access'",
+    )
     _migrate_devices_disabled_status(conn)
     _ensure_column(
         conn,

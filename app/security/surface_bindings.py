@@ -131,6 +131,13 @@ WEB_RUNTIME_ROUTE_BINDINGS: tuple[SurfaceBinding, ...] = (
     _binding(
         "web",
         "POST",
+        "/api-tokens/{token_id}/rotate",
+        source="app.web.app:create_web_app",
+        policy_id="web.api_tokens.rotate",
+    ),
+    _binding(
+        "web",
+        "POST",
         "/api-tokens/{token_id}/revoke",
         source="app.web.app:create_web_app",
         policy_id="web.api_tokens.revoke",

@@ -174,7 +174,7 @@ VPN-серверы.
 
 ### `api_tokens`
 
-Scoped API tokens для будущих external integrations.
+Scoped credentials для именованных external integrations.
 
 Поля:
 
@@ -182,6 +182,9 @@ Scoped API tokens для будущих external integrations.
 - `name` - операторское имя токена;
 - `owner_user_id` - опциональная ссылка на `users.id`;
 - `owner_label` - человекочитаемый владелец, например `ops` или `monitoring`;
+- `integration_kind` - `monitoring`, `operator_automation`, `telegram_bot` или
+  `web_panel`;
+- `purpose` - явное назначение credential, максимум 200 символов;
 - `token_hash` - только hash вида `sha256:<digest>`, raw token не хранится;
 - `scopes_json` - JSON-список scopes;
 - `expires_at`;
@@ -196,6 +199,11 @@ Phase 7 `P7-C005` добавляет gated scope `install:write` только д
 audit-only install mutation request contour. `config:read`, `server:write`,
 `clients:write`, Local Agent write, backup/restore и destructive scopes остаются
 future gates.
+
+Phase 10 registry использует ту же таблицу и lifecycle: старые строки получают
+миграционные значения `operator_automation` и `legacy-api-access`, а rotation
+сохраняет integration identity через `rotated_from_token_id`. Raw token и token
+hash не входят в web list или safe audit metadata.
 
 ## Настройки режимов
 

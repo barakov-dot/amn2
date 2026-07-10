@@ -22,6 +22,10 @@ API_TOKEN_BLOCKED_PRODUCTION_SCOPES = frozenset(
 )
 API_TOKEN_PRODUCTION_MAX_TTL_DAYS = 30
 API_TOKEN_PRODUCTION_ROTATION_NOTICE_DAYS = 7
+API_TOKEN_INTEGRATION_KINDS = frozenset(
+    {"monitoring", "operator_automation", "telegram_bot", "web_panel"}
+)
+API_TOKEN_PURPOSE_MAX_LENGTH = 200
 
 ApiTokenAuthReason = Literal[
     "invalid_token",
@@ -70,6 +74,8 @@ class ApiTokenStore(Protocol):
         name: str,
         owner_user_id: int | None,
         owner_label: str,
+        integration_kind: str,
+        purpose: str,
         token_hash: str,
         scopes: list[str],
         expires_at: str | None,
@@ -91,6 +97,8 @@ class ApiTokenRecord:
     name: str
     owner_label: str
     scopes: frozenset[str]
+    integration_kind: str = "operator_automation"
+    purpose: str = "legacy-api-access"
     owner_user_id: int | None = None
     owner_status: str | None = None
     expires_at: datetime | None = None
@@ -102,6 +110,8 @@ class ApiTokenRecord:
             "name": self.name,
             "owner_label": self.owner_label,
             "owner_user_id": self.owner_user_id,
+            "integration_kind": self.integration_kind,
+            "purpose": self.purpose,
             "scopes": sorted(self.scopes),
         }
 
@@ -113,6 +123,8 @@ class ApiTokenIssue:
     token_hash: str
     name: str
     owner_label: str
+    integration_kind: str
+    purpose: str
     scopes: frozenset[str]
     expires_at: datetime | None
 
@@ -121,6 +133,8 @@ class ApiTokenIssue:
             "token_id": self.token_id,
             "name": self.name,
             "owner_label": self.owner_label,
+            "integration_kind": self.integration_kind,
+            "purpose": self.purpose,
             "scopes": sorted(self.scopes),
             "expires_at": _format_datetime(self.expires_at),
             "raw_token_display": "one-time",
@@ -162,6 +176,8 @@ class ApiTokenRotationIssue:
             "new_token_id": self.issue.token_id,
             "owner_label": self.issue.owner_label,
             "owner_user_id": self.owner_user_id,
+            "integration_kind": self.issue.integration_kind,
+            "purpose": self.issue.purpose,
             "scopes": sorted(self.issue.scopes),
             "expires_at": _format_datetime(self.issue.expires_at),
             "raw_token_display": "one-time",
@@ -200,6 +216,39 @@ def create_api_token(
         name=name,
         owner_user_id=owner_user_id,
         owner_label=owner_label,
+        integration_kind="operator_automation",
+        purpose=name,
+        scopes=scopes,
+        expires_at=expires_at,
+        rotated_from_token_id=None,
+    )
+
+
+def create_integration_api_token(
+    store: ApiTokenStore,
+    *,
+    name: str,
+    owner_label: str,
+    integration_kind: str,
+    purpose: str,
+    scopes: set[str] | frozenset[str],
+    expires_at: datetime | None,
+    owner_user_id: int | None = None,
+    token_id: str | None = None,
+    raw_token: str | None = None,
+    now: datetime | None = None,
+) -> ApiTokenIssue:
+    _validate_integration_identity(integration_kind, purpose)
+    validate_route_api_token_expiry(expires_at, now=now)
+    return _create_api_token_with_rotation(
+        store,
+        token_id=token_id,
+        raw_token=raw_token,
+        name=name,
+        owner_user_id=owner_user_id,
+        owner_label=owner_label,
+        integration_kind=integration_kind,
+        purpose=purpose,
         scopes=scopes,
         expires_at=expires_at,
         rotated_from_token_id=None,
@@ -268,6 +317,8 @@ def rotate_api_token(
         name=previous.name,
         owner_user_id=previous.owner_user_id,
         owner_label=previous.owner_label,
+        integration_kind=previous.integration_kind,
+        purpose=previous.purpose,
         scopes=previous.scopes,
         expires_at=expires_at,
         rotated_from_token_id=previous.token_id,
@@ -333,6 +384,23 @@ def _validate_scope_set(scopes: set[str] | frozenset[str]) -> frozenset[str]:
     return normalized
 
 
+def _validate_integration_identity(
+    integration_kind: str,
+    purpose: str,
+) -> tuple[str, str]:
+    normalized_kind = integration_kind.strip()
+    if normalized_kind not in API_TOKEN_INTEGRATION_KINDS:
+        raise ValueError(f"unsupported integration kind: {normalized_kind}")
+    normalized_purpose = " ".join(purpose.split())
+    if not normalized_purpose:
+        raise ValueError("purpose is required")
+    if len(normalized_purpose) > API_TOKEN_PURPOSE_MAX_LENGTH:
+        raise ValueError(
+            f"purpose exceeds {API_TOKEN_PURPOSE_MAX_LENGTH} characters"
+        )
+    return normalized_kind, normalized_purpose
+
+
 def validate_route_api_token_expiry(
     expires_at: datetime | None,
     *,
@@ -355,6 +423,8 @@ def _create_api_token_with_rotation(
     *,
     name: str,
     owner_label: str,
+    integration_kind: str,
+    purpose: str,
     scopes: set[str] | frozenset[str],
     expires_at: datetime | None,
     owner_user_id: int | None,
@@ -363,6 +433,10 @@ def _create_api_token_with_rotation(
     raw_token: str | None,
 ) -> ApiTokenIssue:
     normalized_scopes = _validate_scope_set(scopes)
+    normalized_kind, normalized_purpose = _validate_integration_identity(
+        integration_kind,
+        purpose,
+    )
     actual_token_id = token_id or f"api_{secrets.token_urlsafe(16)}"
     actual_raw_token = raw_token or secrets.token_urlsafe(32)
     token_hash = hash_api_token(actual_raw_token)
@@ -372,6 +446,8 @@ def _create_api_token_with_rotation(
         name=name,
         owner_user_id=owner_user_id,
         owner_label=owner_label,
+        integration_kind=normalized_kind,
+        purpose=normalized_purpose,
         token_hash=token_hash,
         scopes=sorted(normalized_scopes),
         expires_at=_format_datetime(expires_at),
@@ -383,6 +459,8 @@ def _create_api_token_with_rotation(
         token_hash=token_hash,
         name=name,
         owner_label=owner_label,
+        integration_kind=normalized_kind,
+        purpose=normalized_purpose,
         scopes=normalized_scopes,
         expires_at=expires_at,
     )

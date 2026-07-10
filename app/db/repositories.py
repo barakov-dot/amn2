@@ -1829,6 +1829,8 @@ class Repository:
         token_hash: str,
         scopes: list[str],
         expires_at: str | None,
+        integration_kind: str = "operator_automation",
+        purpose: str = "legacy-api-access",
         rotated_from_token_id: str | None = None,
     ) -> None:
         if not token_id.strip():
@@ -1837,6 +1839,10 @@ class Repository:
             raise ValueError("name is required")
         if not owner_label.strip():
             raise ValueError("owner_label is required")
+        if not integration_kind.strip():
+            raise ValueError("integration_kind is required")
+        if not purpose.strip():
+            raise ValueError("purpose is required")
         if not token_hash.strip():
             raise ValueError("token_hash is required")
         if not scopes:
@@ -1849,18 +1855,22 @@ class Repository:
                 name,
                 owner_user_id,
                 owner_label,
+                integration_kind,
+                purpose,
                 token_hash,
                 scopes_json,
                 expires_at,
                 rotated_from_token_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 token_id,
                 name,
                 owner_user_id,
                 owner_label,
+                integration_kind,
+                purpose,
                 token_hash,
                 json.dumps(scopes),
                 expires_at,
@@ -1902,6 +1912,8 @@ class Repository:
                 name,
                 owner_user_id,
                 owner_label,
+                integration_kind,
+                purpose,
                 scopes_json,
                 expires_at,
                 revoked_at,
@@ -1915,6 +1927,17 @@ class Repository:
             """,
             (limit,),
         ).fetchall()
+
+    def get_api_token_for_admin(self, token_id: str) -> sqlite3.Row | None:
+        return self._conn.execute(
+            """
+            SELECT api_tokens.*, users.status AS owner_status
+            FROM api_tokens
+            LEFT JOIN users ON users.id = api_tokens.owner_user_id
+            WHERE api_tokens.id = ?
+            """,
+            (token_id,),
+        ).fetchone()
 
     def revoke_api_token(
         self,

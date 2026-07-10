@@ -1,6 +1,6 @@
 # Scoped API Token Policy
 
-Дата: 2026-06-01.
+Дата: 2026-07-10.
 
 Этот документ фиксирует scoped API token contract, read-only route shell и
 первый `P7-C005` scoped write contour. Write contour пишет только safe audit
@@ -33,6 +33,9 @@ behavior и не открывает public API.
 - `id` - стабильный token id для audit/revoke;
 - `name` - operator label;
 - `owner_user_id` и `owner_label`;
+- `integration_kind` - один из `monitoring`, `operator_automation`,
+  `telegram_bot`, `web_panel`;
+- `purpose` - явное безопасное описание назначения credential;
 - `token_hash` - только `sha256:<digest>`, без raw token;
 - `scopes_json` - отсортированный список scopes;
 - `expires_at`;
@@ -52,7 +55,29 @@ Raw token возвращается только в момент выдачи ч�
 - required scope is present.
 - если token привязан к `owner_user_id`, текущий owner status должен оставаться `active`.
 
-Safe audit metadata содержит только `token_id`, `name`, `owner_label` и scopes.
+Safe audit metadata содержит только `token_id`, `name`, `owner_label`,
+`owner_user_id`, `integration_kind`, `purpose` и scopes.
+
+## Integration registry
+
+Phase 10 private registry строится поверх существующего scoped-token ядра, а не
+создаёт второй secret store:
+
+- `create_integration_api_token()` требует допустимый `integration_kind`,
+  непустой `purpose`, явный TTL и scope allowlist;
+- private web-admin `/api-tokens` показывает только registry metadata;
+- web issue/rotate/revoke требуют authenticated session и CSRF;
+- rotation сохраняет owner, integration kind, purpose и scopes, создаёт новый
+  token id, отзывает старый с `reason=rotated` и показывает новый raw token один
+  раз;
+- список различает `active`, `rotation-due`, `expired` и `revoked`;
+- старые записи мигрируют как `operator_automation` / `legacy-api-access` без
+  изменения token hash или lifecycle state.
+
+Product signals взяты из API taxonomy KYORESUAS и integration-token/operator UX
+PRVTPRO `v1.5.0`. Реализация независимая. Не перенесены GPL code/templates,
+admin-equivalent bearer для всех routes, public tunnels, raw config editor,
+backup/restore apply или secret-read scopes.
 
 ## Lifecycle gate
 

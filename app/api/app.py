@@ -302,6 +302,8 @@ def _api_token_record_from_row(row) -> ApiTokenRecord:
         token_hash=row["token_hash"],
         name=row["name"],
         owner_label=row["owner_label"],
+        integration_kind=row["integration_kind"],
+        purpose=row["purpose"],
         owner_user_id=row["owner_user_id"],
         owner_status=row["owner_status"],
         scopes=frozenset(json.loads(row["scopes_json"])),

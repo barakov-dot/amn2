@@ -33,6 +33,8 @@ def test_api_token_issue_displays_raw_token_once_without_hash_leak(tmp_path: Pat
             "csrf_token": _csrf_token(form.text),
             "name": "VPS smoke",
             "owner_label": "ops",
+            "integration_kind": "monitoring",
+            "purpose": "VPS health polling",
             "scope": ["server:read", "metrics:read"],
             "expires_days": "7",
         },
@@ -50,6 +52,8 @@ def test_api_token_issue_displays_raw_token_once_without_hash_leak(tmp_path: Pat
     assert refresh.status_code == 200
     assert "VPS smoke" in refresh.text
     assert "ops" in refresh.text
+    assert "monitoring" in refresh.text
+    assert "VPS health polling" in refresh.text
     assert "server:read" in refresh.text
     assert "metrics:read" in refresh.text
     assert raw_token not in refresh.text
@@ -80,6 +84,38 @@ def test_api_token_revoke_marks_token_revoked_without_secret_output(tmp_path: Pa
     assert row["revoke_reason"] == "web-admin-revoke"
 
 
+def test_api_token_rotate_preserves_integration_identity_and_shows_new_secret_once(
+    tmp_path: Path,
+):
+    settings = _settings(tmp_path)
+    client = _authenticated_client(settings)
+    old_raw_token = _issue_token(client, name="Bot observer")
+    old_token_id = _single_token_id(Path(settings.database_path))
+    page = client.get("/api-tokens")
+
+    response = client.post(
+        f"/api-tokens/{old_token_id}/rotate",
+        data={"csrf_token": _csrf_token(page.text), "expires_days": "14"},
+    )
+
+    assert response.status_code == 200
+    new_raw_token = _raw_token(response.text)
+    assert new_raw_token != old_raw_token
+    assert old_raw_token not in response.text
+    assert hash_api_token(new_raw_token) not in response.text
+    rows = _token_rows(Path(settings.database_path))
+    assert len(rows) == 2
+    old_row = next(row for row in rows if row["id"] == old_token_id)
+    new_row = next(row for row in rows if row["id"] != old_token_id)
+    assert old_row["revoke_reason"] == "rotated"
+    assert new_row["rotated_from_token_id"] == old_token_id
+    assert new_row["integration_kind"] == "telegram_bot"
+    assert new_row["purpose"] == "Operator notifications"
+    refresh = client.get("/api-tokens")
+    assert new_raw_token not in refresh.text
+    assert hash_api_token(new_raw_token) not in refresh.text
+
+
 def test_api_token_issue_rejects_unsupported_scope_without_mutating(tmp_path: Path):
     settings = _settings(tmp_path)
     client = _authenticated_client(settings)
@@ -91,6 +127,8 @@ def test_api_token_issue_rejects_unsupported_scope_without_mutating(tmp_path: Pa
             "csrf_token": _csrf_token(form.text),
             "name": "Bad token",
             "owner_label": "ops",
+            "integration_kind": "web_panel",
+            "purpose": "Unsafe config export",
             "scope": ["config:read"],
             "expires_days": "7",
         },
@@ -115,6 +153,8 @@ def test_api_token_issue_rejects_expiry_beyond_production_ttl_without_mutating(
             "csrf_token": _csrf_token(form.text),
             "name": "Long token",
             "owner_label": "ops",
+            "integration_kind": "monitoring",
+            "purpose": "Long polling credential",
             "scope": ["server:read"],
             "expires_days": "31",
         },
@@ -166,6 +206,8 @@ def _issue_token(client: TestClient, *, name: str) -> str:
             "csrf_token": _csrf_token(form.text),
             "name": name,
             "owner_label": "ops",
+            "integration_kind": "telegram_bot",
+            "purpose": "Operator notifications",
             "scope": ["server:read"],
             "expires_days": "7",
         },
@@ -207,5 +249,14 @@ def _token_count(database_path: Path) -> int:
         initialize_schema(conn)
         row = conn.execute("SELECT COUNT(*) AS count FROM api_tokens").fetchone()
         return int(row["count"])
+    finally:
+        conn.close()
+
+
+def _token_rows(database_path: Path):
+    conn = connect(database_path)
+    try:
+        initialize_schema(conn)
+        return conn.execute("SELECT * FROM api_tokens ORDER BY created_at, id").fetchall()
     finally:
         conn.close()

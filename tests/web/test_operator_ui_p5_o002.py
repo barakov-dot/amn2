@@ -100,9 +100,12 @@ def test_operator_list_pages_show_gated_russian_write_affordances(tmp_path: Path
 
     assert tokens.status_code == 200
     assert "Токены API" in tokens.text
-    assert "Выпуск токена требует named gate" in tokens.text
+    assert "Интеграции API" in tokens.text
+    assert "Тип интеграции" in tokens.text
+    assert "Назначение" in tokens.text
+    assert "Выпуск токена требует named gate" not in tokens.text
     assert "Выпустить токен" in tokens.text
-    assert 'type="submit" disabled' in tokens.text
+    assert 'type="submit" disabled' not in tokens.text
     assert "Issue token" not in tokens.text
 
     assert templates.status_code == 200

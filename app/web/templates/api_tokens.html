@@ -2,8 +2,8 @@
 
 {% block content %}
   <section class="section-heading">
-    <p class="eyebrow">Локальный доступ API</p>
-    <h1>Токены API</h1>
+    <p class="eyebrow">Private integration registry</p>
+    <h1>Интеграции API</h1>
   </section>
 
   {% if issued_raw_token %}
@@ -23,20 +23,31 @@
     <div class="panel-header">
       <h2>Выпуск токена</h2>
     </div>
-    <p class="empty-state">Выпуск токена требует named gate. В operator-only pilot форма показана как недоступная подсказка.</p>
     <form class="form" action="/api-tokens/issue" method="post">
       <input name="csrf_token" type="hidden" value="{{ csrf_token }}">
       <label>
         Название
-        <input name="name" value="{{ issue_form.name }}" required disabled>
+        <input name="name" value="{{ issue_form.name }}" required>
       </label>
       <label>
         Владелец
-        <input name="owner_label" value="{{ issue_form.owner_label }}" required disabled>
+        <input name="owner_label" value="{{ issue_form.owner_label }}" required>
+      </label>
+      <label>
+        Тип интеграции
+        <select name="integration_kind" required>
+          {% for kind in integration_kinds %}
+            <option value="{{ kind }}" {% if kind == issue_form.integration_kind %}selected{% endif %}>{{ kind }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        Назначение
+        <input name="purpose" value="{{ issue_form.purpose }}" maxlength="200" required>
       </label>
       <label>
         Срок в днях
-        <input name="expires_days" type="number" min="1" max="{{ max_ttl_days }}" value="{{ issue_form.expires_days }}" required disabled>
+        <input name="expires_days" type="number" min="1" max="{{ max_ttl_days }}" value="{{ issue_form.expires_days }}" required>
       </label>
       <fieldset class="fieldset">
         <legend>Scopes</legend>
@@ -47,13 +58,12 @@
               type="checkbox"
               value="{{ scope }}"
               {% if scope in issue_form.scopes %}checked{% endif %}
-              disabled
             >
             <span><code>{{ scope }}</code></span>
           </label>
         {% endfor %}
       </fieldset>
-      <button class="button" type="submit" disabled>Выпустить токен</button>
+      <button class="button" type="submit">Выпустить токен</button>
     </form>
   </section>
 
@@ -68,6 +78,8 @@
             <tr>
               <th>Название</th>
               <th>Владелец</th>
+              <th>Интеграция</th>
+              <th>Назначение</th>
               <th>Scopes</th>
               <th>Истекает</th>
               <th>Статус</th>
@@ -80,6 +92,8 @@
               <tr>
                 <td>{{ token.name }}</td>
                 <td>{{ token.owner_label }}</td>
+                <td><code>{{ token.integration_kind }}</code></td>
+                <td>{{ token.purpose }}</td>
                 <td>
                   {% for scope in token.scopes %}
                     <code>{{ scope }}</code>{% if not loop.last %}<br>{% endif %}
@@ -89,11 +103,15 @@
                 <td><span class="status status-{{ token.status }}">{{ token.status }}</span></td>
                 <td>{{ token.last_used_at or "-" }}</td>
                 <td>
-                  {% if token.status != "revoked" %}
+                  {% if token.status in ("active", "rotation-due", "expired") %}
+                    <form action="/api-tokens/{{ token.id }}/rotate" method="post" data-confirm="Rotate this API token? The current token will stop working immediately.">
+                      <input name="csrf_token" type="hidden" value="{{ csrf_token }}">
+                      <input name="expires_days" type="hidden" value="{{ issue_form.expires_days }}">
+                      <button class="button button-secondary" type="submit">Ротировать</button>
+                    </form>
                     <form action="/api-tokens/{{ token.id }}/revoke" method="post" data-confirm="Revoke this API token? Existing API calls with this token will receive 401.">
                       <input name="csrf_token" type="hidden" value="{{ csrf_token }}">
-                      <button class="button button-secondary" type="submit" disabled>Отозвать</button>
-                      <p class="action-note">Отзыв токена требует named gate.</p>
+                      <button class="button button-secondary" type="submit">Отозвать</button>
                     </form>
                   {% else %}
                     {{ token.revoke_reason or "отозван" }}

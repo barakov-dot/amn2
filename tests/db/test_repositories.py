@@ -972,6 +972,8 @@ def test_api_token_lifecycle_stores_hash_scopes_and_revoke_state(tmp_path):
         name="Monitoring",
         owner_user_id=user_id,
         owner_label="ops",
+        integration_kind="monitoring",
+        purpose="VPS health polling",
         token_hash="sha256:api-token-hash",
         scopes=["metrics:read", "server:read"],
         expires_at="2026-06-08T10:00:00Z",
@@ -988,6 +990,8 @@ def test_api_token_lifecycle_stores_hash_scopes_and_revoke_state(tmp_path):
     assert token["owner_user_id"] == user_id
     assert token["owner_status"] == "active"
     assert token["owner_label"] == "ops"
+    assert token["integration_kind"] == "monitoring"
+    assert token["purpose"] == "VPS health polling"
     assert token["token_hash"] == "sha256:api-token-hash"
     assert token["scopes_json"] == '["metrics:read", "server:read"]'
     assert "raw-api-token" not in dict(token).values()
@@ -1032,6 +1036,8 @@ def test_api_token_rotation_lineage_is_stored_without_raw_token(tmp_path):
         name="Monitoring",
         owner_user_id=user_id,
         owner_label="ops",
+        integration_kind="monitoring",
+        purpose="VPS health polling",
         token_hash="sha256:old-token-hash",
         scopes=["server:read"],
         expires_at="2026-06-08T10:00:00Z",
@@ -1041,6 +1047,8 @@ def test_api_token_rotation_lineage_is_stored_without_raw_token(tmp_path):
         name="Monitoring",
         owner_user_id=user_id,
         owner_label="ops",
+        integration_kind="monitoring",
+        purpose="VPS health polling",
         token_hash="sha256:new-token-hash",
         scopes=["server:read"],
         expires_at="2026-07-01T10:00:00Z",
@@ -1049,6 +1057,8 @@ def test_api_token_rotation_lineage_is_stored_without_raw_token(tmp_path):
 
     rotated = conn.execute("SELECT * FROM api_tokens WHERE id = ?", ("new-token",)).fetchone()
     assert rotated["rotated_from_token_id"] == "old-token"
+    assert rotated["integration_kind"] == "monitoring"
+    assert rotated["purpose"] == "VPS health polling"
     assert "new-raw-token" not in dict(rotated).values()
 
 

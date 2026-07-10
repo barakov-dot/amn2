@@ -4,12 +4,14 @@ import pytest
 
 from app.services.api_tokens import (
     API_TOKEN_FIRST_SLICE_SCOPES,
+    API_TOKEN_INTEGRATION_KINDS,
     API_TOKEN_PRODUCTION_MAX_TTL_DAYS,
     ApiTokenAuthError,
     ApiTokenRecord,
     authenticate_api_token,
     build_api_token_production_policy,
     create_api_token,
+    create_integration_api_token,
     create_route_api_token,
     hash_api_token,
     revoke_api_token,
@@ -47,6 +49,8 @@ def test_create_api_token_stores_hash_and_returns_raw_token_only_in_issue():
         "token_id": "api-token-1",
         "name": "Monitoring",
         "owner_label": "ops",
+        "integration_kind": "operator_automation",
+        "purpose": "Monitoring",
         "scopes": ["metrics:read", "server:read"],
         "expires_at": "2026-06-08T10:00:00+00:00",
         "raw_token_display": "one-time",
@@ -54,6 +58,54 @@ def test_create_api_token_stores_hash_and_returns_raw_token_only_in_issue():
     assert stored["token_hash"] == hash_api_token("raw-api-token")
     assert stored["scopes"] == ["metrics:read", "server:read"]
     assert "raw-api-token" not in str(stored)
+
+
+def test_create_integration_api_token_requires_supported_kind_and_purpose():
+    stored: dict[str, object] = {}
+
+    class CaptureStore:
+        def create_api_token(self, **kwargs):
+            stored.update(kwargs)
+
+    assert API_TOKEN_INTEGRATION_KINDS == frozenset(
+        {"monitoring", "operator_automation", "telegram_bot", "web_panel"}
+    )
+    issue = create_integration_api_token(
+        CaptureStore(),
+        token_id="api-integration-1",
+        raw_token="raw-integration-token",
+        name="TV monitoring",
+        owner_label="ops",
+        integration_kind="monitoring",
+        purpose="Observe Android TV tunnel health",
+        scopes={"server:read", "metrics:read"},
+        expires_at=datetime(2026, 6, 8, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert issue.safe_metadata()["integration_kind"] == "monitoring"
+    assert issue.safe_metadata()["purpose"] == "Observe Android TV tunnel health"
+    assert stored["integration_kind"] == "monitoring"
+    assert stored["purpose"] == "Observe Android TV tunnel health"
+    with pytest.raises(ValueError, match="unsupported integration kind"):
+        create_integration_api_token(
+            CaptureStore(),
+            name="Billing",
+            owner_label="ops",
+            integration_kind="billing",
+            purpose="Charge customers",
+            scopes={"server:read"},
+            expires_at=None,
+        )
+    with pytest.raises(ValueError, match="purpose is required"):
+        create_integration_api_token(
+            CaptureStore(),
+            name="Bot",
+            owner_label="ops",
+            integration_kind="telegram_bot",
+            purpose="  ",
+            scopes={"server:read"},
+            expires_at=None,
+        )
 
 
 def test_create_api_token_rejects_secret_read_or_write_scopes():
@@ -211,6 +263,8 @@ def test_authenticate_api_token_accepts_matching_unexpired_scope():
         "name": "Monitoring",
         "owner_label": "ops",
         "owner_user_id": None,
+        "integration_kind": "operator_automation",
+        "purpose": "legacy-api-access",
         "scopes": ["server:read"],
     }
 
@@ -370,6 +424,8 @@ def test_rotate_api_token_creates_new_token_then_revokes_old_without_secret_meta
         owner_label="ops",
         owner_user_id=7,
         owner_status="active",
+        integration_kind="monitoring",
+        purpose="VPS health polling",
         scopes=frozenset({"server:read", "metrics:read"}),
         expires_at=now + timedelta(days=1),
     )
@@ -386,6 +442,8 @@ def test_rotate_api_token_creates_new_token_then_revokes_old_without_secret_meta
     assert calls[0][0] == "create"
     assert calls[0][1]["owner_user_id"] == 7
     assert calls[0][1]["owner_label"] == "ops"
+    assert calls[0][1]["integration_kind"] == "monitoring"
+    assert calls[0][1]["purpose"] == "VPS health polling"
     assert calls[0][1]["scopes"] == ["metrics:read", "server:read"]
     assert calls[0][1]["rotated_from_token_id"] == "old-token"
     assert calls[1] == (
@@ -402,6 +460,8 @@ def test_rotate_api_token_creates_new_token_then_revokes_old_without_secret_meta
         "new_token_id": "new-token",
         "owner_label": "ops",
         "owner_user_id": 7,
+        "integration_kind": "monitoring",
+        "purpose": "VPS health polling",
         "scopes": ["metrics:read", "server:read"],
         "expires_at": "2026-07-01T10:00:00+00:00",
         "raw_token_display": "one-time",
