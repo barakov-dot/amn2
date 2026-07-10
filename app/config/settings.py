@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     database_path: str = Field(default="data/amneziya.sqlite3", alias="DATABASE_PATH")
     vps_ssh_password: str = Field(default="", alias="VPS_SSH_PASSWORD")
     vps_apply_enabled: bool = Field(default=False, alias="VPS_APPLY_ENABLED")
+    operator_device_create_enabled: bool = Field(
+        default=False,
+        alias="OPERATOR_DEVICE_CREATE_ENABLED",
+    )
     server_config_path: str = Field(default="servers.yml", alias="SERVER_CONFIG_PATH")
     server_name: str = Field(default="debian-vps-1", alias="SERVER_NAME")
     control_panel_auth_methods: str = Field(

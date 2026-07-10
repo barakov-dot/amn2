@@ -73,6 +73,39 @@ python -m app.cli device create-operator \
 сохраняется `access.create_operator_device.partial_failure` с safe recovery
 metadata.
 
+## Приватная web-панель
+
+На странице пользователя доступен тот же operator-only путь через
+`POST /users/{user_id}/devices/create-operator`.
+
+Web adapter не реализует создание устройства повторно. Он делегирует общему
+`run_operator_device_create(...)` и
+`AccessService.create_operator_device(...)`, которые используются CLI.
+
+Dry-run не изменяет БД, peer или artifact. Apply требует одновременно:
+
+```text
+authenticated web-admin session
+valid CSRF token
+active explicit owner
+configured authorized ADMIN_TELEGRAM_IDS actor
+VPS_APPLY_ENABLED=true
+OPERATOR_DEVICE_CREATE_ENABLED=true
+explicit exact one-device confirmation
+```
+
+`OPERATOR_DEVICE_CREATE_ENABLED` по умолчанию равен `false` и не зависит от
+общего VPS apply gate. Поэтому разрешение других VPS-операций не открывает
+создание operator device автоматически.
+
+Путь приватного config artifact генерируется на сервере под runtime-каталогом
+БД. HTML содержит только safe metadata, без config text, private key и PSK.
+Remote-applied/local-failed результат возвращает фиксированный `409` и пишет
+структурированную redacted metadata без recovery note.
+
+Route зарегистрирован как `web.devices.create_operator` в runtime surface
+policy. Он не открывает public или self-service write API.
+
 ## Проверка после apply
 
 До client acceptance результат означает только server-side preparation. Статус

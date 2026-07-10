@@ -278,6 +278,13 @@ WEB_RUNTIME_ROUTE_BINDINGS: tuple[SurfaceBinding, ...] = (
     _binding(
         "web",
         "POST",
+        "/users/{user_id}/devices/create-operator",
+        source="app.web.app:create_web_app",
+        policy_id="web.devices.create_operator",
+    ),
+    _binding(
+        "web",
+        "POST",
         "/users/{user_id}/devices/{device_id}/secrets",
         source="app.web.app:create_web_app",
         policy_id="web.devices.secrets",

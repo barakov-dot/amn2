@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import sqlite3
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from fastapi import FastAPI
 from fastapi import Form
@@ -30,9 +31,11 @@ from app.security.redaction import redact
 from app.server.peer_apply import PeerApplyError
 from app.server.peer_apply import ServerConfigPeerApplier
 from app.server.ssh import SystemSshClient
+from app.server.ssh import SshClient
 from app.server_config.loader import ConfigError
 from app.server_config.loader import load_server_config
 from app.server_config.loader import select_server
+from app.services.access import RemoteOperationPartialFailure
 from app.services.config_material import ConfigMaterialUnavailable
 from app.services.config_delivery import build_device_config_delivery
 from app.services.email_delivery import EmailDeliveryService
@@ -123,6 +126,7 @@ SETTINGS_SECTIONS = {
     ],
     "VPS": [
         "vps_apply_enabled",
+        "operator_device_create_enabled",
         "vps_ssh_password",
         "server_config_path",
         "server_name",
@@ -175,6 +179,8 @@ def create_web_app(
     settings: Settings | None = None,
     *,
     email_sender: EmailSender | None = None,
+    operator_command_client: SshClient | None = None,
+    operator_config_artifact_writer: Callable[[Path, str], Path] | None = None,
 ) -> FastAPI:
     actual_settings = settings or Settings()
     require_web_admin_config(
@@ -191,6 +197,8 @@ def create_web_app(
         password=actual_settings.smtp_password,
         use_tls=actual_settings.smtp_use_tls,
     )
+    app.state.operator_command_client = operator_command_client
+    app.state.operator_config_artifact_writer = operator_config_artifact_writer
     app.add_middleware(
         SessionMiddleware,
         secret_key=actual_settings.web_admin_session_secret,
@@ -688,6 +696,165 @@ def create_web_app(
                 **detail,
             ),
         )
+
+    @app.post("/users/{user_id}/devices/create-operator")
+    async def create_operator_device(
+        request: Request,
+        user_id: int,
+        server_name: str = Form(""),
+        device_name: str = Form(""),
+        duration_days: int = Form(0),
+        config_version: str = Form(""),
+        execution_target: str = Form(""),
+        mode: str = Form(""),
+        confirm_one_device_gate: str = Form(""),
+        csrf_token: str = Form(""),
+    ):
+        if not _is_authenticated(request):
+            return RedirectResponse("/login", status_code=303)
+        if not verify_csrf_token(request.session, csrf_token):
+            return PlainTextResponse("Invalid CSRF token", status_code=403)
+
+        try:
+            from app.cli import (
+                build_operator_device_create_plan,
+                run_operator_device_create,
+            )
+
+            if mode not in {"dry-run", "apply"}:
+                raise ValueError("Unsupported operator device create mode")
+            with _open_repository(actual_settings) as (repo, _conn):
+                owner = _row_to_dict(repo.get_user(user_id))
+            if str(owner["status"]) != "active":
+                raise ValueError("Operator device creation requires an active owner")
+
+            admin_actor_id = _web_admin_actor_id(actual_settings)
+            if admin_actor_id <= 0:
+                raise PermissionError(
+                    "ADMIN_TELEGRAM_IDS must include an authorized operator admin"
+                )
+            server = select_server(
+                load_server_config(Path(actual_settings.server_config_path)),
+                server_name,
+            )
+            output_path = _operator_device_artifact_path(actual_settings, user_id)
+
+            if mode == "dry-run":
+                plan = json.loads(
+                    build_operator_device_create_plan(
+                        owner_user_id=user_id,
+                        server_name=server.name,
+                        device_name=device_name,
+                        duration_days=duration_days,
+                        config_version=config_version,
+                        output_path=output_path,
+                        admin_telegram_id=admin_actor_id,
+                        execution_target=execution_target,
+                    )
+                )
+                detail = _load_user_detail(actual_settings, user_id)
+                return templates.TemplateResponse(
+                    request,
+                    "user_detail.html",
+                    _template_context(
+                        request,
+                        title=f"User {user_id}",
+                        authenticated=True,
+                        operator_device_plan=plan,
+                        **detail,
+                    ),
+                )
+
+            if not actual_settings.vps_apply_enabled:
+                raise ValueError(
+                    "VPS_APPLY_ENABLED must be true before operator device apply"
+                )
+            if not actual_settings.operator_device_create_enabled:
+                raise ValueError(
+                    "OPERATOR_DEVICE_CREATE_ENABLED must be true before operator device apply"
+                )
+            if confirm_one_device_gate != "on":
+                raise ValueError("Exact one-device gate confirmation is required")
+
+            result = json.loads(
+                run_operator_device_create(
+                    db_path=Path(actual_settings.database_path),
+                    server=server,
+                    owner_user_id=user_id,
+                    device_name=device_name,
+                    duration_days=duration_days,
+                    config_version=config_version,
+                    output_path=output_path,
+                    admin_telegram_id=admin_actor_id,
+                    app_secret_key=actual_settings.app_secret_key,
+                    authorized_admin_telegram_ids=set(actual_settings.admin_ids),
+                    max_devices_per_user=actual_settings.max_devices_per_user,
+                    vps_ssh_password=actual_settings.vps_ssh_password,
+                    client_config_template_dir=actual_settings.client_config_template_dir,
+                    client_config_defaults=actual_settings.client_config_defaults,
+                    execution_target=execution_target,
+                    command_client=request.app.state.operator_command_client,
+                    config_artifact_writer=(
+                        request.app.state.operator_config_artifact_writer
+                    ),
+                )
+            )
+            detail = _load_user_detail(actual_settings, user_id)
+            return templates.TemplateResponse(
+                request,
+                "user_detail.html",
+                _template_context(
+                    request,
+                    title=f"User {user_id}",
+                    authenticated=True,
+                    operator_device_result=result,
+                    **detail,
+                ),
+            )
+        except LookupError:
+            return PlainTextResponse("User not found", status_code=404)
+        except RemoteOperationPartialFailure as exc:
+            _record_web_user_vps_failure(
+                actual_settings,
+                request,
+                action="web_operator_device_create_failed",
+                target_user_id=user_id,
+                operation="create_operator_device",
+                exc=RuntimeError(
+                    "remote operation partial failure; manual reconciliation required"
+                ),
+                metadata={
+                    "user_id": user_id,
+                    "server_name": server_name,
+                    "execution_target": execution_target,
+                    "operation_id": exc.result.operation_id,
+                    "consistency_status": exc.result.consistency_status,
+                    "remote_applied": exc.result.remote_applied,
+                    "local_applied": exc.result.local_applied,
+                },
+            )
+            return PlainTextResponse(
+                "Operator device creation partially failed after remote apply; "
+                "manual reconciliation required",
+                status_code=409,
+            )
+        except (ConfigError, PeerApplyError) as exc:
+            _record_web_user_vps_failure(
+                actual_settings,
+                request,
+                action="web_operator_device_create_failed",
+                target_user_id=user_id,
+                operation="create_operator_device",
+                exc=exc,
+                metadata={
+                    "user_id": user_id,
+                    "server_name": server_name,
+                    "execution_target": execution_target,
+                },
+            )
+            return _plain_error_response(exc)
+        except (FileExistsError, OSError, PermissionError, ValueError) as exc:
+            return _plain_error_response(exc)
 
     @app.post("/users/{user_id}/email/verify/start")
     async def start_email_verification(
@@ -2110,6 +2277,10 @@ def _display_setting_value(name: str, value: Any, *, is_path: bool = False) -> s
 def _load_user_detail(settings: Settings, user_id: int) -> dict[str, Any]:
     with _open_repository(settings) as (repo, _conn):
         user = _row_to_dict(repo.get_user_for_admin(user_id))
+        next_device_sequence = repo.next_device_sequence(
+            settings.bot_device_name_prefix,
+            minimum_sequence=settings.bot_device_name_sequence_seed,
+        )
         devices = [
             _row_to_dict(row) for row in repo.list_user_devices_for_admin(user_id)
         ]
@@ -2123,7 +2294,62 @@ def _load_user_detail(settings: Settings, user_id: int) -> dict[str, Any]:
         "vpn_actions": _build_user_vpn_actions(devices),
         "orders": orders,
         "admin_actions": admin_actions,
+        "operator_device_form": _operator_device_form_context(
+            settings,
+            user=user,
+            default_device_name=(
+                f"{settings.bot_device_name_prefix}-{next_device_sequence}"
+            ),
+        ),
     }
+
+
+def _operator_device_form_context(
+    settings: Settings,
+    *,
+    user: dict[str, Any],
+    default_device_name: str,
+) -> dict[str, Any]:
+    servers: list[str] = []
+    config_error = ""
+    try:
+        config = load_server_config(Path(settings.server_config_path))
+        servers = [server.name for server in config.servers]
+    except (ConfigError, OSError, ValueError):
+        config_error = "Server configuration is unavailable"
+
+    admin_actor_available = _web_admin_actor_id(settings) > 0
+    owner_active = str(user["status"]) == "active"
+    available = bool(servers) and admin_actor_available and owner_active
+    default_server = settings.server_name if settings.server_name in servers else ""
+    if not default_server and servers:
+        default_server = servers[0]
+    return {
+        "available": available,
+        "apply_enabled": (
+            available
+            and settings.vps_apply_enabled
+            and settings.operator_device_create_enabled
+        ),
+        "admin_actor_available": admin_actor_available,
+        "owner_active": owner_active,
+        "servers": servers,
+        "config_versions": SUPPORTED_CONFIG_VERSIONS,
+        "default_server": default_server,
+        "default_device_name": default_device_name,
+        "default_duration_days": settings.default_plan_days,
+        "config_error": config_error,
+    }
+
+
+def _operator_device_artifact_path(settings: Settings, user_id: int) -> Path:
+    return (
+        Path(settings.database_path).parent
+        / "private-artifacts"
+        / "operator-device"
+        / str(user_id)
+        / f"{uuid4().hex}.conf"
+    )
 
 
 def _build_user_vpn_actions(devices: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:

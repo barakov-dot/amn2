@@ -92,13 +92,22 @@ def test_settings_reads_vps_apply_settings():
         telegram_bot_token="CHANGE_ME",
         app_secret_key="test-secret",
         vps_apply_enabled=True,
+        operator_device_create_enabled=True,
         server_config_path="server.yml",
         server_name="debian-vps-1",
     )
 
     assert settings.vps_apply_enabled is True
+    assert settings.operator_device_create_enabled is True
     assert settings.server_config_path == "server.yml"
     assert settings.server_name == "debian-vps-1"
+
+    default_settings = Settings(
+        _env_file=None,
+        telegram_bot_token="CHANGE_ME",
+        app_secret_key="test-secret",
+    )
+    assert default_settings.operator_device_create_enabled is False
 
 
 def test_settings_reads_bot_device_name_sequence_defaults_and_overrides():

@@ -95,6 +95,81 @@
     </article>
   </section>
 
+  <section class="panel">
+    <div class="panel-header">
+      <h2>Create operator device</h2>
+      {% if operator_device_form.apply_enabled %}
+        <span class="status status-active">Apply available</span>
+      {% else %}
+        <span class="status status-disabled">Apply is closed</span>
+      {% endif %}
+    </div>
+
+    {% if operator_device_plan is defined %}
+      <div class="notice notice-success">
+        <strong>Dry-run ready</strong>
+        <p>{{ operator_device_plan.device_name }} · {{ operator_device_plan.server_name }} · {{ operator_device_plan.duration_days }} days · {{ operator_device_plan.execution_target }}</p>
+        <p>No database, peer or artifact changes were made.</p>
+      </div>
+    {% endif %}
+
+    {% if operator_device_result is defined %}
+      <div class="notice notice-success">
+        <strong>Operator device created</strong>
+        <p>#{{ operator_device_result.device_id }} {{ operator_device_result.device_name }} · {{ operator_device_result.server_name }}</p>
+        <p>Private artifact: <code class="wrap-text">{{ operator_device_result.output }}</code></p>
+      </div>
+    {% endif %}
+
+    <form action="/users/{{ user.id }}/devices/create-operator" method="post" class="form form-wide">
+      <input name="csrf_token" type="hidden" value="{{ csrf_token }}">
+      <div class="form-grid">
+        <label class="field">
+          Device name
+          <input name="device_name" type="text" value="{{ operator_device_form.default_device_name }}" required>
+        </label>
+        <label class="field">
+          Server
+          <select name="server_name" required {% if not operator_device_form.servers %}disabled{% endif %}>
+            {% for server_name in operator_device_form.servers %}
+              <option value="{{ server_name }}" {% if server_name == operator_device_form.default_server %}selected{% endif %}>{{ server_name }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="field">
+          Duration, days
+          <input name="duration_days" type="number" min="1" value="{{ operator_device_form.default_duration_days }}" required>
+        </label>
+        <label class="field">
+          Config version
+          <select name="config_version" required>
+            {% for config_version in operator_device_form.config_versions %}
+              <option value="{{ config_version }}" {% if config_version == "amneziawg_v2" %}selected{% endif %}>{{ config_version }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="field">
+          Execution target
+          <select name="execution_target" required>
+            <option value="local" selected>local</option>
+            <option value="remote-ssh">remote-ssh</option>
+          </select>
+        </label>
+      </div>
+      <label class="checkbox-field">
+        <input name="confirm_one_device_gate" type="checkbox" value="on">
+        Exact one-device gate confirmed
+      </label>
+      {% if operator_device_form.config_error %}
+        <p class="action-note">{{ operator_device_form.config_error }}</p>
+      {% endif %}
+      <div class="form-actions">
+        <button class="button button-secondary" name="mode" type="submit" value="dry-run" {% if not operator_device_form.available %}disabled{% endif %}>Dry-run</button>
+        <button class="button" name="mode" type="submit" value="apply" {% if not operator_device_form.apply_enabled %}disabled{% endif %}>Apply</button>
+      </div>
+    </form>
+  </section>
+
   <section class="dashboard-grid" aria-label="User summaries">
     <article class="panel">
       <div class="panel-header">
