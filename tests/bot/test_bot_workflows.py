@@ -216,6 +216,30 @@ def test_operator_status_reports_actual_vps_write_flag(tmp_path):
     assert status.vps_writes_enabled is True
 
 
+def test_operator_server_status_requires_admin_and_records_safe_audit(tmp_path):
+    repo = _repo(tmp_path)
+    repo.ensure_default_server(name="primary", network_cidr="10.8.0.0/24")
+    workflow = BotWorkflow(repo=repo, admin_telegram_ids={9001})
+
+    assert workflow.get_operator_server_statuses(
+        admin_telegram_id=1001,
+    ) is None
+    statuses = workflow.get_operator_server_statuses(
+        admin_telegram_id=9001,
+    )
+
+    assert statuses is not None
+    assert statuses[0].name == "primary"
+    assert not hasattr(statuses[0], "endpoint_host")
+    assert not hasattr(statuses[0], "server_public_key")
+    audit = repo._conn.execute(
+        "SELECT * FROM admin_actions WHERE action = 'bot_admin_servers_read'"
+    ).fetchone()
+    assert audit is not None
+    assert '"server_count": 1' in str(audit["metadata_json"])
+    assert "primary" not in str(audit["metadata_json"])
+
+
 def test_build_admin_traffic_views_reads_active_devices(tmp_path):
     repo = _repo(tmp_path)
     user_id = repo.upsert_user(

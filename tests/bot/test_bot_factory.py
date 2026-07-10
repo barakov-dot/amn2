@@ -25,3 +25,14 @@ def test_create_dispatcher_registers_admin_traffic_callback():
     }
 
     assert "admin_traffic" in callback_names
+
+
+def test_create_dispatcher_registers_admin_servers_callback():
+    dispatcher = create_dispatcher(workflow=object())
+    router = dispatcher.sub_routers[0]
+
+    callback_names = {
+        handler.callback.__name__ for handler in router.callback_query.handlers
+    }
+
+    assert "admin_servers" in callback_names

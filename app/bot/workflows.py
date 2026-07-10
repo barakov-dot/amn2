@@ -20,8 +20,12 @@ from app.services.access import (
     AccessService,
     RemoteOperationPartialFailure,
 )
-from app.services.traffic import DeviceTrafficView, build_device_traffic_view
+from app.services.operator_server_status import (
+    OperatorServerStatusView,
+    build_operator_server_statuses,
+)
 from app.services.operator_status import OperatorStatusSummary, build_operator_status
+from app.services.traffic import DeviceTrafficView, build_device_traffic_view
 from app.vpn.amneziawg_v2.config import ClientConfigDefaults
 from app.vpn.config_versions import validate_config_version
 
@@ -337,6 +341,25 @@ class BotWorkflow:
             metadata=status.safe_metadata(),
         )
         return status
+
+    def get_operator_server_statuses(
+        self,
+        *,
+        admin_telegram_id: int,
+        limit: int = 20,
+    ) -> list[OperatorServerStatusView] | None:
+        if not self.is_admin(admin_telegram_id):
+            return None
+        statuses = build_operator_server_statuses(self._repo, limit=limit)
+        self._repo.record_admin_action(
+            admin_telegram_id=admin_telegram_id,
+            action="bot_admin_servers_read",
+            metadata={
+                "server_count": len(statuses),
+                "source": "local_server_summaries",
+            },
+        )
+        return statuses
 
     def list_users(self, *, admin_telegram_id: int):
         if not self.is_admin(admin_telegram_id):

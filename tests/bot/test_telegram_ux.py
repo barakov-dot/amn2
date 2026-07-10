@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from app.bot.ux import (
     ADMIN_PENDING_CALLBACK,
+    ADMIN_SERVERS_CALLBACK,
     ADMIN_STATUS_CALLBACK,
     ADMIN_RESEND_PREFIX,
     ADMIN_TEMPLATES_CALLBACK,
@@ -34,6 +35,7 @@ from app.bot.ux import (
     parse_language_callback,
     render_admin_approval,
     render_admin_pending_orders,
+    render_admin_servers,
     render_admin_status,
     render_admin_template,
     render_admin_traffic,
@@ -44,6 +46,7 @@ from app.bot.ux import (
     render_user_traffic,
 )
 from app.services.traffic import DeviceTrafficView
+from app.services.operator_server_status import OperatorServerStatusView
 
 
 def test_main_menu_shows_user_actions_and_admin_entry_for_admins():
@@ -272,6 +275,7 @@ def test_admin_traffic_keyboard_links_pending_orders_and_traffic():
     assert _callback_data(keyboard) == [
         [ADMIN_PENDING_CALLBACK],
         [ADMIN_STATUS_CALLBACK],
+        [ADMIN_SERVERS_CALLBACK],
         [ADMIN_TRAFFIC_CALLBACK],
         [ADMIN_TEMPLATES_CALLBACK],
         [ADMIN_USERS_CALLBACK],
@@ -285,10 +289,38 @@ def test_admin_traffic_respects_operator_locale():
     assert _button_texts(keyboard) == [
         ["Pending orders"],
         ["Status"],
+        ["Servers"],
         ["Traffic"],
         ["Templates"],
         ["Users"],
     ]
+
+
+def test_render_admin_servers_shows_only_safe_stored_health_fields():
+    rendered, keyboard = render_admin_servers(
+        [
+            OperatorServerStatusView(
+                name="primary",
+                status="active",
+                runtime="docker",
+                total_device_count=3,
+                active_device_count=2,
+                health_status="online",
+                health_latency_ms=24,
+                health_checked_at="2026-07-10T12:00:00Z",
+                health_ssh_ok=True,
+                health_awg_ok=True,
+                health_udp_port_ok=False,
+            )
+        ]
+    )
+
+    assert "Серверы AMN2" in rendered
+    assert "primary" in rendered
+    assert "SSH да; AWG да; UDP нет" in rendered
+    assert "endpoint" not in rendered.lower()
+    assert "public_key" not in rendered.lower()
+    assert [ADMIN_SERVERS_CALLBACK] in _callback_data(keyboard)
 
 
 def test_admin_navigation_includes_templates_and_traffic_actions():
@@ -299,6 +331,7 @@ def test_admin_navigation_includes_templates_and_traffic_actions():
     assert _button_texts(keyboard) == [
         ["Заявки"],
         ["Состояние"],
+        ["Серверы"],
         ["Трафик"],
         ["Шаблоны"],
         ["Пользователи"],
@@ -306,6 +339,7 @@ def test_admin_navigation_includes_templates_and_traffic_actions():
     assert _callback_data(keyboard) == [
         [ADMIN_PENDING_CALLBACK],
         [ADMIN_STATUS_CALLBACK],
+        [ADMIN_SERVERS_CALLBACK],
         [ADMIN_TRAFFIC_CALLBACK],
         [ADMIN_TEMPLATES_CALLBACK],
         [ADMIN_USERS_CALLBACK],
@@ -367,6 +401,7 @@ def test_render_admin_users_lists_users_and_device_counts():
     assert _callback_data(keyboard) == [
         [ADMIN_PENDING_CALLBACK],
         [ADMIN_STATUS_CALLBACK],
+        [ADMIN_SERVERS_CALLBACK],
         [ADMIN_TRAFFIC_CALLBACK],
         [ADMIN_TEMPLATES_CALLBACK],
         [ADMIN_USERS_CALLBACK],

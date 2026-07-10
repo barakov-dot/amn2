@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from app.bot.handlers import (
     handle_admin_approve,
     handle_admin_pending,
+    handle_admin_servers,
     handle_admin_status,
     handle_admin_traffic,
     handle_admin_resend_config,
@@ -722,6 +723,42 @@ def test_handle_admin_status_rejects_non_admin_without_reading_status():
     assert callback.answered is True
 
 
+def test_handle_admin_servers_returns_safe_local_summary_for_admin():
+    callback = FakeCallback(
+        data="admin:servers",
+        user_id=9001,
+        username="admin",
+        first_name="Admin",
+    )
+    workflow = FakeWorkflow(admin_ids={9001})
+
+    asyncio.run(handle_admin_servers(callback, workflow=workflow))
+
+    rendered = callback.message.answers[0]["text"]
+    assert "Серверы AMN2" in rendered
+    assert "primary" in rendered
+    assert "endpoint_host" not in rendered
+    assert "server_public_key" not in rendered
+    assert workflow.server_status_reads == [9001]
+    assert callback.answered is True
+
+
+def test_handle_admin_servers_rejects_non_admin_without_reading_summaries():
+    callback = FakeCallback(
+        data="admin:servers",
+        user_id=1001,
+        username="alice",
+        first_name="Alice",
+    )
+    workflow = FakeWorkflow(admin_ids={9001})
+
+    asyncio.run(handle_admin_servers(callback, workflow=workflow))
+
+    assert callback.message.answers[0]["text"] == "Нужны права администратора."
+    assert workflow.server_status_reads == []
+    assert callback.answered is True
+
+
 def test_handle_admin_traffic_renders_read_only_views_for_admin():
     callback = FakeCallback(
         data="admin:traffic",
@@ -915,6 +952,7 @@ class FakeWorkflow:
         self.registered_users = []
         self.locales = []
         self.status_reads = []
+        self.server_status_reads = []
         self.admin_traffic_reads = []
 
     def is_admin(self, telegram_id):
@@ -940,6 +978,26 @@ class FakeWorkflow:
             public_config_delivery_enabled=False,
             public_exposure_enabled=False,
         )
+
+    def get_operator_server_statuses(self, *, admin_telegram_id, limit=20):
+        if not self.is_admin(admin_telegram_id):
+            return None
+        self.server_status_reads.append(admin_telegram_id)
+        return [
+            SimpleNamespace(
+                name="primary",
+                status="active",
+                runtime="docker",
+                total_device_count=3,
+                active_device_count=2,
+                health_status="online",
+                health_latency_ms=24,
+                health_checked_at="2026-07-10T12:00:00Z",
+                health_ssh_ok=True,
+                health_awg_ok=True,
+                health_udp_port_ok=False,
+            )
+        ]
 
     def get_user_locale(self, *, telegram_id):
         return "ru"

@@ -505,6 +505,20 @@ traffic snapshots; callback не выполняет SSH-команды и не �
 содержит только количество показанных устройств и локальный источник данных,
 без device names, user identity, traffic values или config material.
 
+### Read-only состояние серверов
+
+Кнопка `Серверы` в admin-меню показывает локальный список серверов: status,
+runtime, количество active/total устройств, последний сохраненный health status,
+latency, время проверки и результаты SSH/AWG/UDP probes. Этот callback не
+запускает health check, SSH-команду или опрос VPS; поэтому данные отражают
+последний уже сохраненный результат и могут отсутствовать до первой проверки.
+
+Telegram view строится по тому же secret-safe allowlist, что и API server
+summary. В него не входят host, SSH port, endpoint, server public key или
+health error. Раздел доступен только Telegram-администраторам, а audit
+`bot_admin_servers_read` сохраняет только количество серверов и фиксированный
+локальный источник без имен и health-значений.
+
 ## 11. Подготовить `servers.yml`
 
 Файл `servers.yml` хранит параметры VPS и VPN-сервера. Его не коммитить в GitHub.

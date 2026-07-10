@@ -14,6 +14,7 @@ from app.bot.texts import text
 from app.bot.ux import (
     ADMIN_APPROVE_PREFIX,
     ADMIN_PENDING_CALLBACK,
+    ADMIN_SERVERS_CALLBACK,
     ADMIN_STATUS_CALLBACK,
     ADMIN_TRAFFIC_CALLBACK,
     ADMIN_RESEND_PREFIX,
@@ -46,6 +47,7 @@ from app.bot.ux import (
     parse_language_callback,
     render_admin_template,
     render_admin_pending_orders,
+    render_admin_servers,
     render_admin_status,
     render_admin_traffic,
     render_admin_users,
@@ -338,6 +340,20 @@ async def handle_admin_status(callback, *, workflow) -> None:
         return
     locale = workflow.get_user_locale(telegram_id=admin_telegram_id)
     rendered_text, keyboard = render_admin_status(status, locale=locale)
+    await callback.message.answer(rendered_text, reply_markup=keyboard)
+
+
+async def handle_admin_servers(callback, *, workflow) -> None:
+    await callback.answer()
+    admin_telegram_id = int(callback.from_user.id)
+    statuses = workflow.get_operator_server_statuses(
+        admin_telegram_id=admin_telegram_id,
+    )
+    if statuses is None:
+        await callback.message.answer(text("handler.admin_required"))
+        return
+    locale = workflow.get_user_locale(telegram_id=admin_telegram_id)
+    rendered_text, keyboard = render_admin_servers(statuses, locale=locale)
     await callback.message.answer(rendered_text, reply_markup=keyboard)
 
 

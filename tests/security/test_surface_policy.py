@@ -47,6 +47,7 @@ REQUIRED_POLICY_IDS = {
     "web.servers.health_run",
     "bot.admin.approve_order",
     "bot.admin.status",
+    "bot.admin.servers",
     "bot.admin.traffic",
     "bot.admin.config_resend",
     "bot.user.config_resend",

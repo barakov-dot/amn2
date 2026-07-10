@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.texts import DEFAULT_LOCALE, text
+from app.services.operator_server_status import OperatorServerStatusView
 from app.services.traffic import DeviceTrafficView
 from app.vpn.config_versions import SUPPORTED_CONFIG_VERSIONS
 
@@ -23,6 +24,7 @@ USER_RESET_DEVICES_CALLBACK = "user:reset_devices"
 USER_RESET_DEVICES_CONFIRM_CALLBACK = "user:reset_devices_confirm"
 ADMIN_PENDING_CALLBACK = "admin:pending"
 ADMIN_STATUS_CALLBACK = "admin:status"
+ADMIN_SERVERS_CALLBACK = "admin:servers"
 ADMIN_TRAFFIC_CALLBACK = "admin:traffic"
 ADMIN_TEMPLATES_CALLBACK = "admin:templates"
 ADMIN_USERS_CALLBACK = "admin:users"
@@ -261,6 +263,12 @@ def build_admin_navigation_keyboard(
                 InlineKeyboardButton(
                     text=text("button.status", locale=locale),
                     callback_data=ADMIN_STATUS_CALLBACK,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=text("button.servers", locale=locale),
+                    callback_data=ADMIN_SERVERS_CALLBACK,
                 )
             ],
             [
@@ -544,6 +552,66 @@ def render_admin_status(
     return "\n".join(lines), build_admin_navigation_keyboard(locale=locale)
 
 
+def render_admin_servers(
+    statuses: Iterable[OperatorServerStatusView],
+    *,
+    locale: str = DEFAULT_LOCALE,
+) -> tuple[str, InlineKeyboardMarkup]:
+    lines = [text("admin.servers_title", locale=locale)]
+    has_servers = False
+    for status in statuses:
+        has_servers = True
+        lines.extend(
+            [
+                "",
+                status.name,
+                text("admin.server_status", locale=locale, status=status.status),
+                text("admin.server_runtime", locale=locale, runtime=status.runtime),
+                text(
+                    "admin.server_devices",
+                    locale=locale,
+                    active=status.active_device_count,
+                    total=status.total_device_count,
+                ),
+                text(
+                    "admin.server_health",
+                    locale=locale,
+                    health=(
+                        status.health_status
+                        or text("common.unknown", locale=locale)
+                    ),
+                ),
+                text(
+                    "admin.server_latency",
+                    locale=locale,
+                    latency=(
+                        f"{status.health_latency_ms} ms"
+                        if status.health_latency_ms is not None
+                        else text("common.unknown", locale=locale)
+                    ),
+                ),
+                text(
+                    "admin.server_checked",
+                    locale=locale,
+                    checked_at=(
+                        status.health_checked_at
+                        or text("common.unknown", locale=locale)
+                    ),
+                ),
+                text(
+                    "admin.server_probes",
+                    locale=locale,
+                    ssh=_probe_state(status.health_ssh_ok, locale=locale),
+                    awg=_probe_state(status.health_awg_ok, locale=locale),
+                    udp=_probe_state(status.health_udp_port_ok, locale=locale),
+                ),
+            ]
+        )
+    if not has_servers:
+        lines.append(text("admin.no_servers", locale=locale))
+    return "\n".join(lines), build_admin_navigation_keyboard(locale=locale)
+
+
 def render_admin_users(
     users: Iterable[Mapping[str, object]],
 ) -> tuple[str, InlineKeyboardMarkup]:
@@ -623,6 +691,12 @@ def _render_device_traffic_lines(
     if view.is_stale:
         lines.append(text("traffic.stale", locale=locale))
     return lines
+
+
+def _probe_state(value: bool | None, *, locale: str) -> str:
+    if value is None:
+        return text("common.unknown", locale=locale)
+    return text("common.yes" if value else "common.no", locale=locale)
 
 
 def _format_user_identity(row: Mapping[str, object]) -> str:
