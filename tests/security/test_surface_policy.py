@@ -25,6 +25,7 @@ REQUIRED_POLICY_IDS = {
     "web.users.delete",
     "web.users.disable_vpn",
     "web.users.enable_vpn",
+    "web.devices.create_operator",
     "web.devices.secrets",
     "web.devices.delete",
     "web.users.destroy",
@@ -93,6 +94,7 @@ REMOTE_RISKS = {"remote-read", "remote-exec"}
 VPS_WRITE_POLICY_IDS = {
     "web.users.disable_vpn",
     "web.users.enable_vpn",
+    "web.devices.create_operator",
     "web.devices.delete",
     "web.users.destroy",
     "web.servers.sync_run",
