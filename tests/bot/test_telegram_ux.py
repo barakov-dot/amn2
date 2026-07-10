@@ -1,7 +1,9 @@
 import sqlite3
+from types import SimpleNamespace
 
 from app.bot.ux import (
     ADMIN_PENDING_CALLBACK,
+    ADMIN_STATUS_CALLBACK,
     ADMIN_RESEND_PREFIX,
     ADMIN_TEMPLATES_CALLBACK,
     ADMIN_TEMPLATE_RESET_CALLBACK,
@@ -32,6 +34,7 @@ from app.bot.ux import (
     parse_language_callback,
     render_admin_approval,
     render_admin_pending_orders,
+    render_admin_status,
     render_admin_template,
     render_admin_traffic,
     render_admin_users,
@@ -268,6 +271,7 @@ def test_admin_traffic_keyboard_links_pending_orders_and_traffic():
     assert "12.0 KiB" in text
     assert _callback_data(keyboard) == [
         [ADMIN_PENDING_CALLBACK],
+        [ADMIN_STATUS_CALLBACK],
         [ADMIN_TRAFFIC_CALLBACK],
         [ADMIN_TEMPLATES_CALLBACK],
         [ADMIN_USERS_CALLBACK],
@@ -279,13 +283,50 @@ def test_admin_navigation_includes_templates_and_traffic_actions():
 
     keyboard = build_admin_navigation_keyboard()
 
-    assert _button_texts(keyboard) == [["Заявки"], ["Трафик"], ["Шаблоны"], ["Пользователи"]]
+    assert _button_texts(keyboard) == [
+        ["Заявки"],
+        ["Состояние"],
+        ["Трафик"],
+        ["Шаблоны"],
+        ["Пользователи"],
+    ]
     assert _callback_data(keyboard) == [
         [ADMIN_PENDING_CALLBACK],
+        [ADMIN_STATUS_CALLBACK],
         [ADMIN_TRAFFIC_CALLBACK],
         [ADMIN_TEMPLATES_CALLBACK],
         [ADMIN_USERS_CALLBACK],
     ]
+
+
+def test_render_admin_status_shows_aggregate_counts_without_secret_fields():
+    status = SimpleNamespace(
+        users_active=3,
+        users_blocked=1,
+        servers_active=1,
+        servers_degraded=0,
+        devices_active=4,
+        devices_disabled=1,
+        pending_orders=2,
+        credentials_active=2,
+        credentials_rotation_due=1,
+        credentials_expired=0,
+        credentials_revoked=3,
+        vps_writes_enabled=False,
+        public_config_delivery_enabled=False,
+        public_exposure_enabled=False,
+    )
+
+    rendered, keyboard = render_admin_status(status)
+
+    assert "Состояние AMN2" in rendered
+    assert "Активные пользователи: 3" in rendered
+    assert "Ожидают решения: 2" in rendered
+    assert "ротация нужна: 1" in rendered
+    assert "VPS-запись: выключена" in rendered
+    assert "token_hash" not in rendered
+    assert "telegram_id" not in rendered
+    assert [ADMIN_STATUS_CALLBACK] in _callback_data(keyboard)
 
 
 def test_render_admin_users_lists_users_and_device_counts():
@@ -312,6 +353,7 @@ def test_render_admin_users_lists_users_and_device_counts():
     assert "всего устройств: 2" in text
     assert _callback_data(keyboard) == [
         [ADMIN_PENDING_CALLBACK],
+        [ADMIN_STATUS_CALLBACK],
         [ADMIN_TRAFFIC_CALLBACK],
         [ADMIN_TEMPLATES_CALLBACK],
         [ADMIN_USERS_CALLBACK],

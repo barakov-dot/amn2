@@ -177,6 +177,45 @@ def test_build_admin_traffic_views_requires_admin(tmp_path):
     ) == []
 
 
+def test_operator_status_requires_admin_and_records_safe_audit(tmp_path):
+    repo = _repo(tmp_path)
+    repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    workflow = BotWorkflow(repo=repo, admin_telegram_ids={9001})
+
+    assert workflow.get_operator_status(
+        admin_telegram_id=1001,
+        now="2026-06-01T00:00:00Z",
+    ) is None
+    status = workflow.get_operator_status(
+        admin_telegram_id=9001,
+        now="2026-06-01T00:00:00Z",
+    )
+
+    assert status.servers_active == 1
+    audit = repo._conn.execute(
+        "SELECT * FROM admin_actions WHERE action = 'bot_operator_status_read'"
+    ).fetchone()
+    assert audit is not None
+    assert "token_hash" not in str(dict(audit))
+    assert "PrivateKey" not in str(dict(audit))
+
+
+def test_operator_status_reports_actual_vps_write_flag(tmp_path):
+    repo = _repo(tmp_path)
+    workflow = BotWorkflow(
+        repo=repo,
+        admin_telegram_ids={9001},
+        vps_writes_enabled=True,
+    )
+
+    status = workflow.get_operator_status(
+        admin_telegram_id=9001,
+        now="2026-06-01T00:00:00Z",
+    )
+
+    assert status.vps_writes_enabled is True
+
+
 def test_build_admin_traffic_views_reads_active_devices(tmp_path):
     repo = _repo(tmp_path)
     user_id = repo.upsert_user(

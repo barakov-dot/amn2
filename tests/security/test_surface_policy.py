@@ -46,6 +46,7 @@ REQUIRED_POLICY_IDS = {
     "web.servers.missing_devices.add",
     "web.servers.health_run",
     "bot.admin.approve_order",
+    "bot.admin.status",
     "bot.admin.config_resend",
     "bot.user.config_resend",
     "bot.user.device_revoke",

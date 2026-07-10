@@ -184,6 +184,7 @@ def create_workflow(
         client_config_defaults=client_config_defaults,
         device_name_prefix=bot_device_name_prefix,
         device_name_sequence_seed=bot_device_name_sequence_seed,
+        vps_writes_enabled=vps_apply_enabled,
     )
     return workflow
 

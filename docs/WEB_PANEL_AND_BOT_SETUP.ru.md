@@ -471,6 +471,27 @@ python -m app.cli bot check-network
 curl --socks5-hostname 127.0.0.1:1080 -I https://api.telegram.org
 ```
 
+### Read-only статус для оператора
+
+В admin-меню Telegram-бота кнопка `Состояние` показывает безопасную сводку из
+локальной базы данных:
+
+- количество active/blocked пользователей;
+- количество active/degraded серверов;
+- количество active/disabled устройств;
+- количество pending заявок;
+- состояние integration credentials: healthy, rotation due, expired и revoked;
+- фактическое состояние VPS write gate;
+- состояние публичной выдачи конфигов и публичной экспозиции.
+
+Сводка доступна только Telegram-администраторам. Она не содержит имена,
+идентификаторы, адреса, token hash или raw token, не выполняет SSH-команды и не
+опрашивает VPS. Просмотр записывается в безопасный audit как
+`bot_operator_status_read`.
+
+До отдельной live-активации Telegram-бота этот срез проверяется локально. Его
+наличие в исходниках само по себе не запускает bot service и не меняет VPS.
+
 ## 11. Подготовить `servers.yml`
 
 Файл `servers.yml` хранит параметры VPS и VPN-сервера. Его не коммитить в GitHub.

@@ -1472,6 +1472,52 @@ class Repository:
             "traffic_tx_bytes": int(traffic["traffic_tx_bytes"]),
         }
 
+    def get_operator_status_summary(
+        self,
+        *,
+        now: str,
+        rotation_notice_at: str,
+    ) -> dict[str, int]:
+        row = self._conn.execute(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM users WHERE status = 'active') AS users_active,
+                (SELECT COUNT(*) FROM users WHERE status = 'blocked') AS users_blocked,
+                (SELECT COUNT(*) FROM servers WHERE status = 'active') AS servers_active,
+                (SELECT COUNT(*) FROM servers WHERE status = 'degraded') AS servers_degraded,
+                (SELECT COUNT(*) FROM devices WHERE status = 'active') AS devices_active,
+                (SELECT COUNT(*) FROM devices WHERE status = 'disabled') AS devices_disabled,
+                (
+                    SELECT COUNT(*) FROM orders
+                    WHERE status IN ('manual_review', 'approved')
+                      AND device_id IS NULL
+                ) AS pending_orders,
+                (
+                    SELECT COUNT(*) FROM api_tokens
+                    WHERE revoked_at IS NULL
+                      AND (expires_at IS NULL OR julianday(expires_at) > julianday(?))
+                ) AS credentials_active,
+                (
+                    SELECT COUNT(*) FROM api_tokens
+                    WHERE revoked_at IS NULL
+                      AND julianday(expires_at) > julianday(?)
+                      AND julianday(expires_at) <= julianday(?)
+                ) AS credentials_rotation_due,
+                (
+                    SELECT COUNT(*) FROM api_tokens
+                    WHERE revoked_at IS NULL
+                      AND expires_at IS NOT NULL
+                      AND julianday(expires_at) <= julianday(?)
+                ) AS credentials_expired,
+                (
+                    SELECT COUNT(*) FROM api_tokens
+                    WHERE revoked_at IS NOT NULL
+                ) AS credentials_revoked
+            """,
+            (rotation_notice_at, now, rotation_notice_at, now),
+        ).fetchone()
+        return {key: int(row[key]) for key in row.keys()}
+
     def get_api_users_summary(self) -> dict[str, int]:
         counts = self._conn.execute(
             """

@@ -21,6 +21,7 @@ from app.services.access import (
     RemoteOperationPartialFailure,
 )
 from app.services.traffic import DeviceTrafficView, build_device_traffic_view
+from app.services.operator_status import OperatorStatusSummary, build_operator_status
 from app.vpn.amneziawg_v2.config import ClientConfigDefaults
 from app.vpn.config_versions import validate_config_version
 
@@ -68,6 +69,7 @@ class BotWorkflow:
         client_config_defaults: ClientConfigDefaults | None = None,
         device_name_prefix: str = "Neobyatnaya-AMNZ",
         device_name_sequence_seed: int = 4,
+        vps_writes_enabled: bool = False,
     ) -> None:
         self._repo = repo
         self._admin_telegram_ids = admin_telegram_ids
@@ -79,6 +81,7 @@ class BotWorkflow:
         self._client_config_defaults = client_config_defaults or ClientConfigDefaults()
         self._device_name_prefix = device_name_prefix.strip()
         self._device_name_sequence_seed = max(0, int(device_name_sequence_seed))
+        self._vps_writes_enabled = bool(vps_writes_enabled)
         if not self._device_name_prefix:
             raise ValueError("device_name_prefix must be non-blank")
 
@@ -305,6 +308,26 @@ class BotWorkflow:
         if not self.is_admin(admin_telegram_id):
             return []
         return self._repo.list_pending_orders()
+
+    def get_operator_status(
+        self,
+        *,
+        admin_telegram_id: int,
+        now: datetime | str | None = None,
+    ) -> OperatorStatusSummary | None:
+        if not self.is_admin(admin_telegram_id):
+            return None
+        status = build_operator_status(
+            self._repo,
+            now=now,
+            vps_writes_enabled=self._vps_writes_enabled,
+        )
+        self._repo.record_admin_action(
+            admin_telegram_id=admin_telegram_id,
+            action="bot_operator_status_read",
+            metadata=status.safe_metadata(),
+        )
+        return status
 
     def list_users(self, *, admin_telegram_id: int):
         if not self.is_admin(admin_telegram_id):

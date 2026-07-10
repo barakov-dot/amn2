@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from app.bot.handlers import (
     handle_admin_approve,
     handle_admin_pending,
+    handle_admin_status,
     handle_admin_resend_config,
     handle_admin_reset_template,
     handle_admin_template,
@@ -686,6 +687,40 @@ def test_handle_admin_approve_rejects_non_admin():
     assert callback.answered is True
 
 
+def test_handle_admin_status_returns_safe_aggregate_for_admin():
+    callback = FakeCallback(
+        data="admin:status",
+        user_id=9001,
+        username="admin",
+        first_name="Admin",
+    )
+    workflow = FakeWorkflow(admin_ids={9001})
+
+    asyncio.run(handle_admin_status(callback, workflow=workflow))
+
+    assert "Состояние AMN2" in callback.message.answers[0]["text"]
+    assert "Активные пользователи: 2" in callback.message.answers[0]["text"]
+    assert "token_hash" not in callback.message.answers[0]["text"]
+    assert workflow.status_reads == [9001]
+    assert callback.answered is True
+
+
+def test_handle_admin_status_rejects_non_admin_without_reading_status():
+    callback = FakeCallback(
+        data="admin:status",
+        user_id=1001,
+        username="alice",
+        first_name="Alice",
+    )
+    workflow = FakeWorkflow(admin_ids={9001})
+
+    asyncio.run(handle_admin_status(callback, workflow=workflow))
+
+    assert callback.message.answers[0]["text"] == "Нужны права администратора."
+    assert workflow.status_reads == []
+    assert callback.answered is True
+
+
 def test_handle_admin_template_shows_editable_template_and_reset_button():
     callback = FakeCallback(
         data="admin:templates",
@@ -845,9 +880,34 @@ class FakeWorkflow:
         self.manual_orders = []
         self.registered_users = []
         self.locales = []
+        self.status_reads = []
 
     def is_admin(self, telegram_id):
         return telegram_id in self._admin_ids
+
+    def get_operator_status(self, *, admin_telegram_id, now=None):
+        if not self.is_admin(admin_telegram_id):
+            return None
+        self.status_reads.append(admin_telegram_id)
+        return SimpleNamespace(
+            users_active=2,
+            users_blocked=0,
+            servers_active=1,
+            servers_degraded=0,
+            devices_active=3,
+            devices_disabled=0,
+            pending_orders=1,
+            credentials_active=1,
+            credentials_rotation_due=0,
+            credentials_expired=0,
+            credentials_revoked=1,
+            vps_writes_enabled=False,
+            public_config_delivery_enabled=False,
+            public_exposure_enabled=False,
+        )
+
+    def get_user_locale(self, *, telegram_id):
+        return "ru"
 
     def register_user(self, *, telegram_id, username, first_name, last_name):
         self.registered_users.append(telegram_id)

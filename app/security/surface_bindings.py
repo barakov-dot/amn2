@@ -452,6 +452,13 @@ BOT_ACTION_BINDINGS: tuple[SurfaceBinding, ...] = (
     _binding(
         "bot",
         "ACTION",
+        "ADMIN_STATUS_CALLBACK",
+        source="app.bot.main",
+        policy_id="bot.admin.status",
+    ),
+    _binding(
+        "bot",
+        "ACTION",
         "ADMIN_APPROVE_PREFIX callback",
         source="app.bot.main",
         policy_id="bot.admin.approve_order",

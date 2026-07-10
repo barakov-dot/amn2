@@ -9,6 +9,7 @@ from app.bot.handlers import (
     handle_admin_create_order,
     handle_admin_grant,
     handle_admin_pending,
+    handle_admin_status,
     handle_admin_resend_config,
     handle_admin_reset_template,
     handle_admin_template,
@@ -30,6 +31,7 @@ from app.bot.handlers import (
 from app.bot.ux import (
     ADMIN_APPROVE_PREFIX,
     ADMIN_PENDING_CALLBACK,
+    ADMIN_STATUS_CALLBACK,
     ADMIN_RESEND_PREFIX,
     ADMIN_TEMPLATE_RESET_CALLBACK,
     ADMIN_TEMPLATES_CALLBACK,
@@ -121,6 +123,10 @@ def create_dispatcher(*, workflow=None) -> Dispatcher:
     @router.callback_query(F.data == ADMIN_PENDING_CALLBACK)
     async def admin_pending(callback: CallbackQuery) -> None:
         await handle_admin_pending(callback, workflow=workflow)
+
+    @router.callback_query(F.data == ADMIN_STATUS_CALLBACK)
+    async def admin_status(callback: CallbackQuery) -> None:
+        await handle_admin_status(callback, workflow=workflow)
 
     @router.callback_query(F.data == ADMIN_TEMPLATES_CALLBACK)
     async def admin_template(callback: CallbackQuery) -> None:

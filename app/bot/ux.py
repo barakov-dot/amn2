@@ -22,6 +22,7 @@ USER_REVOKE_CONFIRM_PREFIX = "user:revoke_confirm"
 USER_RESET_DEVICES_CALLBACK = "user:reset_devices"
 USER_RESET_DEVICES_CONFIRM_CALLBACK = "user:reset_devices_confirm"
 ADMIN_PENDING_CALLBACK = "admin:pending"
+ADMIN_STATUS_CALLBACK = "admin:status"
 ADMIN_TRAFFIC_CALLBACK = "admin:traffic"
 ADMIN_TEMPLATES_CALLBACK = "admin:templates"
 ADMIN_USERS_CALLBACK = "admin:users"
@@ -258,6 +259,12 @@ def build_admin_navigation_keyboard(
             ],
             [
                 InlineKeyboardButton(
+                    text=text("button.status", locale=locale),
+                    callback_data=ADMIN_STATUS_CALLBACK,
+                )
+            ],
+            [
+                InlineKeyboardButton(
                     text=text("button.traffic", locale=locale),
                     callback_data=ADMIN_TRAFFIC_CALLBACK,
                 )
@@ -473,6 +480,66 @@ def render_admin_traffic(
     if not has_devices:
         lines.append(text("my_devices.empty"))
     return "\n".join(lines), build_admin_navigation_keyboard()
+
+
+def render_admin_status(
+    status,
+    *,
+    locale: str = DEFAULT_LOCALE,
+) -> tuple[str, InlineKeyboardMarkup]:
+    def state(value: bool) -> str:
+        key = "common.enabled" if value else "common.disabled"
+        return text(key, locale=locale)
+
+    lines = [
+        text("admin.status_title", locale=locale),
+        text("admin.status_mode", locale=locale),
+        "",
+        text(
+            "admin.status_users",
+            locale=locale,
+            active=status.users_active,
+            blocked=status.users_blocked,
+        ),
+        text(
+            "admin.status_servers",
+            locale=locale,
+            active=status.servers_active,
+            degraded=status.servers_degraded,
+        ),
+        text(
+            "admin.status_devices",
+            locale=locale,
+            active=status.devices_active,
+            disabled=status.devices_disabled,
+        ),
+        text("admin.status_pending", locale=locale, count=status.pending_orders),
+        text(
+            "admin.status_credentials",
+            locale=locale,
+            active=status.credentials_active,
+            due=status.credentials_rotation_due,
+            expired=status.credentials_expired,
+            revoked=status.credentials_revoked,
+        ),
+        "",
+        text(
+            "admin.status_vps_write",
+            locale=locale,
+            state=state(status.vps_writes_enabled),
+        ),
+        text(
+            "admin.status_config_delivery",
+            locale=locale,
+            state=state(status.public_config_delivery_enabled),
+        ),
+        text(
+            "admin.status_public",
+            locale=locale,
+            state=state(status.public_exposure_enabled),
+        ),
+    ]
+    return "\n".join(lines), build_admin_navigation_keyboard(locale=locale)
 
 
 def render_admin_users(

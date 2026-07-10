@@ -14,6 +14,7 @@ from app.bot.texts import text
 from app.bot.ux import (
     ADMIN_APPROVE_PREFIX,
     ADMIN_PENDING_CALLBACK,
+    ADMIN_STATUS_CALLBACK,
     ADMIN_RESEND_PREFIX,
     ADMIN_TEMPLATE_RESET_CALLBACK,
     ADMIN_TEMPLATES_CALLBACK,
@@ -37,12 +38,14 @@ from app.bot.ux import (
     build_user_devices_reset_keyboard,
     build_config_version_keyboard,
     build_admin_order_keyboard,
+    build_admin_navigation_keyboard,
     build_main_menu,
     parse_admin_approve_callback,
     parse_config_version_callback,
     parse_language_callback,
     render_admin_template,
     render_admin_pending_orders,
+    render_admin_status,
     render_admin_users,
     render_config_version_prompt,
     render_language_prompt,
@@ -296,7 +299,10 @@ async def handle_admin_pending(callback, *, workflow) -> None:
         return
 
     orders = workflow.list_pending_orders(admin_telegram_id=admin_telegram_id)
-    await callback.message.answer(render_admin_pending_orders(orders))
+    await callback.message.answer(
+        render_admin_pending_orders(orders),
+        reply_markup=build_admin_navigation_keyboard(),
+    )
     for order in orders:
         await callback.message.answer(
             f"Order #{order['id']}",
@@ -319,6 +325,18 @@ async def handle_admin_users(callback, *, workflow) -> None:
     )
     await callback.message.answer(rendered_text, reply_markup=keyboard)
     await callback.answer()
+
+
+async def handle_admin_status(callback, *, workflow) -> None:
+    await callback.answer()
+    admin_telegram_id = int(callback.from_user.id)
+    status = workflow.get_operator_status(admin_telegram_id=admin_telegram_id)
+    if status is None:
+        await callback.message.answer(text("handler.admin_required"))
+        return
+    locale = workflow.get_user_locale(telegram_id=admin_telegram_id)
+    rendered_text, keyboard = render_admin_status(status, locale=locale)
+    await callback.message.answer(rendered_text, reply_markup=keyboard)
 
 
 async def handle_admin_approve(callback, *, workflow) -> None:
@@ -533,6 +551,10 @@ def is_user_reset_devices_confirm_callback(data: str) -> bool:
 
 def is_admin_pending_callback(data: str) -> bool:
     return data == ADMIN_PENDING_CALLBACK
+
+
+def is_admin_status_callback(data: str) -> bool:
+    return data == ADMIN_STATUS_CALLBACK
 
 
 def is_admin_approve_callback(data: str) -> bool:
