@@ -996,6 +996,212 @@ class Repository:
         self._commit()
         return cursor.rowcount > 0
 
+    def create_device_enrollment_ticket(
+        self,
+        *,
+        ticket_id: str,
+        user_id: int,
+        token_hash: str,
+        token_prefix: str,
+        platform: str,
+        config_schema_version: str,
+        expires_at: str,
+    ) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO device_enrollment_tickets (
+                id,
+                user_id,
+                token_hash,
+                token_prefix,
+                platform,
+                config_schema_version,
+                expires_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ticket_id,
+                user_id,
+                token_hash,
+                token_prefix,
+                platform,
+                config_schema_version,
+                expires_at,
+            ),
+        )
+        self._commit()
+
+    def get_device_enrollment_ticket(self, ticket_id: str) -> sqlite3.Row | None:
+        return self._conn.execute(
+            """
+            SELECT
+                id,
+                user_id,
+                token_prefix,
+                platform,
+                config_schema_version,
+                single_use,
+                expires_at,
+                revoked_at,
+                revoke_reason,
+                claimed_at,
+                claimed_device_id,
+                created_at
+            FROM device_enrollment_tickets
+            WHERE id = ?
+            """,
+            (ticket_id,),
+        ).fetchone()
+
+    def list_device_enrollment_tickets(
+        self,
+        *,
+        user_id: int | None = None,
+        limit: int = 100,
+    ) -> list[sqlite3.Row]:
+        where = "WHERE user_id = ?" if user_id is not None else ""
+        params: tuple[Any, ...] = (user_id, limit) if user_id is not None else (limit,)
+        return self._conn.execute(
+            f"""
+            SELECT
+                id,
+                user_id,
+                token_prefix,
+                platform,
+                config_schema_version,
+                single_use,
+                expires_at,
+                revoked_at,
+                revoke_reason,
+                claimed_at,
+                claimed_device_id,
+                created_at
+            FROM device_enrollment_tickets
+            {where}
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+
+    def revoke_device_enrollment_ticket(
+        self,
+        *,
+        ticket_id: str,
+        revoked_at: str,
+        reason: str,
+    ) -> bool:
+        cursor = self._conn.execute(
+            """
+            UPDATE device_enrollment_tickets
+            SET revoked_at = ?,
+                revoke_reason = ?
+            WHERE id = ?
+              AND revoked_at IS NULL
+              AND claimed_at IS NULL
+            """,
+            (revoked_at, reason, ticket_id),
+        )
+        self._commit()
+        return cursor.rowcount > 0
+
+    def is_device_enrollment_claim_replay(
+        self,
+        *,
+        token_hash: str,
+        idempotency_hash: str,
+    ) -> bool:
+        row = self._conn.execute(
+            """
+            SELECT 1
+            FROM device_enrollment_tickets
+            WHERE token_hash = ?
+              AND claim_idempotency_hash = ?
+              AND claimed_device_id IS NOT NULL
+            """,
+            (token_hash, idempotency_hash),
+        ).fetchone()
+        return row is not None
+
+    def claim_device_enrollment_ticket(
+        self,
+        *,
+        token_hash: str,
+        idempotency_hash: str,
+        now: str,
+        claimed_at: str,
+        claimed_device_id: str,
+        official_client_type: str,
+        client_version: str | None,
+        import_method: str,
+        config_fingerprint: str,
+        acceptance_evidence: dict[str, Any],
+    ) -> sqlite3.Row | None:
+        with self.transaction():
+            cursor = self._conn.execute(
+                """
+                UPDATE device_enrollment_tickets
+                SET claimed_at = ?,
+                    claimed_device_id = ?,
+                    claim_idempotency_hash = ?
+                WHERE token_hash = ?
+                  AND revoked_at IS NULL
+                  AND claimed_at IS NULL
+                  AND expires_at > ?
+                  AND single_use = 1
+                """,
+                (
+                    claimed_at,
+                    claimed_device_id,
+                    idempotency_hash,
+                    token_hash,
+                    now,
+                ),
+            )
+            if cursor.rowcount == 1:
+                ticket = self._conn.execute(
+                    """
+                    SELECT id, user_id, platform, config_schema_version
+                    FROM device_enrollment_tickets
+                    WHERE token_hash = ?
+                    """,
+                    (token_hash,),
+                ).fetchone()
+                if ticket is None:
+                    raise RuntimeError("claimed enrollment ticket disappeared")
+                self.create_device_passport(
+                    device_id=claimed_device_id,
+                    owner_user_id=int(ticket["user_id"]),
+                    local_device_id=None,
+                    platform=str(ticket["platform"]),
+                    official_client_type=official_client_type,
+                    client_version=client_version,
+                    import_method=import_method,
+                    config_schema_version=str(ticket["config_schema_version"]),
+                    config_fingerprint=config_fingerprint,
+                    last_seen_at=claimed_at,
+                    acceptance_evidence=acceptance_evidence,
+                )
+                ticket_id = str(ticket["id"])
+            else:
+                replay = self._conn.execute(
+                    """
+                    SELECT id
+                    FROM device_enrollment_tickets
+                    WHERE token_hash = ?
+                      AND claim_idempotency_hash = ?
+                      AND claimed_at IS NOT NULL
+                      AND claimed_device_id IS NOT NULL
+                    """,
+                    (token_hash, idempotency_hash),
+                ).fetchone()
+                if replay is None:
+                    return None
+                ticket_id = str(replay["id"])
+
+            return self.get_device_enrollment_ticket(ticket_id)
+
     def revoke_device(
         self,
         device_id: int,

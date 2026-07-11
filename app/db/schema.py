@@ -116,6 +116,26 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS device_enrollment_tickets (
+            id TEXT PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            token_hash TEXT NOT NULL UNIQUE,
+            token_prefix TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            config_schema_version TEXT NOT NULL,
+            single_use INTEGER NOT NULL DEFAULT 1 CHECK (single_use = 1),
+            expires_at TEXT NOT NULL,
+            revoked_at TEXT,
+            revoke_reason TEXT,
+            claimed_at TEXT,
+            claimed_device_id TEXT,
+            claim_idempotency_hash TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (claimed_device_id) REFERENCES device_passports(device_id)
+                ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED
+        );
+
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -222,6 +242,10 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             ON devices(server_id, status);
         CREATE INDEX IF NOT EXISTS idx_device_passports_owner
             ON device_passports(owner_user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_device_enrollment_tickets_user
+            ON device_enrollment_tickets(user_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_device_enrollment_tickets_expiry
+            ON device_enrollment_tickets(expires_at, claimed_at, revoked_at);
         CREATE INDEX IF NOT EXISTS idx_orders_user_status
             ON orders(user_id, status);
         CREATE INDEX IF NOT EXISTS idx_server_health_latest
