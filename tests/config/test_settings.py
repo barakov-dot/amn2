@@ -250,6 +250,19 @@ def test_settings_accepts_client_awg_h_range_values_from_amneziawg():
     assert defaults.h4 == "2147478675-2147482564"
 
 
+def test_settings_rejects_overlapping_client_awg_h_ranges():
+    with pytest.raises(ValidationError, match="must not overlap"):
+        Settings(
+            _env_file=None,
+            telegram_bot_token="CHANGE_ME",
+            app_secret_key="test-secret",
+            client_awg_h1="100-200",
+            client_awg_h2="200-300",
+            client_awg_h3=400,
+            client_awg_h4=500,
+        )
+
+
 def test_settings_rejects_invalid_client_amneziawg_parameters():
     with pytest.raises(ValidationError, match="CLIENT_AWG_JMIN"):
         Settings(

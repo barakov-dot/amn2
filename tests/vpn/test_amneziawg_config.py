@@ -1,9 +1,15 @@
 import base64
 
+import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import x25519
 
-from app.vpn.amneziawg_v2.config import ClientConfigInput, render_client_config
+from app.vpn.amneziawg_v2.config import (
+    ClientConfigDefaults,
+    ClientConfigInput,
+    render_client_config,
+    validate_magic_headers,
+)
 from app.vpn.amneziawg_v2.keys import generate_key, generate_keypair
 
 
@@ -82,6 +88,38 @@ def test_render_client_config_contains_full_amneziawg_v2_fields():
     assert "I2 = " in config
     assert "I5 = " in config
     assert "AllowedIPs = 0.0.0.0/0, ::/0" in config
+
+
+def test_validate_magic_headers_accepts_single_and_ranged_uint32_values():
+    validate_magic_headers(
+        {
+            "H1": 0,
+            "H2": "1-100",
+            "H3": "101",
+            "H4": "4294967294-4294967295",
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["", "1-", "-1", "2-1", "1-2-3", " 1-2", 4294967296],
+)
+def test_validate_magic_headers_rejects_invalid_values(value):
+    with pytest.raises(ValueError, match="H1"):
+        validate_magic_headers({"H1": value, "H2": 10, "H3": 20, "H4": 30})
+
+
+def test_validate_magic_headers_rejects_overlapping_ranges():
+    with pytest.raises(ValueError, match="must not overlap"):
+        validate_magic_headers(
+            {"H1": "100-200", "H2": "200-300", "H3": 400, "H4": 500}
+        )
+
+
+def test_client_config_defaults_rejects_ambiguous_magic_headers():
+    with pytest.raises(ValueError, match="must not overlap"):
+        ClientConfigDefaults(h1=100, h2="90-110", h3=200, h4=300)
 
 
 def test_generate_key_returns_base64_encoded_32_byte_secret():

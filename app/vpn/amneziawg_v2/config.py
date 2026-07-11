@@ -1,6 +1,12 @@
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
+from itertools import pairwise
 
 AwgParameter = int | str
+
+_UINT32_MAX = (1 << 32) - 1
+_MAGIC_HEADER_PATTERN = re.compile(r"\d+(?:-\d+)?")
 
 DEFAULT_CLIENT_AWG_JC = 3
 DEFAULT_CLIENT_AWG_JMIN = 10
@@ -37,6 +43,11 @@ class ClientConfigDefaults:
     i4: str = ""
     i5: str = ""
 
+    def __post_init__(self) -> None:
+        validate_magic_headers(
+            {"H1": self.h1, "H2": self.h2, "H3": self.h3, "H4": self.h4}
+        )
+
 
 @dataclass(frozen=True)
 class ClientConfigInput:
@@ -64,6 +75,46 @@ class ClientConfigInput:
     i3: str = ""
     i4: str = ""
     i5: str = ""
+
+    def __post_init__(self) -> None:
+        validate_magic_headers(
+            {"H1": self.h1, "H2": self.h2, "H3": self.h3, "H4": self.h4}
+        )
+
+
+def validate_magic_headers(values: Mapping[str, AwgParameter]) -> None:
+    if len(values) != 4:
+        raise ValueError("AWG magic header contract requires H1-H4")
+
+    ranges = [
+        (name, *_parse_magic_header(name, value)) for name, value in values.items()
+    ]
+    ranges.sort(key=lambda item: (item[1], item[2]))
+
+    # AWG2 classifies packet types by these ranges, so an overlap is ambiguous.
+    for previous, current in pairwise(ranges):
+        if previous[2] >= current[1]:
+            raise ValueError(
+                f"{previous[0]} and {current[0]} magic header ranges must not overlap"
+            )
+
+
+def _parse_magic_header(name: str, value: AwgParameter) -> tuple[int, int]:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be an unsigned 32-bit integer or range")
+
+    if isinstance(value, int):
+        minimum = maximum = value
+    else:
+        if value != value.strip() or _MAGIC_HEADER_PATTERN.fullmatch(value) is None:
+            raise ValueError(f"{name} must be an unsigned 32-bit integer or range")
+        parts = value.split("-", maxsplit=1)
+        minimum = int(parts[0])
+        maximum = int(parts[-1])
+
+    if not 0 <= minimum <= maximum <= _UINT32_MAX:
+        raise ValueError(f"{name} must fit an unsigned 32-bit integer range")
+    return minimum, maximum
 
 
 def render_client_config(config: ClientConfigInput) -> str:

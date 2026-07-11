@@ -16,6 +16,7 @@ from app.vpn.amneziawg_v2.config import (
     DEFAULT_CLIENT_AWG_S3,
     DEFAULT_CLIENT_AWG_S4,
     ClientConfigDefaults,
+    validate_magic_headers,
 )
 
 
@@ -178,7 +179,7 @@ class Settings(BaseSettings):
         self.bot_device_name_prefix = self.bot_device_name_prefix.strip()
         if not self.bot_device_name_prefix:
             raise ValueError("BOT_DEVICE_NAME_PREFIX must be non-blank")
-        _validate_awg_h_values(
+        validate_magic_headers(
             {
                 "CLIENT_AWG_H1": self.client_awg_h1,
                 "CLIENT_AWG_H2": self.client_awg_h2,
@@ -311,13 +312,3 @@ def _validate_non_negative(values: dict[str, int]) -> None:
     for name, value in values.items():
         if value < 0:
             raise ValueError(f"{name} must be non-negative")
-
-
-def _validate_awg_h_values(values: dict[str, int | str]) -> None:
-    for name, value in values.items():
-        if isinstance(value, int):
-            if value < 0:
-                raise ValueError(f"{name} must be non-negative")
-            continue
-        if not value.strip():
-            raise ValueError(f"{name} must be non-blank")
