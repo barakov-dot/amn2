@@ -853,6 +853,149 @@ class Repository:
             (user_id, *statuses, limit),
         ).fetchall()
 
+    def create_device_passport(
+        self,
+        *,
+        device_id: str,
+        owner_user_id: int,
+        local_device_id: int | None,
+        platform: str,
+        official_client_type: str,
+        client_version: str | None,
+        import_method: str,
+        config_schema_version: str,
+        config_fingerprint: str,
+        last_seen_at: str | None,
+        acceptance_evidence: dict[str, Any] | None,
+    ) -> None:
+        if not device_id.strip():
+            raise ValueError("device_id is required")
+        if local_device_id is not None:
+            local_device = self.get_user_device(
+                user_id=owner_user_id,
+                device_id=local_device_id,
+            )
+            if local_device is None:
+                raise ValueError("local device does not belong to passport owner")
+
+        self._conn.execute(
+            """
+            INSERT INTO device_passports (
+                device_id,
+                local_device_id,
+                owner_user_id,
+                platform,
+                official_client_type,
+                client_version,
+                import_method,
+                config_schema_version,
+                config_fingerprint,
+                last_seen_at,
+                acceptance_evidence_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                device_id,
+                local_device_id,
+                owner_user_id,
+                platform,
+                official_client_type,
+                client_version,
+                import_method,
+                config_schema_version,
+                config_fingerprint,
+                last_seen_at,
+                (
+                    json.dumps(acceptance_evidence, sort_keys=True)
+                    if acceptance_evidence is not None
+                    else None
+                ),
+            ),
+        )
+        self._commit()
+
+    def get_device_passport(self, device_id: str) -> sqlite3.Row | None:
+        return self._conn.execute(
+            """
+            SELECT
+                device_id,
+                local_device_id,
+                owner_user_id,
+                platform,
+                official_client_type,
+                client_version,
+                import_method,
+                config_schema_version,
+                config_fingerprint,
+                last_seen_at,
+                acceptance_evidence_json,
+                created_at,
+                updated_at
+            FROM device_passports
+            WHERE device_id = ?
+            """,
+            (device_id,),
+        ).fetchone()
+
+    def list_device_passports_for_owner(
+        self,
+        owner_user_id: int,
+        *,
+        limit: int = 100,
+    ) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            """
+            SELECT
+                device_id,
+                local_device_id,
+                owner_user_id,
+                platform,
+                official_client_type,
+                client_version,
+                import_method,
+                config_schema_version,
+                config_fingerprint,
+                last_seen_at,
+                acceptance_evidence_json,
+                created_at,
+                updated_at
+            FROM device_passports
+            WHERE owner_user_id = ?
+            ORDER BY created_at DESC, device_id DESC
+            LIMIT ?
+            """,
+            (owner_user_id, limit),
+        ).fetchall()
+
+    def update_device_passport_observation(
+        self,
+        *,
+        device_id: str,
+        last_seen_at: str,
+        acceptance_evidence: dict[str, Any] | None,
+    ) -> bool:
+        cursor = self._conn.execute(
+            """
+            UPDATE device_passports
+            SET last_seen_at = ?,
+                acceptance_evidence_json = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE device_id = ?
+            """,
+            (
+                last_seen_at,
+                (
+                    json.dumps(acceptance_evidence, sort_keys=True)
+                    if acceptance_evidence is not None
+                    else None
+                ),
+                device_id,
+            ),
+        )
+        self._commit()
+        return cursor.rowcount > 0
+
     def revoke_device(
         self,
         device_id: int,

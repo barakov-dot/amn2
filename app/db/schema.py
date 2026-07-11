@@ -98,6 +98,24 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             UNIQUE (server_id, peer_public_key)
         );
 
+        CREATE TABLE IF NOT EXISTS device_passports (
+            device_id TEXT PRIMARY KEY,
+            local_device_id INTEGER UNIQUE,
+            owner_user_id INTEGER NOT NULL,
+            platform TEXT NOT NULL,
+            official_client_type TEXT NOT NULL,
+            client_version TEXT,
+            import_method TEXT NOT NULL,
+            config_schema_version TEXT NOT NULL,
+            config_fingerprint TEXT NOT NULL,
+            last_seen_at TEXT,
+            acceptance_evidence_json TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (local_device_id) REFERENCES devices(id) ON DELETE SET NULL,
+            FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -202,6 +220,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             ON devices(user_id, status);
         CREATE INDEX IF NOT EXISTS idx_devices_server_status
             ON devices(server_id, status);
+        CREATE INDEX IF NOT EXISTS idx_device_passports_owner
+            ON device_passports(owner_user_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_orders_user_status
             ON orders(user_id, status);
         CREATE INDEX IF NOT EXISTS idx_server_health_latest
