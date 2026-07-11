@@ -38,6 +38,10 @@ from app.server_config.loader import select_server
 from app.services.access import RemoteOperationPartialFailure
 from app.services.config_material import ConfigMaterialUnavailable
 from app.services.config_delivery import build_device_config_delivery
+from app.config_assignment import (
+    CONFIG_ASSIGNMENT_MODES,
+    DEDICATED_DEVICE,
+)
 from app.services.email_delivery import EmailDeliveryService
 from app.services.email_delivery import EmailSender
 from app.services.email_delivery import build_smtp_sender
@@ -772,6 +776,7 @@ def create_web_app(
         device_name: str = Form(""),
         duration_days: int = Form(0),
         config_version: str = Form(""),
+        assignment_mode: str = Form(DEDICATED_DEVICE),
         execution_target: str = Form(""),
         mode: str = Form(""),
         confirm_one_device_gate: str = Form(""),
@@ -814,6 +819,7 @@ def create_web_app(
                         device_name=device_name,
                         duration_days=duration_days,
                         config_version=config_version,
+                        assignment_mode=assignment_mode,
                         output_path=output_path,
                         admin_telegram_id=admin_actor_id,
                         execution_target=execution_target,
@@ -841,7 +847,7 @@ def create_web_app(
                     "OPERATOR_DEVICE_CREATE_ENABLED must be true before operator device apply"
                 )
             if confirm_one_device_gate != "on":
-                raise ValueError("Exact one-device gate confirmation is required")
+                raise ValueError("Exact config-assignment gate confirmation is required")
 
             result = json.loads(
                 run_operator_device_create(
@@ -851,6 +857,7 @@ def create_web_app(
                     device_name=device_name,
                     duration_days=duration_days,
                     config_version=config_version,
+                    assignment_mode=assignment_mode,
                     output_path=output_path,
                     admin_telegram_id=admin_actor_id,
                     app_secret_key=actual_settings.app_secret_key,
@@ -2445,6 +2452,7 @@ def _operator_device_form_context(
         "owner_active": owner_active,
         "servers": servers,
         "config_versions": SUPPORTED_CONFIG_VERSIONS,
+        "assignment_modes": CONFIG_ASSIGNMENT_MODES,
         "default_server": default_server,
         "default_device_name": default_device_name,
         "default_duration_days": settings.default_plan_days,

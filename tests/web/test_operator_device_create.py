@@ -37,6 +37,8 @@ def test_operator_device_form_is_private_and_apply_is_closed_by_default(tmp_path
     assert 'value="dry-run"' in page.text
     assert 'value="apply"' in page.text
     assert "Apply is closed" in page.text
+    assert 'value="dedicated_device"' in page.text
+    assert 'value="owner_shared"' in page.text
 
 
 def test_operator_device_dry_run_is_secret_safe_and_has_no_side_effects(tmp_path: Path):
@@ -73,6 +75,36 @@ def test_operator_device_dry_run_is_secret_safe_and_has_no_side_effects(tmp_path
     assert command_client.calls == []
     with _repo(Path(settings.database_path)) as repo:
         assert repo.list_user_devices_for_admin(user_id) == []
+
+
+def test_operator_owner_shared_dry_run_surfaces_assignment_mode(tmp_path: Path):
+    config_path = _write_server_config(tmp_path)
+    settings = _settings(
+        tmp_path,
+        admin_telegram_ids="9001",
+        server_config_path=config_path,
+    )
+    user_id = _seed_user(Path(settings.database_path))
+    client = _authenticated_client(settings)
+    page = client.get(f"/users/{user_id}")
+
+    response = client.post(
+        f"/users/{user_id}/devices/create-operator",
+        data={
+            "server_name": "local",
+            "device_name": "Neobyatnaya.NET shared",
+            "duration_days": "365",
+            "config_version": "amneziawg_v2",
+            "assignment_mode": "owner_shared",
+            "execution_target": "local",
+            "mode": "dry-run",
+            "csrf_token": _csrf_token(page.text),
+        },
+    )
+
+    assert response.status_code == 200
+    assert "owner_shared" in response.text
+    assert "PrivateKey =" not in response.text
 
 
 def test_operator_device_apply_requires_runtime_gate_and_confirmation(tmp_path: Path):
@@ -137,7 +169,7 @@ def test_operator_device_apply_requires_runtime_gate_and_confirmation(tmp_path: 
         data=payload,
     )
     assert response.status_code == 400
-    assert "one-device gate confirmation is required" in response.text
+    assert "config-assignment gate confirmation is required" in response.text
 
 
 def test_operator_device_apply_uses_common_service_and_returns_safe_result(tmp_path: Path):
@@ -183,6 +215,8 @@ def test_operator_device_apply_uses_common_service_and_returns_safe_result(tmp_p
     assert response.status_code == 200
     assert "Operator device created" in response.text
     assert "Living room TV" in response.text
+    assert "dedicated_device" in response.text
+    assert "<th>Assignment</th>" in response.text
     assert "PrivateKey =" not in response.text
     assert "PresharedKey =" not in response.text
     assert len(written_artifacts) == 1
@@ -193,6 +227,7 @@ def test_operator_device_apply_uses_common_service_and_returns_safe_result(tmp_p
         devices = repo.list_user_devices_for_admin(user_id)
         assert len(devices) == 1
         assert devices[0]["name"] == "Living room TV"
+        assert devices[0]["assignment_mode"] == "dedicated_device"
         actions = repo.list_admin_actions_for_target_user(user_id)
         assert actions[0]["action"] == "access.create_operator_device"
         assert actions[0]["admin_telegram_id"] == 9001

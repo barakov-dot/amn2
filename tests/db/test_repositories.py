@@ -35,6 +35,70 @@ def test_repository_creates_user_server_order_and_device(tmp_path):
     assert repo.count_active_devices(user_id) == 1
     assert repo.get_order(order_id)["status"] == "manual_review"
     assert repo.get_device(device_id)["vpn_ip"] == "10.8.0.2"
+    assert repo.get_device(device_id)["assignment_mode"] == "dedicated_device"
+
+
+def test_plan_max_devices_is_optional_configurable_and_validated(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+
+    repo.upsert_plan(
+        plan_id="family_6",
+        name="Family 6",
+        duration_days=30,
+        max_devices=6,
+    )
+
+    assert repo.get_plan("family_6")["max_devices"] == 6
+
+    with pytest.raises(ValueError, match="max_devices must be positive"):
+        repo.upsert_plan(
+            plan_id="invalid",
+            name="Invalid",
+            duration_days=30,
+            max_devices=0,
+        )
+
+    repo.seed_default_plans()
+    repo.upsert_plan(
+        plan_id="days_30",
+        name="30 days",
+        duration_days=30,
+        max_devices=6,
+    )
+    repo.seed_default_plans()
+
+    assert repo.get_plan("days_30")["max_devices"] == 6
+
+
+def test_schema_migrates_existing_plan_and_device_assignment_columns(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    conn.executescript(
+        """
+        CREATE TABLE plans (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            duration_days INTEGER NOT NULL,
+            price INTEGER NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'RUB',
+            is_free INTEGER NOT NULL DEFAULT 1,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO plans (id, name, duration_days) VALUES ('legacy', 'Legacy', 30);
+        """
+    )
+    conn.commit()
+
+    initialize_schema(conn)
+
+    plan_columns = {row[1] for row in conn.execute("PRAGMA table_info(plans)")}
+    device_columns = {row[1] for row in conn.execute("PRAGMA table_info(devices)")}
+    assert "max_devices" in plan_columns
+    assert "assignment_mode" in device_columns
+    assert conn.execute("SELECT max_devices FROM plans WHERE id = 'legacy'").fetchone()[0] is None
 
 
 def test_user_locale_defaults_to_russian_and_can_be_updated(tmp_path):

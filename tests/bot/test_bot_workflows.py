@@ -341,7 +341,7 @@ def test_approve_order_creates_device_with_selected_config_version(tmp_path):
     assert result.user_telegram_id == 1001
     assert "Заявка #1 одобрена" in result.admin_text
     assert "[Interface]" in result.config_text
-    assert result.delivery.config_filename == "NeobyatnayaNET.conf"
+    assert result.delivery.config_filename == f"Neobyatnaya.NET-{result.device_id}.conf"
     assert result.delivery.qr_png_bytes.startswith(b"\x89PNG")
     assert "DefaultVPN" in result.delivery.message_text
     assert "Ваш VPN-конфиг готов" in result.delivery.message_text
@@ -389,7 +389,7 @@ def test_approve_order_continues_neobyatnaya_sequence_across_existing_devices(tm
 
     device = repo.get_device(result.device_id)
     assert device["name"] == "Neobyatnaya-AMNZ-10"
-    assert result.delivery.config_filename == "NeobyatnayaNET.conf"
+    assert result.delivery.config_filename == f"Neobyatnaya.NET-{result.device_id}.conf"
 
 
 def test_approve_order_records_redacted_vps_failure_audit(tmp_path):
@@ -538,7 +538,7 @@ def test_resend_device_config_rebuilds_delivery_from_encrypted_device_secrets(tm
     )
 
     assert resend.user_telegram_id == 1001
-    assert resend.delivery.config_filename == "NeobyatnayaNET.conf"
+    assert resend.delivery.config_filename == f"Neobyatnaya.NET-{approval.device_id}.conf"
     assert resend.delivery.qr_png_bytes.startswith(b"\x89PNG")
     assert "[Interface]" in resend.config_text
 
@@ -663,7 +663,7 @@ def test_user_can_resend_only_owned_device_config(tmp_path):
     )
 
     assert resend.user_telegram_id == 1001
-    assert resend.delivery.config_filename == "NeobyatnayaNET.conf"
+    assert resend.delivery.config_filename == f"Neobyatnaya.NET-{device_id}.conf"
     assert forbidden is None
 
 

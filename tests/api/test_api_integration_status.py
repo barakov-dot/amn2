@@ -361,15 +361,20 @@ def test_integration_status_returns_safe_read_only_report_and_audit(tmp_path: Pa
         "qr_vpn_import_link",
     ]
     assert payload["client_compatibility_boundary"]["watch_refresh"]["status"] == (
-        "watch_only_refresh_ready"
+        "real_device_cross_client_conf_pass"
     )
-    assert payload["client_compatibility_boundary"]["watch_refresh"]["signals"][
+    watch_signals = payload["client_compatibility_boundary"]["watch_refresh"]["signals"]
+    assert watch_signals[
         "amneziawg_android_release"
     ] == "2.0.1"
+    assert watch_signals["android_tv_amneziavpn_conf"] == "passed"
+    assert watch_signals["ios_defaultvpn_conf"] == "passed"
+    assert watch_signals["windows_11_amneziavpn_conf"] == "passed"
+    assert watch_signals["native_vpn_json"] == "failed_connecting_without_error"
     assert payload["client_compatibility_boundary"]["watch_refresh"][
         "config_delivery_allowed"
-    ] is False
-    assert payload["client_compatibility_boundary"]["live_client_import_verified"] is False
+    ] is True
+    assert payload["client_compatibility_boundary"]["live_client_import_verified"] is True
     assert payload["next_gate"] == (
         "Phase 6 default local-only queue empty; named gate required for live/public/destructive work"
     )

@@ -8,6 +8,11 @@ import qrcode
 from qrcode.constants import ERROR_CORRECT_M
 
 from app.bot.ux import VERSION_LABELS
+from app.config_assignment import (
+    DEDICATED_DEVICE,
+    OWNER_SHARED,
+    config_assignment_policy,
+)
 from app.vpn.client_compatibility import render_ru_install_guidance
 from app.vpn.config_templates import build_vpn_import_link
 
@@ -29,7 +34,7 @@ QR_CODE_CAPTION = (
 )
 IMPORT_LINK_COPY_BUTTON_TEXT = "Скопировать ссылку"
 TELEGRAM_COPY_TEXT_MAX_LENGTH = 256
-CANONICAL_STANDALONE_AWG_IMPORT_BASENAME = "NeobyatnayaNET"
+CANONICAL_STANDALONE_AWG_IMPORT_BASENAME = "Neobyatnaya.NET"
 
 DEFAULT_CONFIG_READY_TEMPLATE = """Ваш VPN-конфиг готов.
 
@@ -66,6 +71,9 @@ class ConfigDeliveryPackage:
     config_secret_class: str = "client-config-secret"
     config_content_encoding: str = "utf-8"
     vpn_import_link_encoding: str = "base64-url-no-padding"
+    assignment_mode: str = DEDICATED_DEVICE
+    physical_device_limit: int | None = 1
+    physical_device_count_enforceable: bool = True
 
 
 def build_config_delivery(
@@ -75,11 +83,15 @@ def build_config_delivery(
     config_version: str,
     config_text: str,
     template_text: str,
+    assignment_mode: str = DEDICATED_DEVICE,
 ) -> ConfigDeliveryPackage:
+    assignment_policy = config_assignment_policy(assignment_mode)
     vpn_import_link = build_vpn_import_link(config_text)
     vpn_import_link_copy_text = _copyable_vpn_import_link(vpn_import_link)
-    basename = CANONICAL_STANDALONE_AWG_IMPORT_BASENAME
-    vpn_import_link_copy_text = _copyable_vpn_import_link(vpn_import_link)
+    basename = _config_basename(
+        device_id=device_id,
+        assignment_mode=assignment_policy.mode,
+    )
     context = {
         "device_id": str(device_id),
         "device_name": device_name or f"device-{device_id}",
@@ -106,7 +118,18 @@ def build_config_delivery(
         vpn_import_link_copy_text=vpn_import_link_copy_text,
         app_links_text=_render_app_links(),
         qr_payload_text=config_text,
+        assignment_mode=assignment_policy.mode,
+        physical_device_limit=assignment_policy.physical_device_limit,
+        physical_device_count_enforceable=(
+            assignment_policy.physical_device_count_enforceable
+        ),
     )
+
+
+def _config_basename(*, device_id: int, assignment_mode: str) -> str:
+    if assignment_mode == OWNER_SHARED:
+        return CANONICAL_STANDALONE_AWG_IMPORT_BASENAME
+    return f"{CANONICAL_STANDALONE_AWG_IMPORT_BASENAME}-{device_id}"
 
 
 def render_template(template_text: str, values: dict[str, str]) -> str:

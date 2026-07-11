@@ -8,6 +8,14 @@
 
 - owner задаётся явно через `--owner-user-id` и должен существовать в БД со
   статусом `active`;
+- режим по умолчанию `dedicated_device`: один peer и один `.conf` для одного
+  физического устройства;
+- `owner_shared` создаёт один общий peer/`.conf`, разрешён только для active
+  admin owner и не позволяет серверу достоверно ограничить число физических
+  устройств;
+- обычное одобрение клиентской заявки всегда создаёт `dedicated_device`;
+- клиентская квота равна меньшему из `MAX_DEVICES_PER_USER` и
+  `plans.max_devices`, если лимит задан в тарифе;
 - server, device name, duration, config version, admin actor и output path
   задаются явно;
 - применяется общий `AccessService`: device-limit, IP allocation, encrypted
@@ -36,7 +44,8 @@ python -m app.cli device create-operator \
   --name Neobyatnaya-AMNZ-N-android-tv-02 \
   --duration-days 365 \
   --config-version amneziawg_v2 \
-  --output /root/private-configs/Neobyatnaya-AMNZ-N-android-tv-02.conf \
+  --assignment-mode dedicated_device \
+  --output /root/private-configs/Neobyatnaya.NET-android-tv-02.conf \
   --admin-telegram-id <EXPLICIT_ADMIN_TELEGRAM_ID> \
   --execution-target local \
   --dry-run \
@@ -60,7 +69,8 @@ python -m app.cli device create-operator \
   --name Neobyatnaya-AMNZ-N-android-tv-02 \
   --duration-days 365 \
   --config-version amneziawg_v2 \
-  --output /root/private-configs/Neobyatnaya-AMNZ-N-android-tv-02.conf \
+  --assignment-mode dedicated_device \
+  --output /root/private-configs/Neobyatnaya.NET-android-tv-02.conf \
   --admin-telegram-id <EXPLICIT_ADMIN_TELEGRAM_ID> \
   --execution-target local \
   --apply \
@@ -91,7 +101,7 @@ active explicit owner
 configured authorized ADMIN_TELEGRAM_IDS actor
 VPS_APPLY_ENABLED=true
 OPERATOR_DEVICE_CREATE_ENABLED=true
-explicit exact one-device confirmation
+explicit exact config-assignment confirmation
 ```
 
 `OPERATOR_DEVICE_CREATE_ENABLED` по умолчанию равен `false` и не зависит от
@@ -111,3 +121,12 @@ policy. Он не открывает public или self-service write API.
 До client acceptance результат означает только server-side preparation. Статус
 `working-config-pass` разрешён после Android import/connect, свежего handshake и
 ненулевого traffic evidence для конкретного device.
+
+На реальных устройствах 2026-07-11 один стандартный AmneziaWG `.conf` прошёл
+подключение и трафик в AmneziaVPN на Android TV, DefaultVPN на iOS и AmneziaVPN
+на Windows 11. Native `.vpn` JSON на Android TV импортировался, но зависал на
+подключении, поэтому рекомендуемый кросс-клиентский артефакт остаётся `.conf`.
+
+Одновременная работа нескольких собственных устройств с одним peer наблюдалась,
+но не является гарантией стабильной конкуренции endpoint. Для клиента с лимитом
+6 устройств нужно создать 6 `dedicated_device` peer и 6 отдельных конфигов.

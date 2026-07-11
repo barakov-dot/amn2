@@ -48,6 +48,11 @@ from app.services.api_tokens import create_route_api_token
 from app.services.api_tokens import revoke_api_token
 from app.services.api_smoke import validate_api_smoke_responses
 from app.services.bot_media import BotMediaRegistry
+from app.config_assignment import (
+    CONFIG_ASSIGNMENT_MODES,
+    DEDICATED_DEVICE,
+    config_assignment_policy,
+)
 from app.services.fresh_install_wizard import (
     build_fresh_install_plan,
     collect_fresh_install_answers,
@@ -163,6 +168,11 @@ def build_parser() -> argparse.ArgumentParser:
     create_operator.add_argument("--name", required=True)
     create_operator.add_argument("--duration-days", type=int, required=True)
     create_operator.add_argument("--config-version", default="amneziawg_v2")
+    create_operator.add_argument(
+        "--assignment-mode",
+        choices=CONFIG_ASSIGNMENT_MODES,
+        default=DEDICATED_DEVICE,
+    )
     create_operator.add_argument("--output", required=True)
     create_operator.add_argument("--admin-telegram-id", type=int, required=True)
     create_operator.add_argument(
@@ -358,6 +368,7 @@ def main() -> None:
                     device_name=args.name,
                     duration_days=args.duration_days,
                     config_version=args.config_version,
+                    assignment_mode=args.assignment_mode,
                     output_path=Path(args.output),
                     admin_telegram_id=args.admin_telegram_id,
                     execution_target=args.execution_target,
@@ -378,6 +389,7 @@ def main() -> None:
                     device_name=args.name,
                     duration_days=args.duration_days,
                     config_version=args.config_version,
+                    assignment_mode=args.assignment_mode,
                     output_path=Path(args.output),
                     admin_telegram_id=args.admin_telegram_id,
                     app_secret_key=settings.app_secret_key,
@@ -655,6 +667,7 @@ def build_operator_device_create_plan(
     output_path: Path,
     admin_telegram_id: int,
     execution_target: str,
+    assignment_mode: str = DEDICATED_DEVICE,
     pretty: bool = False,
 ) -> str:
     _validate_operator_execution_target(execution_target)
@@ -668,6 +681,7 @@ def build_operator_device_create_plan(
     if not normalized_name:
         raise ValueError("device_name must be non-blank")
     version = validate_config_version(config_version)
+    assignment_policy = config_assignment_policy(assignment_mode)
     return _json_dumps(
         {
             "action": "device.create_operator",
@@ -677,6 +691,11 @@ def build_operator_device_create_plan(
             "device_name": normalized_name,
             "duration_days": duration_days,
             "config_version": version,
+            "assignment_mode": assignment_policy.mode,
+            "physical_device_limit": assignment_policy.physical_device_limit,
+            "physical_device_count_enforceable": (
+                assignment_policy.physical_device_count_enforceable
+            ),
             "output": str(output_path),
             "admin_actor_provided": True,
             "execution_target": execution_target,
@@ -684,7 +703,11 @@ def build_operator_device_create_plan(
             "database_mutation": False,
             "config_artifact_written": False,
             "config_payload_output": False,
-            "next": "rerun with --apply only after the exact one-device gate is open",
+            "next": (
+                "rerun with --apply only after the exact owner-shared profile gate is open"
+                if not assignment_policy.physical_device_count_enforceable
+                else "rerun with --apply only after the exact one-device gate is open"
+            ),
         },
         pretty=pretty,
     )
@@ -707,6 +730,7 @@ def run_operator_device_create(
     client_config_template_dir: str | Path | None = None,
     client_config_defaults=None,
     execution_target: str,
+    assignment_mode: str = DEDICATED_DEVICE,
     command_client: SshClient | None = None,
     config_artifact_writer: Callable[[Path, str], Path] | None = None,
     pretty: bool = False,
@@ -769,6 +793,7 @@ def run_operator_device_create(
             duration_days=duration_days,
             admin_telegram_id=admin_telegram_id,
             config_version=config_version,
+            assignment_mode=assignment_mode,
             config_artifact_writer=lambda config_text: config_artifact_writer(
                 output_path, config_text
             ),
@@ -787,6 +812,13 @@ def run_operator_device_create(
                 "duration_days": int(device["duration_days"]),
                 "config_version": str(device["config_version"]),
                 "config_material_status": str(device["config_material_status"]),
+                "assignment_mode": result.assignment_mode,
+                "physical_device_limit": config_assignment_policy(
+                    result.assignment_mode
+                ).physical_device_limit,
+                "physical_device_count_enforceable": config_assignment_policy(
+                    result.assignment_mode
+                ).physical_device_count_enforceable,
                 "output": result.config_artifact_path,
                 "remote_peer_apply": True,
                 "admin_audit_recorded": True,

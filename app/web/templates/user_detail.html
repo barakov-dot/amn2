@@ -108,7 +108,7 @@
     {% if operator_device_plan is defined %}
       <div class="notice notice-success">
         <strong>Dry-run ready</strong>
-        <p>{{ operator_device_plan.device_name }} · {{ operator_device_plan.server_name }} · {{ operator_device_plan.duration_days }} days · {{ operator_device_plan.execution_target }}</p>
+        <p>{{ operator_device_plan.device_name }} · {{ operator_device_plan.server_name }} · {{ operator_device_plan.duration_days }} days · {{ operator_device_plan.assignment_mode }} · {{ operator_device_plan.execution_target }}</p>
         <p>No database, peer or artifact changes were made.</p>
       </div>
     {% endif %}
@@ -116,7 +116,7 @@
     {% if operator_device_result is defined %}
       <div class="notice notice-success">
         <strong>Operator device created</strong>
-        <p>#{{ operator_device_result.device_id }} {{ operator_device_result.device_name }} · {{ operator_device_result.server_name }}</p>
+        <p>#{{ operator_device_result.device_id }} {{ operator_device_result.device_name }} · {{ operator_device_result.server_name }} · {{ operator_device_result.assignment_mode }}</p>
         <p>Private artifact: <code class="wrap-text">{{ operator_device_result.output }}</code></p>
       </div>
     {% endif %}
@@ -149,6 +149,14 @@
           </select>
         </label>
         <label class="field">
+          Assignment
+          <select name="assignment_mode" required>
+            {% for assignment_mode in operator_device_form.assignment_modes %}
+              <option value="{{ assignment_mode }}" {% if assignment_mode == "dedicated_device" %}selected{% endif %}>{{ assignment_mode }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label class="field">
           Execution target
           <select name="execution_target" required>
             <option value="local" selected>local</option>
@@ -158,7 +166,7 @@
       </div>
       <label class="checkbox-field">
         <input name="confirm_one_device_gate" type="checkbox" value="on">
-        Exact one-device gate confirmed
+        Exact config-assignment gate confirmed
       </label>
       {% if operator_device_form.config_error %}
         <p class="action-note">{{ operator_device_form.config_error }}</p>
@@ -183,6 +191,7 @@
                 <th>ID</th>
                 <th>Name</th>
                 <th>Server</th>
+                <th>Assignment</th>
                 <th>Status</th>
                 <th>Expires</th>
                 <th>IP</th>
@@ -196,6 +205,7 @@
                   <td>#{{ device.id }}</td>
                   <td>{{ device.name }}</td>
                   <td>{{ device.server_name }}</td>
+                  <td>{{ device.assignment_mode }}</td>
                   <td><span class="status status-{{ device.status }}">{{ device.status }}</span></td>
                   <td>{{ device.expires_at or "-" }}</td>
                   <td>{{ device.vpn_ip }}</td>

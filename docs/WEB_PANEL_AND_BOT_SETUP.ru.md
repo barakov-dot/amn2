@@ -400,6 +400,10 @@ python -m app.cli device import-external \
 
 Постоянные параметры клиентского AmneziaWG-конфига берутся из `.env`: `CLIENT_DNS`, `CLIENT_ALLOWED_IPS`, `CLIENT_PERSISTENT_KEEPALIVE`, `CLIENT_AWG_JC`, `CLIENT_AWG_JMIN`, `CLIENT_AWG_JMAX`, `CLIENT_AWG_S1`...`CLIENT_AWG_S4`, `CLIENT_AWG_H1`...`CLIENT_AWG_H4`, `CLIENT_AWG_I1`...`CLIENT_AWG_I5`. `H1-H4` можно переносить из `awg show` как диапазоны `число-число`. Уникальные значения `PrivateKey`, `PresharedKey`, `Address`, имя устройства и имя файла формируются при создании устройства. `PublicKey` сервера и `Endpoint` берутся из `servers.yml`.
 
+Обычная клиентская выдача использует `assignment_mode=dedicated_device`: один физический девайс получает отдельный peer и файл `Neobyatnaya.NET-<device_id>.conf`. Число активных клиентских устройств ограничивается глобальным `MAX_DEVICES_PER_USER` и, если настроено, полем `plans.max_devices`; применяется меньший лимит. Тариф на 6 устройств означает 6 разных peer и 6 конфигов.
+
+Режим `owner_shared` является явным operator-only исключением для active admin owner. Он выдаёт один общий peer с именем `Neobyatnaya.NET.conf`; сервер не может достоверно посчитать или ограничить число физических устройств за этим ключом. Этот режим нельзя использовать как клиентский тариф с обещанием лимита 6-10 устройств.
+
 В карточке сервера доступна `Синхронизация peer`: read-only проверка сравнивает live peer из AmneziaWG с локальными устройствами в базе. В отчете:
 
 - `Известные peer панели` — peer есть и на ноде, и в базе;

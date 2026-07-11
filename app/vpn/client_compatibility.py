@@ -27,18 +27,22 @@ AMN2_DELIVERY_ARTIFACTS = (
 )
 
 CLIENT_COMPATIBILITY_WATCH = {
-    "status": "watch_only_refresh_ready",
-    "date": "2026-06-14",
+    "status": "real_device_cross_client_conf_pass",
+    "date": "2026-07-11",
     "source_evidence": (
         "research/upstreams/amnezia-vpn-client-defaultvpn-refresh-2026-06-14.md"
     ),
-    "config_delivery_allowed": False,
-    "live_client_import_verified": False,
+    "config_delivery_allowed": True,
+    "live_client_import_verified": True,
     "signals": {
         "amnezia_client_release": "4.8.18.0",
         "defaultvpn_commit": "d139fb5",
         "amneziawg_android_release": "2.0.1",
         "amneziawg_apple_commit": "0c4d98d",
+        "android_tv_amneziavpn_conf": "passed",
+        "ios_defaultvpn_conf": "passed",
+        "windows_11_amneziavpn_conf": "passed",
+        "native_vpn_json": "failed_connecting_without_error",
     },
 }
 
@@ -98,42 +102,40 @@ CLIENT_COMPATIBILITY_MATRIX: dict[str, ClientCompatibility] = {
                 "QR содержит vpn:// payload; не считать универсальным для всех сборок.",
             ),
             "native_vpn_json": ArtifactSupport(
-                SUPPORT_FUTURE_GATE,
-                "Требует отдельного design gate перед генерацией secret-bearing artifacts.",
+                SUPPORT_UNRELIABLE,
+                "Real-device Android TV import прошел, но подключение зависло без ошибки.",
             ),
         },
         notes_ru=(
             "Не обещать один универсальный путь установки для всех OS/version.",
         ),
         display_name_policy={
-            "conf_file": DISPLAY_NAME_CLIENT_GENERATED_SERVER_N,
+            "conf_file": DISPLAY_NAME_FILENAME_STEM,
             "vpn_import_link": DISPLAY_NAME_CLIENT_GENERATED_SERVER_N,
             "qr_vpn_import_link": DISPLAY_NAME_CLIENT_GENERATED_SERVER_N,
         },
         display_name_notes_ru=(
-            "Upstream AmneziaVPN импортирует native WireGuard/AWG как server config "
-            "и назначает description через nextAvailableServerName(), то есть "
-            "наблюдаемый результат вида 'Сервер N' является client-generated.",
-            "Filename stem не является надежным способом задать display name в "
-            "AmneziaVPN; для целевого NeobyatnayaNET/НеобъятнаяNET нужен manual "
-            "rename или отдельный upstream/API-format gate.",
+            "Real-device Android TV и Windows 11 AmneziaVPN imports подтвердили, "
+            "что обычный .conf использует filename stem как display name.",
+            "Native .vpn JSON импортировался, но не подключился; основной путь - "
+            "стандартный .conf с каноническим filename.",
         ),
     ),
     "defaultvpn_ios_ru": ClientCompatibility(
         label="DefaultVPN",
         platform="iOS",
         app_url="https://apps.apple.com/app/defaultvpn/id6473452691",
-        client_role=CLIENT_ROLE_EXPERIMENTAL_IOS,
+        client_role=CLIENT_ROLE_PRIMARY_RF_IOS,
         platform_constraints=(
             "iOS App Store availability is region-specific",
             "RF-available iOS candidate",
-            "not accepted as primary path after P7-C010c real-device retest",
-            "first-connect/reconnect/tunnel reliability failed on operator iPhone",
+            "2026-07-11 real-device .conf first-connect and traffic passed",
+            "reconnect and long-session soak remain separate checks",
         ),
         artifact_support={
             "conf_file": ArtifactSupport(
-                SUPPORT_UNRELIABLE,
-                "Импорт может пройти, но P7-C010c показал нестабильное подключение и нерабочий туннель.",
+                SUPPORT_RECOMMENDED,
+                "Real-device iOS DefaultVPN import, handshake and traffic passed.",
             ),
             "vpn_import_link": ArtifactSupport(
                 SUPPORT_UNRELIABLE,
@@ -302,8 +304,9 @@ def render_ru_install_guidance() -> str:
         [
             "Файл .conf остается основным надежным способом импорта.",
             (
-                "iOS DefaultVPN: пока экспериментальный путь. В P7-C010c .conf импорт "
-                "не дал надежного туннеля; не считать основным iOS-клиентом до отдельной диагностики."
+                "iOS DefaultVPN: .conf подтвержден на реальном устройстве: "
+                "first-connect и трафик прошли; "
+                "reconnect/long-session проверять отдельно."
             ),
             (
                 "iOS AmneziaWG: используйте, если приложение уже установлено. "
@@ -320,9 +323,8 @@ def render_ru_install_guidance() -> str:
                 "distro-specific Linux packages не обещать."
             ),
             (
-                "Display name: для standalone AmneziaWG Android/Windows использовать "
-                "имя .conf файла без расширения; для AmneziaVPN ожидать client-generated "
-                "'Сервер N' и manual rename fallback."
+                "Display name: для проверенных AmneziaVPN Android TV/Windows и "
+                "standalone AmneziaWG использовать имя .conf файла без расширения."
             ),
         ]
     )

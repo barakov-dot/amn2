@@ -6,6 +6,11 @@ from contextlib import contextmanager
 from collections.abc import Iterator
 from typing import Any
 
+from app.config_assignment import (
+    DEDICATED_DEVICE,
+    validate_config_assignment_mode,
+)
+
 DEFAULT_PLAN_DAYS = (3, 7, 10, 14, 30, 60, 90, 180)
 USER_STATUSES = {"active", "blocked", "deleted"}
 USER_LOCALES = {"ru", "en"}
@@ -521,26 +526,31 @@ class Repository:
         plan_id: str,
         name: str,
         duration_days: int,
+        max_devices: int | None = None,
         price: int = 0,
         currency: str = "RUB",
         is_free: bool = True,
         is_active: bool = True,
     ) -> None:
+        if max_devices is not None and max_devices <= 0:
+            raise ValueError("max_devices must be positive when configured")
         self._conn.execute(
             """
             INSERT INTO plans (
                 id,
                 name,
                 duration_days,
+                max_devices,
                 price,
                 currency,
                 is_free,
                 is_active
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 duration_days = excluded.duration_days,
+                max_devices = COALESCE(excluded.max_devices, plans.max_devices),
                 price = excluded.price,
                 currency = excluded.currency,
                 is_free = excluded.is_free,
@@ -551,6 +561,7 @@ class Repository:
                 plan_id,
                 name,
                 duration_days,
+                max_devices,
                 price,
                 currency,
                 int(is_free),
@@ -611,7 +622,9 @@ class Repository:
         preshared_key_encrypted: str,
         config_version: str,
         config_material_status: str = "available",
+        assignment_mode: str = DEDICATED_DEVICE,
     ) -> int:
+        assignment_mode = validate_config_assignment_mode(assignment_mode)
         cursor = self._conn.execute(
             """
             INSERT INTO devices (
@@ -626,7 +639,8 @@ class Repository:
                 peer_private_key_encrypted,
                 preshared_key_encrypted,
                 config_version,
-                config_material_status
+                config_material_status,
+                assignment_mode
             )
             VALUES (
                 ?,
@@ -634,6 +648,7 @@ class Repository:
                 ?,
                 CURRENT_TIMESTAMP,
                 datetime(CURRENT_TIMESTAMP, ?),
+                ?,
                 ?,
                 ?,
                 ?,
@@ -655,6 +670,7 @@ class Repository:
                 preshared_key_encrypted,
                 config_version,
                 config_material_status,
+                assignment_mode,
             ),
         )
         self._commit()
@@ -1109,6 +1125,7 @@ class Repository:
                 devices.expires_at,
                 devices.vpn_ip,
                 devices.config_material_status,
+                devices.assignment_mode,
                 servers.name AS server_name
             FROM devices
             JOIN servers ON servers.id = devices.server_id
@@ -1129,6 +1146,7 @@ class Repository:
                 devices.status,
                 devices.vpn_ip,
                 devices.peer_public_key,
+                devices.assignment_mode,
                 servers.name AS server_name
             FROM devices
             JOIN servers ON servers.id = devices.server_id
@@ -1151,6 +1169,7 @@ class Repository:
                 devices.peer_public_key,
                 devices.peer_private_key_encrypted,
                 devices.preshared_key_encrypted,
+                devices.assignment_mode,
                 servers.name AS server_name
             FROM devices
             JOIN servers ON servers.id = devices.server_id
@@ -1648,6 +1667,7 @@ class Repository:
                 devices.first_connected_at,
                 devices.last_connected_at,
                 devices.vpn_ip,
+                devices.assignment_mode,
                 users.telegram_id,
                 users.username,
                 users.first_name,
@@ -1677,6 +1697,7 @@ class Repository:
                 devices.expires_at,
                 devices.revoked_at,
                 devices.revoke_reason,
+                devices.assignment_mode,
                 users.id AS user_id,
                 users.telegram_id,
                 users.username,
@@ -1709,6 +1730,7 @@ class Repository:
                 devices.vpn_ip,
                 devices.peer_public_key,
                 devices.status,
+                devices.assignment_mode,
                 users.telegram_id,
                 users.username,
                 users.first_name,

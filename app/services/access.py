@@ -12,6 +12,12 @@ from app.server.operations import (
     remote_changed_local_failed_result,
 )
 from app.security.crypto import SecretBox
+from app.config_assignment import (
+    DEDICATED_DEVICE,
+    OWNER_SHARED,
+    config_assignment_policy,
+    validate_config_assignment_mode,
+)
 from app.vpn.amneziawg_v2.config import ClientConfigDefaults, ClientConfigInput
 from app.vpn.amneziawg_v2.keys import generate_key, generate_keypair
 from app.vpn.config_versions import render_client_config_for_version, validate_config_version
@@ -44,6 +50,10 @@ class OperatorOwnerNotActive(ValueError):
     pass
 
 
+class OperatorOwnerSharedRequiresAdmin(ValueError):
+    pass
+
+
 class OperatorPeerApplierRequired(RuntimeError):
     pass
 
@@ -59,6 +69,7 @@ class RemoteOperationPartialFailure(RuntimeError):
 class AccessApprovalResult:
     device_id: int
     config_text: str
+    assignment_mode: str = DEDICATED_DEVICE
 
 
 @dataclass(frozen=True)
@@ -66,6 +77,7 @@ class OperatorDeviceCreateResult:
     device_id: int
     config_text: str
     config_artifact_path: str | None
+    assignment_mode: str = DEDICATED_DEVICE
 
 
 class PeerApplier(Protocol):
@@ -168,6 +180,7 @@ class AccessService:
         duration_days: int,
         admin_telegram_id: int,
         config_version: str = "amneziawg_v2",
+        assignment_mode: str = DEDICATED_DEVICE,
         config_artifact_writer: Callable[[str], str | Path] | None = None,
     ) -> OperatorDeviceCreateResult:
         remote_mutation: RemoteMutationResult | None = None
@@ -185,6 +198,7 @@ class AccessService:
                     duration_days=duration_days,
                     admin_telegram_id=admin_telegram_id,
                     config_version=config_version,
+                    assignment_mode=assignment_mode,
                     config_artifact_writer=config_artifact_writer,
                     remote_mutation_observer=record_remote_mutation,
                 )
@@ -208,6 +222,7 @@ class AccessService:
         duration_days: int,
         admin_telegram_id: int,
         config_version: str,
+        assignment_mode: str,
         config_artifact_writer: Callable[[str], str | Path] | None,
         remote_mutation_observer: Callable[[RemoteMutationResult], None] | None,
     ) -> OperatorDeviceCreateResult:
@@ -219,6 +234,8 @@ class AccessService:
         if duration_days <= 0:
             raise ValueError("duration_days must be positive")
         config_version = validate_config_version(config_version)
+        assignment_mode = validate_config_assignment_mode(assignment_mode)
+        assignment_policy = config_assignment_policy(assignment_mode)
 
         try:
             owner = self._repo.get_user(owner_user_id)
@@ -230,7 +247,14 @@ class AccessService:
             raise OperatorOwnerNotActive(
                 f"Operator device owner {owner_user_id} is not active"
             )
-        if self._repo.count_active_devices(owner_user_id) >= self._max_devices_per_user:
+        if assignment_mode == OWNER_SHARED and int(owner["is_admin"]) != 1:
+            raise OperatorOwnerSharedRequiresAdmin(
+                "owner_shared assignment requires an active admin owner account"
+            )
+        if (
+            assignment_policy.physical_device_count_enforceable
+            and self._repo.count_active_devices(owner_user_id) >= self._max_devices_per_user
+        ):
             raise MaxDevicesReached("User has reached the maximum number of active devices")
         if self._peer_applier is None:
             raise OperatorPeerApplierRequired(
@@ -250,6 +274,7 @@ class AccessService:
             public_key=keypair.public_key,
             preshared_key=preshared_key,
             config_version=config_version,
+            assignment_mode=assignment_mode,
             remote_operation_id="access.create_operator_device",
             remote_recovery_note=lambda created_device_id: (
                 "Remote peer was applied before operator device creation completed. "
@@ -270,6 +295,10 @@ class AccessService:
                 "server_id": server_id,
                 "duration_days": duration_days,
                 "config_version": config_version,
+                "assignment_mode": assignment_mode,
+                "physical_device_count_enforceable": (
+                    assignment_policy.physical_device_count_enforceable
+                ),
                 "config_artifact_written": config_artifact_writer is not None,
             },
         )
@@ -280,6 +309,7 @@ class AccessService:
             device_id=device_id,
             config_text=config_text,
             config_artifact_path=artifact_path,
+            assignment_mode=assignment_mode,
         )
 
     def _approve_order(
@@ -297,8 +327,10 @@ class AccessService:
             config_version or str(order["requested_config_version"])
         )
         duration_days = self._duration_days
+        plan = None
         if order["plan_id"] is not None:
-            duration_days = int(self._repo.get_plan(str(order["plan_id"]))["duration_days"])
+            plan = self._repo.get_plan(str(order["plan_id"]))
+            duration_days = int(plan["duration_days"])
         user_id = int(order["user_id"])
         if order["status"] == "fulfilled" or order["device_id"] is not None:
             raise OrderAlreadyFulfilled("Order has already been fulfilled")
@@ -307,7 +339,10 @@ class AccessService:
                 f"Order {order_id} cannot be approved from status {order['status']}"
             )
 
-        if self._repo.count_active_devices(user_id) >= self._max_devices_per_user:
+        effective_device_limit = self._max_devices_per_user
+        if plan is not None and plan["max_devices"] is not None:
+            effective_device_limit = min(effective_device_limit, int(plan["max_devices"]))
+        if self._repo.count_active_devices(user_id) >= effective_device_limit:
             raise MaxDevicesReached("User has reached the maximum number of active devices")
 
         server = self._repo.get_server(server_id)
@@ -324,6 +359,7 @@ class AccessService:
             public_key=keypair.public_key,
             preshared_key=preshared_key,
             config_version=config_version,
+            assignment_mode=DEDICATED_DEVICE,
             remote_operation_id="access.approve_order",
             remote_recovery_note=lambda created_device_id: (
                 "Remote peer was applied before local approval completed. "
@@ -338,10 +374,19 @@ class AccessService:
             action="access.approve_order",
             target_user_id=user_id,
             target_device_id=device_id,
-            metadata={"order_id": order_id, "server_id": server_id},
+            metadata={
+                "order_id": order_id,
+                "server_id": server_id,
+                "assignment_mode": DEDICATED_DEVICE,
+                "effective_device_limit": effective_device_limit,
+            },
         )
 
-        return AccessApprovalResult(device_id=device_id, config_text=config_text)
+        return AccessApprovalResult(
+            device_id=device_id,
+            config_text=config_text,
+            assignment_mode=DEDICATED_DEVICE,
+        )
 
     def _create_device_with_allocated_ip(
         self,
@@ -355,6 +400,7 @@ class AccessService:
         public_key: str,
         preshared_key: str,
         config_version: str,
+        assignment_mode: str,
         remote_operation_id: str,
         remote_recovery_note: Callable[[int], str],
         remote_mutation_observer: Callable[[RemoteMutationResult], None] | None,
@@ -416,6 +462,7 @@ class AccessService:
                     peer_private_key_encrypted=self._secret_box.encrypt_text(private_key),
                     preshared_key_encrypted=self._secret_box.encrypt_text(preshared_key),
                     config_version=config_version,
+                    assignment_mode=assignment_mode,
                 )
             except sqlite3.IntegrityError as exc:
                 if not _is_duplicate_ip_integrity_error(exc):

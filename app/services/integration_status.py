@@ -213,7 +213,9 @@ def build_client_compatibility_boundary() -> dict[str, Any]:
             "full_import_link_copy_when_too_long": False,
             "short_delivery_link_requires_gate": "P6-C002 Config delivery gate",
         },
-        "live_client_import_verified": False,
+        "live_client_import_verified": bool(
+            CLIENT_COMPATIBILITY_WATCH["live_client_import_verified"]
+        ),
     }
 
 

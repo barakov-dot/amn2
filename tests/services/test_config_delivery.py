@@ -76,9 +76,12 @@ def test_device_config_delivery_uses_client_config_defaults(tmp_path):
     assert "H2 = 202" in result.config_text
     assert "H3 = 303" in result.config_text
     assert "H4 = 404" in result.config_text
-    assert result.delivery.config_filename == "NeobyatnayaNET.conf"
-    assert result.delivery.qr_filename == "NeobyatnayaNET.qr.png"
+    assert result.delivery.config_filename == "Neobyatnaya.NET-1.conf"
+    assert result.delivery.qr_filename == "Neobyatnaya.NET-1.qr.png"
     assert result.delivery.qr_payload_text == result.config_text
+    assert result.assignment_mode == "dedicated_device"
+    assert result.physical_device_limit == 1
+    assert result.physical_device_count_enforceable is True
 
 
 def test_device_config_delivery_preserves_utf8_artifacts_from_template(tmp_path):
@@ -141,7 +144,7 @@ def test_device_config_delivery_preserves_utf8_artifacts_from_template(tmp_path)
 
     assert "# Profile = телефон-Ф" in result.config_text
     assert result.delivery.config_bytes == result.config_text.encode("utf-8")
-    assert result.delivery.config_filename == "NeobyatnayaNET.conf"
+    assert result.delivery.config_filename == "Neobyatnaya.NET-1.conf"
     assert result.delivery.qr_payload_text == result.config_text
     assert _decode_vpn_link(result.delivery.vpn_import_link) == result.config_text
     assert result.delivery.config_secret_class == "client-config-secret"
@@ -158,6 +161,43 @@ def test_device_config_delivery_preserves_utf8_artifacts_from_template(tmp_path)
     assert "client-private" not in redacted_delivery_text
     assert "client-psk" not in redacted_delivery_text
     assert "[Interface]" not in redacted_delivery_text
+
+
+def test_owner_shared_device_delivery_has_unbounded_non_enforceable_scope(tmp_path):
+    conn = connect(tmp_path / "delivery.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    secret_box = SecretBox.from_app_secret("test-secret-for-config-delivery-123456")
+    user_id = repo.upsert_user(
+        telegram_id=1004,
+        username="owner",
+        first_name="Owner",
+        last_name=None,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    device_id = repo.create_device(
+        user_id=user_id,
+        server_id=server_id,
+        name="Owner shared",
+        duration_days=365,
+        vpn_ip="10.8.0.8",
+        peer_public_key="owner-shared-public",
+        peer_private_key_encrypted=secret_box.encrypt_text("owner-shared-private"),
+        preshared_key_encrypted=secret_box.encrypt_text("owner-shared-psk"),
+        config_version="amneziawg_v2",
+        assignment_mode="owner_shared",
+    )
+
+    result = build_device_config_delivery(
+        repo=repo,
+        secret_box=secret_box,
+        device=repo.get_device(device_id),
+    )
+
+    assert result.delivery.config_filename == "Neobyatnaya.NET.conf"
+    assert result.assignment_mode == "owner_shared"
+    assert result.physical_device_limit is None
+    assert result.physical_device_count_enforceable is False
 
 
 def test_device_config_delivery_rejects_external_only_device(tmp_path):

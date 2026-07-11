@@ -59,6 +59,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
             duration_days INTEGER NOT NULL CHECK (duration_days > 0),
+            max_devices INTEGER CHECK (max_devices > 0),
             price INTEGER NOT NULL DEFAULT 0 CHECK (price >= 0),
             currency TEXT NOT NULL DEFAULT 'RUB',
             is_free INTEGER NOT NULL DEFAULT 1 CHECK (is_free IN (0, 1)),
@@ -85,6 +86,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             config_version TEXT NOT NULL,
             config_material_status TEXT NOT NULL DEFAULT 'available'
                 CHECK (config_material_status IN ('available', 'external_only')),
+            assignment_mode TEXT NOT NULL DEFAULT 'dedicated_device'
+                CHECK (assignment_mode IN ('dedicated_device', 'owner_shared')),
             last_config_sent_at TEXT,
             first_connected_at TEXT,
             last_connected_at TEXT,
@@ -232,6 +235,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         "requested_config_version",
         "TEXT NOT NULL DEFAULT 'amneziawg_v2'",
     )
+    _ensure_column(conn, "plans", "max_devices", "INTEGER CHECK (max_devices > 0)")
     _ensure_column(conn, "devices", "first_connected_at", "TEXT")
     _ensure_column(conn, "devices", "last_connected_at", "TEXT")
     _ensure_column(conn, "api_tokens", "revoke_reason", "TEXT")
@@ -254,6 +258,12 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         "devices",
         "config_material_status",
         "TEXT NOT NULL DEFAULT 'available' CHECK (config_material_status IN ('available', 'external_only'))",
+    )
+    _ensure_column(
+        conn,
+        "devices",
+        "assignment_mode",
+        "TEXT NOT NULL DEFAULT 'dedicated_device' CHECK (assignment_mode IN ('dedicated_device', 'owner_shared'))",
     )
     conn.commit()
 

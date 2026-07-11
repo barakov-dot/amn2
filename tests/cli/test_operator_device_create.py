@@ -49,6 +49,7 @@ def test_cli_requires_explicit_operator_device_owner_and_output():
     assert args.owner_user_id == 42
     assert args.output == "private/device.conf"
     assert args.execution_target == "local"
+    assert args.assignment_mode == "dedicated_device"
     assert args.dry_run is True
     assert args.apply is False
 
@@ -99,9 +100,33 @@ def test_operator_device_dry_run_plan_is_secret_safe(tmp_path):
     assert payload["owner_user_id"] == 42
     assert payload["output"] == str(output_path)
     assert payload["execution_target"] == "local"
+    assert payload["assignment_mode"] == "dedicated_device"
+    assert payload["physical_device_limit"] == 1
+    assert payload["physical_device_count_enforceable"] is True
     assert payload["remote_mutation"] is False
     assert payload["config_payload_output"] is False
     assert not output_path.exists()
+
+
+def test_operator_owner_shared_dry_run_is_explicitly_unbounded(tmp_path):
+    payload = json.loads(
+        build_operator_device_create_plan(
+            owner_user_id=42,
+            server_name="local",
+            device_name="Neobyatnaya.NET shared",
+            duration_days=365,
+            config_version="amneziawg_v2",
+            assignment_mode="owner_shared",
+            output_path=tmp_path / "Neobyatnaya.NET.conf",
+            admin_telegram_id=999,
+            execution_target="local",
+        )
+    )
+
+    assert payload["assignment_mode"] == "owner_shared"
+    assert payload["physical_device_limit"] is None
+    assert payload["physical_device_count_enforceable"] is False
+    assert "owner-shared profile gate" in payload["next"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX permission assertion")
@@ -171,11 +196,18 @@ def test_run_operator_device_create_returns_safe_output_and_records_owner(
     assert payload["status"] == "passed"
     assert payload["owner_user_id"] == owner_user_id
     assert payload["execution_target"] == "local"
+    assert payload["assignment_mode"] == "dedicated_device"
+    assert payload["physical_device_limit"] == 1
+    assert payload["physical_device_count_enforceable"] is True
     assert payload["config_payload_output"] is False
     assert "PrivateKey =" not in output
     assert "PresharedKey =" not in output
     assert output_path.exists()
     conn = connect(db_path)
+    assert conn.execute(
+        "SELECT assignment_mode FROM devices WHERE id = ?",
+        (payload["device_id"],),
+    ).fetchone()[0] == "dedicated_device"
     assert conn.execute(
         "SELECT COUNT(*) FROM admin_actions WHERE action = ?",
         ("access.create_operator_device",),

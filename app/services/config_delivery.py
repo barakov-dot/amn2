@@ -11,6 +11,10 @@ from app.bot.delivery import (
 )
 from app.db.repositories import Repository
 from app.security.crypto import SecretBox
+from app.config_assignment import (
+    DEDICATED_DEVICE,
+    config_assignment_policy,
+)
 from app.services.config_material import ConfigMaterialUnavailable
 from app.vpn.amneziawg_v2.config import ClientConfigDefaults, ClientConfigInput
 from app.vpn.config_versions import render_client_config_for_version
@@ -22,6 +26,9 @@ class DeviceConfigDelivery:
     user_telegram_id: int
     config_text: str
     delivery: ConfigDeliveryPackage
+    assignment_mode: str
+    physical_device_limit: int | None
+    physical_device_count_enforceable: bool
 
 
 def build_device_config_delivery(
@@ -81,18 +88,25 @@ def build_device_config_delivery(
         CONFIG_READY_TEMPLATE_KEY,
         default_text=DEFAULT_CONFIG_READY_TEMPLATE,
     )
+    assignment_policy = config_assignment_policy(_assignment_mode(device))
     delivery = build_config_delivery(
         device_id=int(device["id"]),
         device_name=str(device["name"]),
         config_version=config_version,
         config_text=config_text,
         template_text=template_text,
+        assignment_mode=assignment_policy.mode,
     )
     return DeviceConfigDelivery(
         device_id=int(device["id"]),
         user_telegram_id=int(user["telegram_id"]),
         config_text=config_text,
         delivery=delivery,
+        assignment_mode=assignment_policy.mode,
+        physical_device_limit=assignment_policy.physical_device_limit,
+        physical_device_count_enforceable=(
+            assignment_policy.physical_device_count_enforceable
+        ),
     )
 
 
@@ -101,3 +115,10 @@ def _config_material_status(device: Any) -> str:
         return str(device["config_material_status"])
     except (IndexError, KeyError):
         return "available"
+
+
+def _assignment_mode(device: Any) -> str:
+    try:
+        return str(device["assignment_mode"])
+    except (IndexError, KeyError):
+        return DEDICATED_DEVICE

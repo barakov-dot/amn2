@@ -37,9 +37,9 @@ def test_build_config_delivery_creates_conf_and_qr_png_bytes():
     assert "PrivateKey" not in package.vpn_import_link
     assert "PrivateKey" not in package.message_text
     assert package.vpn_import_link in package.message_text
-    assert package.config_filename == "NeobyatnayaNET.conf"
+    assert package.config_filename == "Neobyatnaya.NET-7.conf"
     assert package.config_bytes.startswith(b"[Interface]")
-    assert package.qr_filename == "NeobyatnayaNET.qr.png"
+    assert package.qr_filename == "Neobyatnaya.NET-7.qr.png"
     assert package.qr_png_bytes.startswith(b"\x89PNG\r\n\x1a\n")
     assert "Access for device #7" in package.message_text
     assert "AmneziaWG 2.0" in package.message_text
@@ -156,9 +156,25 @@ def test_build_config_delivery_uses_canonical_standalone_awg_import_filename():
         template_text="Устройство: {device_name}",
     )
 
-    assert package.config_filename == "NeobyatnayaNET.conf"
-    assert package.qr_filename == "NeobyatnayaNET.qr.png"
+    assert package.config_filename == "Neobyatnaya.NET-17.conf"
+    assert package.qr_filename == "Neobyatnaya.NET-17.qr.png"
     assert "Neobyatnaya-AMNZ-17" in package.message_text
+
+
+def test_build_config_delivery_owner_shared_uses_brand_filename_and_unbounded_scope():
+    package = build_config_delivery(
+        device_id=8,
+        device_name="Owner shared",
+        config_version="amneziawg_v2",
+        config_text="[Interface]\nPrivateKey = test\n[Peer]",
+        template_text="Устройство: {device_name}",
+        assignment_mode="owner_shared",
+    )
+
+    assert package.config_filename == "Neobyatnaya.NET.conf"
+    assert package.assignment_mode == "owner_shared"
+    assert package.physical_device_limit is None
+    assert package.physical_device_count_enforceable is False
 
 
 def test_config_delivery_artifacts_redact_when_rendered_as_text():

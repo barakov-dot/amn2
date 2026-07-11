@@ -15,6 +15,7 @@ from app.services.access import (
     MaxDevicesReached,
     OperatorOwnerNotActive,
     OperatorOwnerNotFound,
+    OperatorOwnerSharedRequiresAdmin,
     OperatorPeerApplierRequired,
     OrderAlreadyFulfilled,
     OrderNotApprovable,
@@ -138,6 +139,59 @@ def test_approve_order_uses_plan_duration_when_order_has_plan(tmp_path):
 
     device = repo.get_device(result.device_id)
     assert device["duration_days"] == 30
+
+
+def test_approve_order_enforces_configured_plan_device_quota(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    repo.upsert_plan(
+        plan_id="single_device",
+        name="Single device",
+        duration_days=30,
+        max_devices=1,
+    )
+    user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="alice",
+        first_name="Alice",
+        last_name=None,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    first_order = repo.create_order(
+        user_id=user_id,
+        plan_id="single_device",
+        payment_mode="free_test",
+    )
+    second_order = repo.create_order(
+        user_id=user_id,
+        plan_id="single_device",
+        payment_mode="free_test",
+    )
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        max_devices_per_user=10,
+    )
+
+    first = service.approve_order(
+        first_order,
+        server_id,
+        "iPhone",
+        admin_telegram_id=999,
+    )
+
+    assert first.assignment_mode == "dedicated_device"
+    assert repo.get_device(first.device_id)["assignment_mode"] == "dedicated_device"
+    with pytest.raises(MaxDevicesReached):
+        service.approve_order(
+            second_order,
+            server_id,
+            "Laptop",
+            admin_telegram_id=999,
+        )
 
 
 def test_approve_order_enforces_max_devices(tmp_path):
@@ -490,6 +544,8 @@ def test_create_operator_device_uses_explicit_owner_and_records_audit(tmp_path):
     assert int(device["user_id"]) != other_user_id
     assert int(device["duration_days"]) == 365
     assert device["config_version"] == "amneziawg_v2"
+    assert device["assignment_mode"] == "dedicated_device"
+    assert result.assignment_mode == "dedicated_device"
     assert result.config_artifact_path == "private/device.conf"
     assert written_configs == [result.config_text]
     audit = conn.execute(
@@ -505,6 +561,91 @@ def test_create_operator_device_uses_explicit_owner_and_records_audit(tmp_path):
     assert conn.execute(
         "SELECT COUNT(*) FROM orders WHERE device_id = ?", (result.device_id,)
     ).fetchone()[0] == 0
+
+
+def test_create_operator_owner_shared_profile_bypasses_client_device_limit(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    owner_user_id = repo.create_user_for_admin(
+        telegram_id=1001,
+        username="owner",
+        first_name="Owner",
+        last_name=None,
+        email=None,
+        status="active",
+        is_admin=True,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    peer_applier = RecordingPeerApplier()
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        max_devices_per_user=1,
+        peer_applier=peer_applier,
+    )
+    service.create_operator_device(
+        owner_user_id=owner_user_id,
+        server_id=server_id,
+        device_name="Owner phone",
+        duration_days=365,
+        admin_telegram_id=999,
+    )
+
+    shared = service.create_operator_device(
+        owner_user_id=owner_user_id,
+        server_id=server_id,
+        device_name="Neobyatnaya.NET shared",
+        duration_days=365,
+        admin_telegram_id=999,
+        assignment_mode="owner_shared",
+    )
+
+    assert shared.assignment_mode == "owner_shared"
+    assert repo.get_device(shared.device_id)["assignment_mode"] == "owner_shared"
+    assert repo.count_active_devices(owner_user_id) == 2
+    audit = conn.execute(
+        "SELECT metadata_json FROM admin_actions WHERE target_device_id = ?",
+        (shared.device_id,),
+    ).fetchone()[0]
+    assert '"assignment_mode": "owner_shared"' in audit
+    assert '"physical_device_count_enforceable": false' in audit
+
+
+def test_create_operator_owner_shared_rejects_client_owner_without_remote_apply(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    client_user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="client",
+        first_name="Client",
+        last_name=None,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    peer_applier = RecordingPeerApplier()
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=peer_applier,
+    )
+
+    with pytest.raises(OperatorOwnerSharedRequiresAdmin):
+        service.create_operator_device(
+            owner_user_id=client_user_id,
+            server_id=server_id,
+            device_name="Client shared",
+            duration_days=30,
+            admin_telegram_id=999,
+            assignment_mode="owner_shared",
+        )
+
+    assert repo.list_user_devices(client_user_id, statuses=("active", "pending")) == []
+    assert peer_applier.calls == []
 
 
 def test_create_operator_device_rejects_non_active_owner_without_remote_apply(tmp_path):
