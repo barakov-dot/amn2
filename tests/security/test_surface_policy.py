@@ -24,6 +24,7 @@ REQUIRED_POLICY_IDS = {
     "web.api_tokens.rotate",
     "web.api_tokens.revoke",
     "web.users.create",
+    "web.plans.device_quota_update",
     "web.users.update",
     "web.users.block",
     "web.users.delete",
@@ -91,6 +92,9 @@ API_ROUTE_SHELL_POLICY_IDS = {
 P7_WRITE_CONTOUR_POLICY_IDS = {
     "api.install.mutation_requests",
 }
+PHASE10_PLAN_QUOTA_WRITE_CONTOUR_POLICY_IDS = {
+    "web.plans.device_quota_update",
+}
 
 SECRET_RISKS = {"secret-read", "public-token-secret-read"}
 PUBLIC_TOKEN_RISKS = {
@@ -149,14 +153,18 @@ def test_each_surface_has_policy_entries(surface):
     assert policies_by_surface(surface)
 
 
-def test_enabled_behavior_is_limited_to_api_route_shell_and_p7_write_contour():
+def test_enabled_behavior_is_limited_to_approved_product_contours():
     enabled = {
         policy.policy_id
         for policy in SURFACE_POLICIES
         if policy.enables_new_behavior is True
     }
 
-    assert enabled == API_ROUTE_SHELL_POLICY_IDS | P7_WRITE_CONTOUR_POLICY_IDS
+    assert enabled == (
+        API_ROUTE_SHELL_POLICY_IDS
+        | P7_WRITE_CONTOUR_POLICY_IDS
+        | PHASE10_PLAN_QUOTA_WRITE_CONTOUR_POLICY_IDS
+    )
 
 
 def test_local_agent_first_slice_matches_existing_agent_policy():

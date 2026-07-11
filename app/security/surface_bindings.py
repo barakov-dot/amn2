@@ -82,6 +82,20 @@ WEB_RUNTIME_ROUTE_BINDINGS: tuple[SurfaceBinding, ...] = (
     _binding(
         "web",
         "GET",
+        "/plans",
+        source="app.web.app:create_web_app",
+        exemption_reason=READ_ONLY_WEB_VIEW,
+    ),
+    _binding(
+        "web",
+        "POST",
+        "/plans/{plan_id}/device-quota",
+        source="app.web.app:create_web_app",
+        policy_id="web.plans.device_quota_update",
+    ),
+    _binding(
+        "web",
+        "GET",
         "/logs",
         source="app.web.app:create_web_app",
         exemption_reason=READ_ONLY_WEB_VIEW,

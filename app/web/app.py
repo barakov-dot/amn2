@@ -312,6 +312,66 @@ def create_web_app(
             ),
         )
 
+    @app.get("/plans")
+    async def plans_index(request: Request):
+        if not _is_authenticated(request):
+            return RedirectResponse("/login", status_code=303)
+
+        return templates.TemplateResponse(
+            request,
+            "plans.html",
+            _template_context(
+                request,
+                title="Тарифы",
+                authenticated=True,
+                **_load_plans(actual_settings),
+            ),
+        )
+
+    @app.post("/plans/{plan_id}/device-quota")
+    async def update_plan_device_quota(
+        request: Request,
+        plan_id: str,
+        max_devices: str = Form(""),
+        csrf_token: str = Form(""),
+    ):
+        if not _is_authenticated(request):
+            return RedirectResponse("/login", status_code=303)
+        if not verify_csrf_token(request.session, csrf_token):
+            return PlainTextResponse("Invalid CSRF token", status_code=403)
+
+        try:
+            normalized_quota = _optional_positive_int(max_devices, "max_devices")
+            with _open_repository(actual_settings) as (repo, _conn):
+                with repo.transaction():
+                    plan = repo.get_plan(plan_id)
+                    previous_quota = plan["max_devices"]
+                    repo.set_plan_device_quota(plan_id, normalized_quota)
+                    _record_web_plan_action(
+                        repo,
+                        actual_settings,
+                        request,
+                        action="web_plan_device_quota_update",
+                        plan_id=plan_id,
+                        metadata={
+                            "previous_max_devices": previous_quota,
+                            "max_devices": normalized_quota,
+                            "global_max_devices_per_user": (
+                                actual_settings.max_devices_per_user
+                            ),
+                            "effective_max_devices": min(
+                                actual_settings.max_devices_per_user,
+                                normalized_quota,
+                            ) if normalized_quota is not None else (
+                                actual_settings.max_devices_per_user
+                            ),
+                        },
+                    )
+        except (LookupError, ValueError) as exc:
+            return _plain_error_response(exc)
+
+        return RedirectResponse("/plans", status_code=303)
+
     @app.get("/logs")
     async def logs_index(request: Request):
         if not _is_authenticated(request):
@@ -2141,6 +2201,27 @@ def _load_users(settings: Settings) -> list[dict[str, Any]]:
         return [_row_to_dict(row) for row in repo.list_users_for_admin(limit=500)]
 
 
+def _load_plans(settings: Settings) -> dict[str, Any]:
+    with _open_repository(settings) as (repo, _conn):
+        plans = []
+        for row in repo.list_plans_for_admin():
+            plan = _row_to_dict(row)
+            configured_quota = plan["max_devices"]
+            plan["effective_max_devices"] = (
+                min(settings.max_devices_per_user, int(configured_quota))
+                if configured_quota is not None
+                else settings.max_devices_per_user
+            )
+            plans.append(plan)
+    return {
+        "plans": plans,
+        "global_max_devices_per_user": settings.max_devices_per_user,
+        "configured_plan_quota_count": sum(
+            1 for plan in plans if plan["max_devices"] is not None
+        ),
+    }
+
+
 def _load_disabled_devices(settings: Settings) -> list[dict[str, Any]]:
     with _open_repository(settings) as (repo, _conn):
         return [
@@ -3113,6 +3194,19 @@ def _optional_text(value: str) -> str | None:
     return stripped or None
 
 
+def _optional_positive_int(value: str, field_name: str) -> int | None:
+    stripped = value.strip()
+    if not stripped:
+        return None
+    try:
+        parsed = int(stripped)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be a positive integer or empty") from exc
+    if parsed <= 0:
+        raise ValueError(f"{field_name} must be a positive integer or empty")
+    return parsed
+
+
 def _is_checked(value: str | None) -> bool:
     return value is not None and value.lower() in {"1", "true", "yes", "on"}
 
@@ -3425,6 +3519,28 @@ def _record_web_server_action(
         "source": "web_admin",
         "web_admin_username": str(request.session.get("web_admin_username", "")),
         "server_id": server_id,
+    }
+    full_metadata.update(metadata)
+    repo.record_admin_action(
+        admin_telegram_id=_web_admin_actor_id(settings),
+        action=action,
+        metadata=full_metadata,
+    )
+
+
+def _record_web_plan_action(
+    repo: Repository,
+    settings: Settings,
+    request: Request,
+    *,
+    action: str,
+    plan_id: str,
+    metadata: dict[str, Any],
+) -> None:
+    full_metadata = {
+        "source": "web_admin",
+        "web_admin_username": str(request.session.get("web_admin_username", "")),
+        "plan_id": plan_id,
     }
     full_metadata.update(metadata)
     repo.record_admin_action(

@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="section-heading page-heading">
+    <div>
+      <p class="eyebrow">Политика устройств</p>
+      <h1>Тарифы</h1>
+    </div>
+    <div class="button-row" aria-label="Сводка квот">
+      <span class="status status-active">Настроено: {{ configured_plan_quota_count }}</span>
+      <span class="action-note">Глобальный предел: {{ global_max_devices_per_user }}</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-header">
+      <h2>Лимиты устройств</h2>
+    </div>
+    {% if plans %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Тариф</th>
+              <th>Срок</th>
+              <th>Статус</th>
+              <th>Квота тарифа</th>
+              <th>Фактический предел</th>
+              <th>Изменить</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for plan in plans %}
+              <tr>
+                <td>
+                  <span class="primary-text">{{ plan.name }}</span>
+                  <span class="muted-text"><code>{{ plan.id }}</code></span>
+                </td>
+                <td>{{ plan.duration_days }} дней</td>
+                <td>
+                  <span class="status status-{{ 'active' if plan.is_active else 'disabled' }}">
+                    {{ "active" if plan.is_active else "disabled" }}
+                  </span>
+                </td>
+                <td>
+                  {% if plan.max_devices is not none %}
+                    {{ plan.max_devices }}
+                  {% else %}
+                    <span class="muted-text">Глобальная</span>
+                  {% endif %}
+                </td>
+                <td><strong>{{ plan.effective_max_devices }}</strong></td>
+                <td>
+                  <form action="/plans/{{ plan.id }}/device-quota" method="post" class="quota-form">
+                    <input name="csrf_token" type="hidden" value="{{ csrf_token }}">
+                    <label class="field quota-field">
+                      <span class="sr-only">Лимит для {{ plan.name }}</span>
+                      <input
+                        name="max_devices"
+                        type="number"
+                        min="1"
+                        step="1"
+                        value="{{ plan.max_devices if plan.max_devices is not none else '' }}"
+                        placeholder="Глобальная"
+                        aria-label="Лимит устройств для {{ plan.name }}"
+                      >
+                    </label>
+                    <button class="button button-small" type="submit">Сохранить</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="empty-state">Тарифов пока нет.</p>
+    {% endif %}
+  </section>
+{% endblock %}

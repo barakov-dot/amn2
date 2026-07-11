@@ -583,6 +583,34 @@ class Repository:
             """
         ).fetchall()
 
+    def list_plans_for_admin(self) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            """
+            SELECT *
+            FROM plans
+            ORDER BY is_active DESC, duration_days ASC, id ASC
+            """
+        ).fetchall()
+
+    def set_plan_device_quota(
+        self,
+        plan_id: str,
+        max_devices: int | None,
+    ) -> None:
+        self.get_plan(plan_id)
+        if max_devices is not None and max_devices <= 0:
+            raise ValueError("max_devices must be positive when configured")
+        self._conn.execute(
+            """
+            UPDATE plans
+            SET max_devices = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (max_devices, plan_id),
+        )
+        self._commit()
+
     def create_order(
         self,
         *,

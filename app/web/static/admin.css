@@ -146,6 +146,29 @@ a {
   margin-top: 8px;
 }
 
+.quota-form {
+  display: grid;
+  grid-template-columns: minmax(110px, 150px) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.quota-field input {
+  min-height: 34px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .eyebrow {
   margin: 0 0 4px;
   color: var(--accent);
@@ -654,6 +677,10 @@ tbody tr:last-child td {
   .page {
     width: min(100% - 24px, 1180px);
     padding-top: 20px;
+  }
+
+  .quota-form {
+    grid-template-columns: minmax(120px, 1fr) auto;
   }
 
   .login-panel {
