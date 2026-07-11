@@ -103,7 +103,7 @@ def test_validate_magic_headers_accepts_single_and_ranged_uint32_values():
 
 @pytest.mark.parametrize(
     "value",
-    ["", "1-", "-1", "2-1", "1-2-3", " 1-2", 4294967296],
+    ["", "1-", "-1", "2-1", "1-2-3", " 1-2", "١-٢", 4294967296],
 )
 def test_validate_magic_headers_rejects_invalid_values(value):
     with pytest.raises(ValueError, match="H1"):

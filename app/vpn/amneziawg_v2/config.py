@@ -6,7 +6,7 @@ from itertools import pairwise
 AwgParameter = int | str
 
 _UINT32_MAX = (1 << 32) - 1
-_MAGIC_HEADER_PATTERN = re.compile(r"\d+(?:-\d+)?")
+_MAGIC_HEADER_PATTERN = re.compile(r"[0-9]+(?:-[0-9]+)?")
 
 DEFAULT_CLIENT_AWG_JC = 3
 DEFAULT_CLIENT_AWG_JMIN = 10
