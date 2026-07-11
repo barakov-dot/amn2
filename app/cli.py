@@ -18,6 +18,8 @@ from app.agent.auth import hash_agent_token
 from app.agent.config import build_agent_tokens
 from app.agent.runtime import LocalCommandRuntimeAdapter
 from app.backup.service import BackupService
+from app.bot.controlled_smoke import ControlledSmokeError
+from app.bot.controlled_smoke import run_controlled_start_smoke_from_settings
 from app.config import Settings
 from app.db.connection import connect
 from app.db.repositories import Repository
@@ -67,6 +69,11 @@ def build_parser() -> argparse.ArgumentParser:
     bot = sub.add_parser("bot")
     bot_sub = bot.add_subparsers(dest="bot_command", required=True)
     bot_sub.add_parser("check-network")
+    controlled_start_smoke = bot_sub.add_parser("controlled-start-smoke")
+    controlled_start_smoke.add_argument("--admin-id", type=int, required=True)
+    controlled_start_smoke.add_argument("--expected-bot-username", required=True)
+    controlled_start_smoke.add_argument("--database-clone", required=True)
+    controlled_start_smoke.add_argument("--timeout-seconds", type=int, default=120)
 
     bot_media = sub.add_parser("bot-media")
     bot_media_sub = bot_media.add_subparsers(dest="bot_media_command", required=True)
@@ -449,6 +456,21 @@ def main() -> None:
                 )
             )
         )
+    elif args.command == "bot" and args.bot_command == "controlled-start-smoke":
+        settings = Settings()
+        try:
+            result = asyncio.run(
+                run_controlled_start_smoke_from_settings(
+                    settings,
+                    admin_id=args.admin_id,
+                    expected_bot_username=args.expected_bot_username,
+                    clone_database_path=Path(args.database_clone),
+                    timeout_seconds=args.timeout_seconds,
+                )
+            )
+        except ControlledSmokeError as exc:
+            raise SystemExit(f"Controlled Telegram smoke: STOP: {exc}") from None
+        print(result.render())
     elif args.command == "bot-media" and args.bot_media_command == "validate":
         print(
             run_bot_media_validate(

@@ -24,22 +24,7 @@ from app.vpn.amneziawg_v2.config import ClientConfigDefaults
 
 async def run() -> None:
     settings = Settings()
-    workflow = create_workflow(
-        database_path=settings.database_path,
-        app_secret_key=settings.app_secret_key,
-        admin_telegram_ids=set(settings.admin_ids),
-        default_vpn_network_cidr=settings.default_vpn_network_cidr,
-        max_devices_per_user=settings.max_devices_per_user,
-        default_plan_days=settings.default_plan_days,
-        vps_apply_enabled=settings.vps_apply_enabled,
-        server_config_path=settings.server_config_path,
-        server_name=settings.server_name,
-        vps_ssh_password=settings.vps_ssh_password,
-        client_config_template_dir=settings.client_config_template_dir,
-        client_config_defaults=settings.client_config_defaults,
-        bot_device_name_prefix=settings.bot_device_name_prefix,
-        bot_device_name_sequence_seed=settings.bot_device_name_sequence_seed,
-    )
+    workflow = create_workflow_from_settings(settings)
     bot = create_bot(
         telegram_bot_token=settings.telegram_bot_token,
         telegram_proxy_url=settings.telegram_proxy_url,
@@ -113,6 +98,29 @@ def telegram_network_error_message(telegram_proxy_url: str = "") -> str:
             ]
         )
     return "\n".join(lines)
+
+
+def create_workflow_from_settings(
+    settings: Settings,
+    *,
+    database_path: str | Path | None = None,
+) -> BotWorkflow:
+    return create_workflow(
+        database_path=database_path or settings.database_path,
+        app_secret_key=settings.app_secret_key,
+        admin_telegram_ids=set(settings.admin_ids),
+        default_vpn_network_cidr=settings.default_vpn_network_cidr,
+        max_devices_per_user=settings.max_devices_per_user,
+        default_plan_days=settings.default_plan_days,
+        vps_apply_enabled=settings.vps_apply_enabled,
+        server_config_path=settings.server_config_path,
+        server_name=settings.server_name,
+        vps_ssh_password=settings.vps_ssh_password,
+        client_config_template_dir=settings.client_config_template_dir,
+        client_config_defaults=settings.client_config_defaults,
+        bot_device_name_prefix=settings.bot_device_name_prefix,
+        bot_device_name_sequence_seed=settings.bot_device_name_sequence_seed,
+    )
 
 
 def _proxy_curl_endpoint(proxy_url: str) -> str:
