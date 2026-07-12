@@ -67,6 +67,8 @@ class DevicePassport:
     config_fingerprint: str
     last_seen_at: datetime | None
     acceptance_evidence: DeviceAcceptanceEvidence | None
+    revoked_at: datetime | None
+    revoke_reason: str | None
     reconciliation: ReconciliationSnapshot
     created_at: datetime
     updated_at: datetime
@@ -89,6 +91,8 @@ class DevicePassport:
                 if self.acceptance_evidence is not None
                 else None
             ),
+            "revoked_at": _format_optional_datetime(self.revoked_at),
+            "revoke_reason": self.revoke_reason,
             "desired_state": snapshot.desired_state.safe_metadata(),
             "observed_state": snapshot.observed_state.safe_metadata(),
             "drift_state": snapshot.drift_state,
@@ -210,6 +214,21 @@ def list_device_passports(
     )
 
 
+def attach_passport_to_local_device(
+    repo: Repository,
+    *,
+    passport_device_id: str,
+    local_device_id: int,
+) -> DevicePassport:
+    attached = repo.attach_device_passport_to_local_device(
+        passport_device_id=passport_device_id,
+        local_device_id=local_device_id,
+    )
+    if not attached:
+        raise ValueError("revoked device passport cannot be attached")
+    return get_device_passport(repo, passport_device_id)
+
+
 def record_device_acceptance(
     repo: Repository,
     *,
@@ -290,6 +309,10 @@ def _passport_from_row(
         config_fingerprint=str(row["config_fingerprint"]),
         last_seen_at=_parse_optional_datetime(row["last_seen_at"]),
         acceptance_evidence=evidence,
+        revoked_at=_parse_optional_datetime(row["revoked_at"]),
+        revoke_reason=(
+            str(row["revoke_reason"]) if row["revoke_reason"] is not None else None
+        ),
         reconciliation=snapshot,
         created_at=_parse_datetime(str(row["created_at"])),
         updated_at=_parse_datetime(str(row["updated_at"])),

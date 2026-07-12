@@ -38,6 +38,7 @@ from app.server_config.loader import select_server
 from app.services.access import RemoteOperationPartialFailure
 from app.services.config_material import ConfigMaterialUnavailable
 from app.services.config_delivery import build_device_config_delivery
+from app.services.device_revoke import cascade_revoke_physical_device
 from app.config_assignment import (
     CONFIG_ASSIGNMENT_MODES,
     DEDICATED_DEVICE,
@@ -1552,7 +1553,7 @@ def create_web_app(
             _delete_user_device(actual_settings, request, user_id=user_id, device_id=device_id)
         except LookupError:
             return PlainTextResponse("Device not found", status_code=404)
-        except (ConfigError, PeerApplyError) as exc:
+        except (ConfigError, PeerApplyError, RemoteOperationPartialFailure) as exc:
             _record_web_user_vps_failure(
                 actual_settings,
                 request,
@@ -3325,28 +3326,46 @@ def _delete_user_device(
             raise LookupError("Device not found")
         device = _row_to_dict(device_row)
 
-    vps_apply = "not_needed"
-    if str(device["status"]) in {"pending", "active"}:
-        vps_apply = _revoke_devices_from_vpn(settings, [device])
-
     with _open_repository(settings) as (repo, _conn):
-        with repo.transaction():
-            repo.hard_delete_device_for_admin(user_id=user_id, device_id=device_id)
+        remote_required = str(device["status"]) in {"pending", "active"}
+        peer_remover = (
+            _SingleDeviceWebPeerRemover(settings, device)
+            if remote_required and settings.vps_apply_enabled
+            else None
+        )
+
+        def record_audit(metadata: dict[str, object]) -> None:
             _record_web_user_action(
                 repo,
                 settings,
                 request,
-                action="web_device_delete",
+                action="web_device_revoke_cascade",
                 target_user_id=user_id,
                 metadata={
                     "telegram_id": user["telegram_id"],
-                    "deleted_device_id": device_id,
-                    "peer_public_key": device["peer_public_key"],
-                    "vpn_ip": device["vpn_ip"],
-                    "status": device["status"],
-                    "vps_apply": vps_apply,
+                    "device_id": device_id,
+                    **metadata,
                 },
             )
+
+        cascade_revoke_physical_device(
+            repo,
+            local_device_id=device_id,
+            reason="web_admin_physical_device_revoke",
+            revoked_at=datetime.now(timezone.utc),
+            peer_remover=peer_remover,
+            apply_remote=remote_required and settings.vps_apply_enabled,
+            audit_recorder=record_audit,
+        )
+
+
+class _SingleDeviceWebPeerRemover:
+    def __init__(self, settings: Settings, device: dict[str, Any]) -> None:
+        self._settings = settings
+        self._device = device
+
+    def remove_peer(self, *, server, peer_public_key: str) -> None:
+        _revoke_devices_from_vpn(self._settings, [self._device])
 
 
 def _destroy_user(settings: Settings, request: Request, user_id: int) -> None:

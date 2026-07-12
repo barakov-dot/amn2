@@ -110,6 +110,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             config_fingerprint TEXT NOT NULL,
             last_seen_at TEXT,
             acceptance_evidence_json TEXT,
+            revoked_at TEXT,
+            revoke_reason TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (local_device_id) REFERENCES devices(id) ON DELETE SET NULL,
@@ -354,6 +356,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         "assignment_mode",
         "TEXT NOT NULL DEFAULT 'dedicated_device' CHECK (assignment_mode IN ('dedicated_device', 'owner_shared'))",
     )
+    _ensure_column(conn, "device_passports", "revoked_at", "TEXT")
+    _ensure_column(conn, "device_passports", "revoke_reason", "TEXT")
     conn.commit()
 
 

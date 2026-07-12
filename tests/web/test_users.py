@@ -757,20 +757,22 @@ def test_delete_single_user_device_revokes_only_selected_peer_and_cleans_links(
     assert calls == [("local", "encrypted-public")]
     with _repo(Path(settings.database_path)) as repo:
         remaining_devices = repo.list_user_devices_for_admin(user_id)
-        assert target_device_id not in {int(device["id"]) for device in remaining_devices}
-        assert len(remaining_devices) == 2
+        assert target_device_id in {int(device["id"]) for device in remaining_devices}
+        assert len(remaining_devices) == 3
+        assert repo.get_device(target_device_id)["status"] == "revoked"
         assert repo.get_order(order_id)["device_id"] is None
         seeded_action = repo._conn.execute(
             "SELECT * FROM admin_actions WHERE action = ?",
             ("seed_device_action",),
         ).fetchone()
-        assert seeded_action["target_device_id"] is None
+        assert seeded_action["target_device_id"] == target_device_id
         latest_action = repo.list_admin_actions_for_target_user(user_id)[0]
-        assert latest_action["action"] == "web_device_delete"
-        assert f'"deleted_device_id": {target_device_id}' in latest_action["metadata_json"]
+        assert latest_action["action"] == "web_device_revoke_cascade"
+        assert f'"device_id": {target_device_id}' in latest_action["metadata_json"]
+        assert '"remote_peer_removed": true' in latest_action["metadata_json"]
 
 
-def test_delete_single_user_device_with_apply_disabled_deletes_local_only(
+def test_delete_single_user_device_with_apply_disabled_refuses_local_only_revoke(
     tmp_path: Path,
     monkeypatch,
 ):
@@ -804,14 +806,12 @@ def test_delete_single_user_device_with_apply_disabled_deletes_local_only(
         follow_redirects=False,
     )
 
-    assert response.status_code == 303
-    assert response.headers["location"] == f"/users/{user_id}"
+    assert response.status_code == 400
+    assert "local-only revoke is refused" in response.text
     assert calls == []
     with _repo(Path(settings.database_path)) as repo:
-        assert repo.list_user_devices_for_admin(user_id) == []
-        latest_action = repo.list_admin_actions_for_target_user(user_id)[0]
-        assert latest_action["action"] == "web_device_delete"
-        assert '"vps_apply": "skipped"' in latest_action["metadata_json"]
+        assert repo.get_device(target_device_id)["status"] == "active"
+        assert repo.list_admin_actions_for_target_user(user_id) == []
 
 
 def test_user_detail_reveals_device_secrets_only_after_explicit_post(tmp_path: Path):

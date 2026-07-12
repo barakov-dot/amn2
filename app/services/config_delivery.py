@@ -41,6 +41,10 @@ def build_device_config_delivery(
     client_allowed_ips: str = "0.0.0.0/0, ::/0",
     client_config_defaults: ClientConfigDefaults | None = None,
 ) -> DeviceConfigDelivery:
+    if str(device["status"]) not in {"pending", "active"}:
+        raise ConfigMaterialUnavailable(
+            f"Config delivery is unavailable for inactive device #{device['id']}"
+        )
     if _config_material_status(device) != "available":
         raise ConfigMaterialUnavailable(
             f"Config material is unavailable for device #{device['id']}"

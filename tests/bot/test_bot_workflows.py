@@ -694,7 +694,12 @@ def test_user_can_revoke_one_owned_device(tmp_path):
         server_id=server_id,
         name="tablet",
     )
-    workflow = BotWorkflow(repo=repo, admin_telegram_ids={9001})
+    peer_remover = RecordingPeerRemover()
+    workflow = BotWorkflow(
+        repo=repo,
+        admin_telegram_ids={9001},
+        peer_remover=peer_remover,
+    )
 
     revoked = workflow.revoke_user_device(
         telegram_id=1001,
@@ -709,6 +714,9 @@ def test_user_can_revoke_one_owned_device(tmp_path):
 
     assert revoked is True
     assert forbidden is False
+    assert peer_remover.calls == [
+        {"server_id": server_id, "peer_public_key": "peer-phone"}
+    ]
     assert repo.get_device(device_id)["status"] == "revoked"
     assert repo.get_device(other_device_id)["status"] == "active"
 
@@ -819,7 +827,12 @@ def test_user_can_reset_all_owned_devices(tmp_path):
         server_id=server_id,
         name="tablet",
     )
-    workflow = BotWorkflow(repo=repo, admin_telegram_ids={9001})
+    peer_remover = RecordingPeerRemover()
+    workflow = BotWorkflow(
+        repo=repo,
+        admin_telegram_ids={9001},
+        peer_remover=peer_remover,
+    )
 
     changed = workflow.reset_user_devices(
         telegram_id=1001,
@@ -827,6 +840,7 @@ def test_user_can_reset_all_owned_devices(tmp_path):
     )
 
     assert changed == 2
+    assert len(peer_remover.calls) == 2
     assert repo.get_device(first_id)["status"] == "revoked"
     assert repo.get_device(second_id)["status"] == "revoked"
     assert repo.get_device(other_id)["status"] == "active"

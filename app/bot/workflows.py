@@ -16,6 +16,7 @@ from app.security.redaction import redact
 from app.server.operations import remote_changed_local_failed_result
 from app.server.peer_apply import PeerApplyError
 from app.services.config_delivery import build_device_config_delivery
+from app.services.device_revoke import cascade_revoke_physical_device
 from app.services.access import (
     AccessService,
     RemoteOperationPartialFailure,
@@ -525,16 +526,15 @@ class BotWorkflow:
         )
         if device is None:
             return False
-        if self._peer_remover is not None:
-            self._peer_remover.remove_peer(
-                server=self._repo.get_server(int(device["server_id"])),
-                peer_public_key=str(device["peer_public_key"]),
-            )
-        return self._repo.revoke_device(
-            device_id,
+        result = cascade_revoke_physical_device(
+            self._repo,
+            local_device_id=device_id,
             reason="user_requested",
-            revoked_at=revoked_at or _utc_now(),
+            revoked_at=_parse_utc(revoked_at or _utc_now()),
+            peer_remover=self._peer_remover,
+            apply_remote=self._peer_remover is not None,
         )
+        return result.device_rows_revoked > 0 or result.remote_peer_removed
 
     def reset_user_devices(
         self,
@@ -574,11 +574,20 @@ class BotWorkflow:
                         ) from exc
                     raise
                 remote_removed_device_ids.append(int(device["id"]))
-        return self._repo.revoke_user_devices(
-            int(user["id"]),
-            reason="user_reset",
-            revoked_at=revoked_at or _utc_now(),
-        )
+        actual_revoked_at = _parse_utc(revoked_at or _utc_now())
+        revoked_count = 0
+        for device in devices:
+            result = cascade_revoke_physical_device(
+                self._repo,
+                local_device_id=int(device["id"]),
+                reason="user_reset",
+                revoked_at=actual_revoked_at,
+                peer_remover=None,
+                apply_remote=False,
+                remote_already_removed=self._peer_remover is not None,
+            )
+            revoked_count += result.device_rows_revoked
+        return revoked_count
 
     def _build_delivery_for_device(self, device) -> ResendResult:
         result = build_device_config_delivery(
@@ -605,3 +614,10 @@ class BotWorkflow:
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_utc(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)

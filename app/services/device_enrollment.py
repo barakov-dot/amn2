@@ -51,10 +51,10 @@ class EnrollmentTicketMetadata:
 
     def status(self, *, now: datetime | None = None) -> str:
         current_time = _as_utc(now or datetime.now(timezone.utc))
-        if self.claimed_at is not None:
-            return "claimed"
         if self.revoked_at is not None:
             return "revoked"
+        if self.claimed_at is not None:
+            return "claimed"
         if self.expires_at <= current_time:
             return "expired"
         return "active"

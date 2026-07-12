@@ -930,6 +930,8 @@ class Repository:
                 config_fingerprint,
                 last_seen_at,
                 acceptance_evidence_json,
+                revoked_at,
+                revoke_reason,
                 created_at,
                 updated_at
             FROM device_passports
@@ -971,6 +973,8 @@ class Repository:
                 config_fingerprint,
                 last_seen_at,
                 acceptance_evidence_json,
+                revoked_at,
+                revoke_reason,
                 created_at,
                 updated_at
             FROM device_passports
@@ -995,6 +999,7 @@ class Repository:
                 acceptance_evidence_json = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE device_id = ?
+              AND revoked_at IS NULL
             """,
             (
                 last_seen_at,
@@ -1008,6 +1013,116 @@ class Repository:
         )
         self._commit()
         return cursor.rowcount > 0
+
+    def attach_device_passport_to_local_device(
+        self,
+        *,
+        passport_device_id: str,
+        local_device_id: int,
+    ) -> bool:
+        passport = self.get_device_passport(passport_device_id)
+        if passport is None:
+            raise LookupError("device passport not found")
+        local_device = self.get_user_device(
+            user_id=int(passport["owner_user_id"]),
+            device_id=local_device_id,
+        )
+        if local_device is None:
+            raise ValueError("local device does not belong to passport owner")
+        cursor = self._conn.execute(
+            """
+            UPDATE device_passports
+            SET local_device_id = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE device_id = ?
+              AND revoked_at IS NULL
+            """,
+            (local_device_id, passport_device_id),
+        )
+        self._commit()
+        return cursor.rowcount > 0
+
+    def cascade_revoke_device_access(
+        self,
+        *,
+        local_device_id: int,
+        revoked_at: str,
+        reason: str,
+    ) -> dict[str, int | str | None]:
+        device = self.get_device(local_device_id)
+        passport = self.get_device_passport_by_local_device_id(local_device_id)
+        passport_device_id = (
+            str(passport["device_id"]) if passport is not None else None
+        )
+
+        enrollment_ticket_count = 0
+        if passport_device_id is not None:
+            enrollment_ticket_count = int(
+                self._conn.execute(
+                    """
+                    UPDATE device_enrollment_tickets
+                    SET revoked_at = COALESCE(revoked_at, ?),
+                        revoke_reason = COALESCE(revoke_reason, ?)
+                    WHERE claimed_device_id = ?
+                      AND revoked_at IS NULL
+                    """,
+                    (revoked_at, reason, passport_device_id),
+                ).rowcount
+            )
+            self._conn.execute(
+                """
+                UPDATE device_passports
+                SET revoked_at = COALESCE(revoked_at, ?),
+                    revoke_reason = COALESCE(revoke_reason, ?),
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE device_id = ?
+                """,
+                (revoked_at, reason, passport_device_id),
+            )
+
+        delivery_link_count = int(
+            self._conn.execute(
+                """
+                UPDATE email_recovery_tokens
+                SET used_at = COALESCE(used_at, ?)
+                WHERE device_id = ?
+                  AND used_at IS NULL
+                """,
+                (revoked_at, local_device_id),
+            ).rowcount
+        )
+        assignment_count = int(
+            self._conn.execute(
+                """
+                UPDATE orders
+                SET device_id = NULL
+                WHERE device_id = ?
+                """,
+                (local_device_id,),
+            ).rowcount
+        )
+        device_count = int(
+            self._conn.execute(
+                """
+                UPDATE devices
+                SET status = 'revoked',
+                    revoked_at = COALESCE(revoked_at, ?),
+                    revoke_reason = COALESCE(revoke_reason, ?)
+                WHERE id = ?
+                  AND status != 'revoked'
+                """,
+                (revoked_at, reason, local_device_id),
+            ).rowcount
+        )
+        self._commit()
+        return {
+            "local_device_id": int(device["id"]),
+            "passport_device_id": passport_device_id,
+            "device_rows_revoked": device_count,
+            "enrollment_tickets_revoked": enrollment_ticket_count,
+            "delivery_links_closed": delivery_link_count,
+            "assignments_closed": assignment_count,
+        }
 
     def create_device_enrollment_ticket(
         self,
@@ -1204,7 +1319,6 @@ class Repository:
                 revoke_reason = ?
             WHERE id = ?
               AND revoked_at IS NULL
-              AND claimed_at IS NULL
             """,
             (revoked_at, reason, ticket_id),
         )
@@ -2283,6 +2397,7 @@ class Repository:
             SET first_connected_at = COALESCE(first_connected_at, ?),
                 last_connected_at = ?
             WHERE id = ?
+              AND status = 'active'
             """,
             (connected_at, connected_at, device_id),
         )
