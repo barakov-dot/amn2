@@ -1085,6 +1085,98 @@ class Repository:
             params,
         ).fetchall()
 
+    def get_enrollment_ticket_by_claimed_device_id(
+        self,
+        passport_device_id: str,
+    ) -> sqlite3.Row | None:
+        return self._conn.execute(
+            """
+            SELECT id
+            FROM device_enrollment_tickets
+            WHERE claimed_device_id = ?
+            ORDER BY claimed_at DESC, id DESC
+            LIMIT 1
+            """,
+            (passport_device_id,),
+        ).fetchone()
+
+    def record_device_lifecycle_event(
+        self,
+        *,
+        ticket_id: str | None,
+        passport_device_id: str | None,
+        stage: str,
+        status: str,
+        occurred_at: str,
+        duration_ms: int,
+        failure_stage: str | None,
+        evidence: dict[str, Any],
+    ) -> int:
+        cursor = self._conn.execute(
+            """
+            INSERT INTO device_lifecycle_events (
+                ticket_id,
+                passport_device_id,
+                stage,
+                status,
+                occurred_at,
+                duration_ms,
+                failure_stage,
+                evidence_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                ticket_id,
+                passport_device_id,
+                stage,
+                status,
+                occurred_at,
+                duration_ms,
+                failure_stage,
+                json.dumps(evidence, sort_keys=True),
+            ),
+        )
+        self._commit()
+        return int(cursor.lastrowid)
+
+    def list_device_lifecycle_events(
+        self,
+        *,
+        ticket_id: str | None = None,
+        passport_device_id: str | None = None,
+    ) -> list[sqlite3.Row]:
+        if ticket_id is None and passport_device_id is None:
+            raise ValueError("ticket_id or passport_device_id is required")
+        predicates: list[str] = []
+        params: list[Any] = []
+        if ticket_id is not None:
+            predicates.append("ticket_id = ?")
+            params.append(ticket_id)
+        if passport_device_id is not None:
+            predicates.append("passport_device_id = ?")
+            params.append(passport_device_id)
+        where = " OR ".join(predicates)
+        return self._conn.execute(
+            f"""
+            SELECT
+                id,
+                ticket_id,
+                passport_device_id,
+                stage,
+                status,
+                occurred_at,
+                duration_ms,
+                failure_stage,
+                evidence_json,
+                created_at
+            FROM device_lifecycle_events
+            WHERE {where}
+            ORDER BY occurred_at ASC, id ASC
+            """,
+            tuple(params),
+        ).fetchall()
+
     def revoke_device_enrollment_ticket(
         self,
         *,

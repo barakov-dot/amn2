@@ -16,6 +16,11 @@ from app.services.device_passports import (
     DevicePassport,
     get_device_passport,
 )
+from app.services.device_lifecycle import (
+    LifecycleEvidence,
+    list_device_lifecycle_events,
+    record_device_lifecycle_stage,
+)
 from app.vpn.config_versions import SUPPORTED_CONFIG_VERSIONS
 
 
@@ -162,15 +167,28 @@ def issue_device_enrollment_ticket(
         raise ValueError("raw enrollment token format is invalid")
     expires_at = current_time + ttl
 
-    repo.create_device_enrollment_ticket(
-        ticket_id=actual_ticket_id,
-        user_id=user_id,
-        token_hash=hash_enrollment_secret(actual_raw_token),
-        token_prefix=actual_raw_token[:20],
-        platform=normalized_platform,
-        config_schema_version=normalized_schema_version,
-        expires_at=_format_datetime(expires_at),
-    )
+    with repo.transaction():
+        repo.create_device_enrollment_ticket(
+            ticket_id=actual_ticket_id,
+            user_id=user_id,
+            token_hash=hash_enrollment_secret(actual_raw_token),
+            token_prefix=actual_raw_token[:20],
+            platform=normalized_platform,
+            config_schema_version=normalized_schema_version,
+            expires_at=_format_datetime(expires_at),
+        )
+        record_device_lifecycle_stage(
+            repo,
+            ticket_id=actual_ticket_id,
+            stage="issued",
+            status="completed",
+            started_at=current_time,
+            occurred_at=current_time,
+            evidence=LifecycleEvidence(
+                source="device_enrollment",
+                reference="ticket-issued",
+            ),
+        )
     metadata = get_device_enrollment_ticket(repo, actual_ticket_id)
     return EnrollmentTicketIssue(metadata=metadata, raw_token=actual_raw_token)
 
@@ -214,28 +232,48 @@ def claim_device_enrollment_ticket(
         token_hash=token_hash,
         idempotency_hash=idempotency_hash,
     )
-    row = repo.claim_device_enrollment_ticket(
-        token_hash=token_hash,
-        idempotency_hash=idempotency_hash,
-        now=_format_datetime(claimed_at),
-        claimed_at=_format_datetime(claimed_at),
-        claimed_device_id=actual_device_id,
-        official_client_type=normalized_client_type,
-        client_version=normalized_client_version,
-        import_method=normalized_import_method,
-        config_fingerprint=config_fingerprint,
-        acceptance_evidence=DeviceAcceptanceEvidence(
-            status="pending",
-            source="ticket_claim",
-            observed_at=claimed_at,
-            reference="enrollment-claim",
-        ).safe_metadata(),
-    )
-    if row is None:
-        raise EnrollmentTicketUnavailable()
-    ticket = _ticket_from_row(row)
-    if ticket.claimed_device_id is None:
-        raise RuntimeError("claimed ticket has no device id")
+    with repo.transaction():
+        row = repo.claim_device_enrollment_ticket(
+            token_hash=token_hash,
+            idempotency_hash=idempotency_hash,
+            now=_format_datetime(claimed_at),
+            claimed_at=_format_datetime(claimed_at),
+            claimed_device_id=actual_device_id,
+            official_client_type=normalized_client_type,
+            client_version=normalized_client_version,
+            import_method=normalized_import_method,
+            config_fingerprint=config_fingerprint,
+            acceptance_evidence=DeviceAcceptanceEvidence(
+                status="pending",
+                source="ticket_claim",
+                observed_at=claimed_at,
+                reference="enrollment-claim",
+            ).safe_metadata(),
+        )
+        if row is None:
+            raise EnrollmentTicketUnavailable()
+        ticket = _ticket_from_row(row)
+        if ticket.claimed_device_id is None:
+            raise RuntimeError("claimed ticket has no device id")
+        lifecycle = list_device_lifecycle_events(repo, ticket_id=ticket.ticket_id)
+        issued_at = next(
+            event.occurred_at
+            for event in lifecycle
+            if event.stage == "issued" and event.status == "completed"
+        )
+        record_device_lifecycle_stage(
+            repo,
+            ticket_id=ticket.ticket_id,
+            passport_device_id=ticket.claimed_device_id,
+            stage="claimed",
+            status="completed",
+            started_at=issued_at,
+            occurred_at=claimed_at,
+            evidence=LifecycleEvidence(
+                source="device_enrollment",
+                reference="ticket-claimed",
+            ),
+        )
     return EnrollmentClaim(
         ticket=ticket,
         passport=get_device_passport(repo, ticket.claimed_device_id),

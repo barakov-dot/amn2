@@ -136,6 +136,47 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                 ON DELETE SET NULL DEFERRABLE INITIALLY DEFERRED
         );
 
+        CREATE TABLE IF NOT EXISTS device_lifecycle_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticket_id TEXT,
+            passport_device_id TEXT,
+            stage TEXT NOT NULL
+                CHECK (
+                    stage IN (
+                        'issued',
+                        'claimed',
+                        'config_ready',
+                        'delivered',
+                        'acceptance_verified'
+                    )
+                ),
+            status TEXT NOT NULL CHECK (status IN ('completed', 'failed')),
+            occurred_at TEXT NOT NULL,
+            duration_ms INTEGER NOT NULL CHECK (duration_ms >= 0),
+            failure_stage TEXT
+                CHECK (
+                    failure_stage IS NULL
+                    OR failure_stage IN (
+                        'issued',
+                        'claimed',
+                        'config_ready',
+                        'delivered',
+                        'acceptance_verified'
+                    )
+                ),
+            evidence_json TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CHECK (ticket_id IS NOT NULL OR passport_device_id IS NOT NULL),
+            CHECK (
+                (status = 'completed' AND failure_stage IS NULL)
+                OR (status = 'failed' AND failure_stage = stage)
+            ),
+            FOREIGN KEY (ticket_id) REFERENCES device_enrollment_tickets(id)
+                ON DELETE CASCADE,
+            FOREIGN KEY (passport_device_id) REFERENCES device_passports(device_id)
+                ON DELETE CASCADE
+        );
+
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER NOT NULL,
@@ -246,6 +287,10 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             ON device_enrollment_tickets(user_id, created_at DESC);
         CREATE INDEX IF NOT EXISTS idx_device_enrollment_tickets_expiry
             ON device_enrollment_tickets(expires_at, claimed_at, revoked_at);
+        CREATE INDEX IF NOT EXISTS idx_device_lifecycle_ticket
+            ON device_lifecycle_events(ticket_id, occurred_at, id);
+        CREATE INDEX IF NOT EXISTS idx_device_lifecycle_passport
+            ON device_lifecycle_events(passport_device_id, occurred_at, id);
         CREATE INDEX IF NOT EXISTS idx_orders_user_status
             ON orders(user_id, status);
         CREATE INDEX IF NOT EXISTS idx_server_health_latest

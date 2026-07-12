@@ -218,13 +218,49 @@ def record_device_acceptance(
     evidence: DeviceAcceptanceEvidence,
 ) -> DevicePassport:
     _validate_acceptance_evidence(evidence)
-    updated = repo.update_device_passport_observation(
-        device_id=device_id,
-        last_seen_at=_format_datetime(last_seen_at),
-        acceptance_evidence=evidence.safe_metadata(),
-    )
-    if not updated:
-        raise LookupError("device passport not found")
+    with repo.transaction():
+        updated = repo.update_device_passport_observation(
+            device_id=device_id,
+            last_seen_at=_format_datetime(last_seen_at),
+            acceptance_evidence=evidence.safe_metadata(),
+        )
+        if not updated:
+            raise LookupError("device passport not found")
+        ticket = repo.get_enrollment_ticket_by_claimed_device_id(device_id)
+        if ticket is not None and evidence.status != "pending":
+            from app.services.device_lifecycle import (
+                LifecycleEvidence,
+                list_device_lifecycle_events,
+                record_device_lifecycle_stage,
+            )
+
+            ticket_id = str(ticket["id"])
+            lifecycle = list_device_lifecycle_events(repo, ticket_id=ticket_id)
+            delivered = next(
+                (
+                    event
+                    for event in reversed(lifecycle)
+                    if event.stage == "delivered" and event.status == "completed"
+                ),
+                None,
+            )
+            if delivered is None:
+                raise ValueError(
+                    "acceptance_verified requires completed delivered lifecycle stage"
+                )
+            record_device_lifecycle_stage(
+                repo,
+                ticket_id=ticket_id,
+                passport_device_id=device_id,
+                stage="acceptance_verified",
+                status="completed" if evidence.status == "passed" else "failed",
+                started_at=delivered.occurred_at,
+                occurred_at=evidence.observed_at,
+                evidence=LifecycleEvidence(
+                    source=evidence.source,
+                    reference=evidence.reference,
+                ),
+            )
     return get_device_passport(repo, device_id)
 
 
