@@ -1329,11 +1329,15 @@ SURFACE_POLICIES: tuple[SurfacePolicy, ...] = (
         ("peer sync snapshots", "admin_actions"),
         ("csrf", "session required", "read-only command policy", "redaction"),
         True,
-        "Existing peer sync reads live VPS state and updates local sync view.",
+        "Existing peer sync reads live VPS state and renders safe ReconciliationSnapshot diagnostics.",
         True,
         "inventory-only",
-        ("tests/web/test_servers.py", "tests/services/test_peer_inventory.py"),
-        "Sync classification changes require live retest.",
+        (
+            "tests/web/test_servers.py",
+            "tests/services/test_peer_inventory.py",
+            "tests/services/test_drift_diagnostics.py",
+        ),
+        "Read-only diagnostics expose desired, observed, drift, freshness, reason, evidence count and safe next action; classification changes require live retest.",
     ),
     _p(
         "web.servers.unknown_peers.ignore",

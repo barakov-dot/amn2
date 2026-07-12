@@ -298,6 +298,42 @@
             <dd>{{ peer_sync.ignored_count }}</dd>
           </div>
         </dl>
+        {% if peer_sync.reconciliation_snapshots %}
+          <div class="table-wrap panel-spaced">
+            <table>
+              <thead>
+                <tr>
+                  <th>Subject / Passport</th>
+                  <th>Desired</th>
+                  <th>Observed</th>
+                  <th>Drift / Freshness</th>
+                  <th>Reason</th>
+                  <th>Recommended action</th>
+                  <th>Evidence</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for snapshot in peer_sync.reconciliation_snapshots %}
+                  <tr>
+                    <td>
+                      <span>{{ snapshot.subject_id }}</span>
+                      <span class="muted-text">{{ snapshot.passport_device_id or "no passport" }}</span>
+                    </td>
+                    <td>{{ snapshot.desired_state.peer_expected }}</td>
+                    <td>{{ snapshot.observed_state.peer_present }}</td>
+                    <td>
+                      <span class="status status-{{ snapshot.drift_state }}">{{ snapshot.drift_state }}</span>
+                      <span class="muted-text">{{ snapshot.freshness }}</span>
+                    </td>
+                    <td>{{ snapshot.drift_reason }}</td>
+                    <td>{{ snapshot.recommended_next_action }}</td>
+                    <td>{{ snapshot.evidence | length }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% endif %}
         {% if peer_sync.unknown_peers %}
           <div class="table-wrap">
             <table>

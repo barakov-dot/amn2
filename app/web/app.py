@@ -58,6 +58,7 @@ from app.services.email_tokens import create_email_token
 from app.services.email_tokens import hash_email_token
 from app.services.email_tokens import utc_now_iso
 from app.services.integration_status import build_integration_status
+from app.services.drift_diagnostics import DriftDiagnosticsService
 from app.services.peer_inventory import AwgDumpPeerInventoryCollector
 from app.services.peer_inventory import PeerInventoryService
 from app.web.auth import check_password
@@ -2837,6 +2838,25 @@ def _collect_server_peer_sync(settings: Settings, server_id: int) -> dict[str, A
         )
         ignored_keys = repo.list_ignored_remote_peer_keys(server_id)
         ignored_peers = [_row_to_dict(row) for row in repo.list_ignored_remote_peers(server_id)]
+        observed_at = datetime.now(timezone.utc)
+        snapshots = DriftDiagnosticsService(repo).diagnose_inventory(
+            server_id,
+            (*report.known_remote_peers, *report.unknown_remote_peers),
+            observed_at=observed_at,
+            now=observed_at,
+        )
+        reconciliation_snapshots = []
+        for snapshot in snapshots:
+            metadata = snapshot.safe_metadata()
+            metadata["passport_device_id"] = None
+            if snapshot.subject_id.startswith("device:"):
+                local_device_id = int(snapshot.subject_id.split(":", 1)[1])
+                passport = repo.get_device_passport_by_local_device_id(
+                    local_device_id
+                )
+                if passport is not None:
+                    metadata["passport_device_id"] = str(passport["device_id"])
+            reconciliation_snapshots.append(metadata)
         known_peers = []
         for peer in report.known_remote_peers:
             device = repo.get_device_by_server_peer_public_key(
@@ -2888,6 +2908,7 @@ def _collect_server_peer_sync(settings: Settings, server_id: int) -> dict[str, A
             for peer in report.missing_local_peers
         ],
         "ignored_peers": ignored_peers,
+        "reconciliation_snapshots": reconciliation_snapshots,
         "error": "",
     }
 
@@ -2902,6 +2923,7 @@ def _empty_peer_sync_report(*, error: str) -> dict[str, Any]:
         "unknown_peers": [],
         "missing_peers": [],
         "ignored_peers": [],
+        "reconciliation_snapshots": [],
         "error": error,
     }
 

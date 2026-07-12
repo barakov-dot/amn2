@@ -89,6 +89,16 @@ class ReconciliationSnapshot:
     evidence: tuple[ReconciliationEvidence, ...]
     recommended_next_action: RecommendedAction
 
+    @property
+    def freshness(self) -> str:
+        if self.drift_state == "stale_observation":
+            return "stale"
+        if self.drift_state == "observation_failed":
+            return "failed"
+        if self.last_observed_at is None:
+            return "unknown"
+        return "fresh"
+
     def safe_metadata(self) -> dict[str, object]:
         return {
             "subject_id": self.subject_id,
@@ -101,6 +111,7 @@ class ReconciliationSnapshot:
                 if self.last_observed_at is not None
                 else None
             ),
+            "freshness": self.freshness,
             "evidence": [item.safe_metadata() for item in sorted(self.evidence)],
             "recommended_next_action": self.recommended_next_action,
         }
@@ -159,6 +170,37 @@ class DriftDiagnosticsService:
                 )
                 for row in local_rows
             )
+
+        return self._diagnose_inventory(
+            local_rows=local_rows,
+            remote_peers=remote_peers,
+            observation_time=observation_time,
+            current_time=current_time,
+        )
+
+    def diagnose_inventory(
+        self,
+        server_id: int,
+        remote_peers: list[RemotePeer] | tuple[RemotePeer, ...],
+        *,
+        observed_at: datetime,
+        now: datetime | None = None,
+    ) -> tuple[ReconciliationSnapshot, ...]:
+        return self._diagnose_inventory(
+            local_rows=self._repo.list_active_devices_for_server(server_id),
+            remote_peers=remote_peers,
+            observation_time=_as_utc(observed_at),
+            current_time=_as_utc(now or datetime.now(timezone.utc)),
+        )
+
+    def _diagnose_inventory(
+        self,
+        *,
+        local_rows,
+        remote_peers: list[RemotePeer] | tuple[RemotePeer, ...],
+        observation_time: datetime,
+        current_time: datetime,
+    ) -> tuple[ReconciliationSnapshot, ...]:
 
         remote_by_key = {peer.peer_public_key: peer for peer in remote_peers}
         local_keys = {str(row["peer_public_key"]) for row in local_rows}

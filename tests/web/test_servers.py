@@ -339,6 +339,19 @@ def test_server_sync_run_displays_peer_inventory_report(tmp_path: Path, monkeypa
                     "allowed_ips": "10.44.0.10/32",
                 }
             ],
+            "reconciliation_snapshots": [
+                {
+                    "subject_id": "device:7",
+                    "passport_device_id": "dev_11111111111111111111111111111111",
+                    "desired_state": {"peer_expected": True},
+                    "observed_state": {"peer_present": True},
+                    "drift_state": "aligned",
+                    "freshness": "fresh",
+                    "drift_reason": "desired_and_observed_peer_state_match",
+                    "recommended_next_action": "none",
+                    "evidence": [{"source": "local"}, {"source": "remote"}],
+                }
+            ],
             "error": "",
         },
     )
@@ -368,6 +381,10 @@ def test_server_sync_run_displays_peer_inventory_report(tmp_path: Path, monkeypa
     assert "10.44.0.2/32" in page.text
     assert "unknown-peer" in page.text
     assert "10.44.0.3/32" in page.text
+    assert "dev_11111111111111111111111111111111" in page.text
+    assert "desired_and_observed_peer_state_match" in page.text
+    assert "aligned" in page.text
+    assert "fresh" in page.text
     assert "Созданы в Amnezia" in page.text
     assert "amnezia-created-peer" in page.text
     assert "Снять пометку" in page.text
@@ -429,6 +446,19 @@ def test_collect_server_peer_sync_enriches_known_peers_with_user_and_device(
             vpn_ip="10.44.0.2",
             peer_public_key="known-peer",
         )
+        repo.create_device_passport(
+            device_id="dev_11111111111111111111111111111111",
+            owner_user_id=user_id,
+            local_device_id=device_id,
+            platform="android_tv",
+            official_client_type="amnezia_vpn",
+            client_version="4.8.19.0",
+            import_method="standard_conf",
+            config_schema_version="amneziawg_v2",
+            config_fingerprint="sha256:" + "1" * 64,
+            last_seen_at=None,
+            acceptance_evidence=None,
+        )
 
     class FakePeerInventoryService:
         def __init__(self, repo):
@@ -467,6 +497,15 @@ def test_collect_server_peer_sync_enriches_known_peers_with_user_and_device(
             "allowed_ips": "10.44.0.2/32",
         }
     ]
+    assert len(report["reconciliation_snapshots"]) == 1
+    snapshot = report["reconciliation_snapshots"][0]
+    assert snapshot["subject_id"] == f"device:{device_id}"
+    assert snapshot["passport_device_id"] == "dev_11111111111111111111111111111111"
+    assert snapshot["drift_state"] == "aligned"
+    assert snapshot["freshness"] == "fresh"
+    assert snapshot["drift_reason"] == "desired_and_observed_peer_state_match"
+    assert snapshot["recommended_next_action"] == "none"
+    assert len(snapshot["evidence"]) == 2
 
 
 def test_ignore_unknown_remote_peer_records_it_for_server(tmp_path: Path):

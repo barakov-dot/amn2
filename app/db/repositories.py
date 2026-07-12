@@ -938,6 +938,19 @@ class Repository:
             (device_id,),
         ).fetchone()
 
+    def get_device_passport_by_local_device_id(
+        self,
+        local_device_id: int,
+    ) -> sqlite3.Row | None:
+        return self._conn.execute(
+            """
+            SELECT device_id
+            FROM device_passports
+            WHERE local_device_id = ?
+            """,
+            (local_device_id,),
+        ).fetchone()
+
     def list_device_passports_for_owner(
         self,
         owner_user_id: int,
