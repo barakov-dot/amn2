@@ -140,6 +140,17 @@ async def run_controlled_start_smoke(
             )
             message, update_id = _validate_selected_admin_start(update, config.admin_id)
             await start_handler(message, workflow=workflow)
+            pre_ack_webhook = await bot.get_webhook_info()
+            pre_ack_pending_update_count = int(
+                getattr(pre_ack_webhook, "pending_update_count", 0) or 0
+            )
+            if (
+                str(getattr(pre_ack_webhook, "url", "") or "").strip()
+                or pre_ack_pending_update_count != 1
+            ):
+                raise ControlledSmokeError(
+                    "Telegram webhook or backlog changed before acknowledgement"
+                )
             await bot.get_updates(
                 offset=update_id + 1,
                 limit=1,

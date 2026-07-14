@@ -33,6 +33,8 @@ class FakeBot:
         username: str = "amn_test_bot",
         webhook_url: str = "",
         pending_update_count: int = 0,
+        pre_ack_webhook_url: str | None = None,
+        pre_ack_pending_update_count: int | None = None,
         final_webhook_url: str | None = None,
         final_pending_update_count: int | None = None,
         updates: list[object] | None = None,
@@ -41,6 +43,8 @@ class FakeBot:
         self.username = username
         self.webhook_url = webhook_url
         self.pending_update_count = pending_update_count
+        self.pre_ack_webhook_url = pre_ack_webhook_url
+        self.pre_ack_pending_update_count = pre_ack_pending_update_count
         self.final_webhook_url = final_webhook_url
         self.final_pending_update_count = final_pending_update_count
         self.updates = list(updates or [])
@@ -54,7 +58,16 @@ class FakeBot:
 
     async def get_webhook_info(self) -> object:
         self.webhook_info_calls += 1
-        if self.webhook_info_calls > 1:
+        if self.webhook_info_calls == 2:
+            return SimpleNamespace(
+                url=self.pre_ack_webhook_url
+                if self.pre_ack_webhook_url is not None
+                else self.webhook_url,
+                pending_update_count=self.pre_ack_pending_update_count
+                if self.pre_ack_pending_update_count is not None
+                else 1,
+            )
+        if self.webhook_info_calls > 2:
             return SimpleNamespace(
                 url=self.final_webhook_url
                 if self.final_webhook_url is not None
@@ -285,6 +298,35 @@ def test_controlled_smoke_stops_when_backlog_appears_after_ack(
         )
 
     assert bot.get_updates_calls[-1]["offset"] == 92
+    assert bot.webhook_info_calls == 3
+    assert bot.session.closed is True
+
+
+def test_controlled_smoke_preserves_backlog_that_appears_before_ack(
+    tmp_path: Path,
+) -> None:
+    production_path, clone_path = _database_pair(tmp_path)
+    bot = FakeBot(
+        updates=[_update(update_id=93, sender_id=ADMIN_ID, text="/start")],
+        pre_ack_pending_update_count=2,
+    )
+
+    async def start_handler(message: object, *, workflow: object) -> None:
+        assert message is not None
+        assert workflow == clone_path
+
+    with pytest.raises(ControlledSmokeError, match="before acknowledgement"):
+        asyncio.run(
+            run_controlled_start_smoke(
+                _config(production_path, clone_path),
+                bot_factory=lambda: bot,
+                workflow_factory=lambda path: path,
+                start_handler=start_handler,
+            )
+        )
+
+    assert len(bot.get_updates_calls) == 1
+    assert "offset" not in bot.get_updates_calls[0]
     assert bot.webhook_info_calls == 2
     assert bot.session.closed is True
 
