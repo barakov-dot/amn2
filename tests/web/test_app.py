@@ -1,3 +1,4 @@
+import hashlib
 import re
 from pathlib import Path
 
@@ -78,14 +79,14 @@ def test_login_page_uses_root_relative_static_assets_for_reverse_proxy(tmp_path:
 
     response = client.get("/login")
     stylesheet = client.get("/static/admin.css")
-    brand_image = client.get("/static/brand-full.jpg")
+    brand_image = client.get("/static/brand-full.png")
 
     assert 'href="/static/admin.css"' in response.text
-    assert 'src="/static/brand-full.jpg"' in response.text
+    assert 'src="/static/brand-full.png"' in response.text
     assert 'class="login-visual"' in response.text
     assert 'url("/static/brand' not in stylesheet.text
     assert brand_image.status_code == 200
-    assert brand_image.headers["content-type"] == "image/jpeg"
+    assert brand_image.headers["content-type"] == "image/png"
     assert "http://pdf.smart-finance.ru/static/admin.css" not in response.text
     assert "http://pdf.smart-finance.ru/static/brand" not in response.text
     assert "http://pdf.smart-finance.ru/static/brand" not in stylesheet.text
@@ -106,8 +107,22 @@ def test_dashboard_uses_full_brand_image_without_cropping(tmp_path: Path):
     response = client.get("/")
 
     assert '<figure class="brand-masthead">' in response.text
-    assert 'src="/static/brand-full.jpg"' in response.text
-    assert 'width="1180" height="792"' in response.text
+    assert 'src="/static/brand-full.png"' in response.text
+    assert 'width="1254" height="1254"' in response.text
+
+
+def test_bot_and_web_use_the_same_canonical_brand_asset():
+    repository_root = Path(__file__).resolve().parents[2]
+    bot_asset = repository_root / "app" / "bot" / "assets" / "NEOBYATNAYA-AMNZ-BOT.png"
+    web_asset = repository_root / "app" / "web" / "static" / "brand-full.png"
+
+    bot_bytes = bot_asset.read_bytes()
+    web_bytes = web_asset.read_bytes()
+
+    assert bot_bytes == web_bytes
+    assert hashlib.sha256(bot_bytes).hexdigest() == (
+        "40acd9465dc9fda06644d2d829da996e1d9bf6c856e95298b624b31154fec791"
+    )
 
 
 def test_login_rejects_missing_csrf_token(tmp_path: Path):
