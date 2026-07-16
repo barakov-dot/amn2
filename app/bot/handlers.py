@@ -8,7 +8,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
 )
 
-from app.bot.assets import BOT_START_HEADER_IMAGE_PATH
+from app.bot.assets import BOT_LANGUAGE_SELECTION_HEADER_IMAGE_PATH
 from app.bot.delivery import TELEGRAM_COPY_TEXT_MAX_LENGTH
 from app.bot.texts import text
 from app.bot.ux import (
@@ -74,9 +74,9 @@ async def handle_start(message, *, workflow) -> None:
         first_name=user.first_name,
         last_name=user.last_name,
     )
-    if BOT_START_HEADER_IMAGE_PATH.exists():
+    if BOT_LANGUAGE_SELECTION_HEADER_IMAGE_PATH.exists():
         await message.answer_photo(
-            FSInputFile(str(BOT_START_HEADER_IMAGE_PATH)),
+            FSInputFile(str(BOT_LANGUAGE_SELECTION_HEADER_IMAGE_PATH)),
             caption=render_language_prompt(),
             reply_markup=build_language_keyboard(),
         )

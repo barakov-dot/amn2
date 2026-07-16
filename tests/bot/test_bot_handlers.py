@@ -55,8 +55,32 @@ def test_handle_start_sends_header_and_language_choices_with_russian_default():
     assert workflow.registered_users == [9001]
     assert message.answers == []
     assert message.photos[0]["caption"] == "🌐 Выберите язык / Choose your language:"
-    assert message.photos[0]["photo"].path.endswith("NEOBYATNAYA-AMNZ-BOT.png")
+    assert message.photos[0]["photo"].path.endswith(
+        "NEOBYATNAYA-AMNZ-LANGUAGE-HEADER.png"
+    )
     assert _button_texts(message.photos[0]["reply_markup"]) == [
+        ["🇷🇺 Русский", "🇬🇧 English"]
+    ]
+
+
+def test_handle_start_uses_text_only_selector_when_language_header_is_missing(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        "app.bot.handlers.BOT_LANGUAGE_SELECTION_HEADER_IMAGE_PATH",
+        tmp_path / "missing-language-header.png",
+    )
+    message = FakeMessage(user_id=9001, first_name="Admin")
+    workflow = FakeWorkflow(admin_ids={9001})
+
+    asyncio.run(handle_start(message, workflow=workflow))
+
+    assert workflow.registered_users == [9001]
+    assert message.photos == []
+    assert message.answers[0]["text"] == (
+        "🌐 Выберите язык / Choose your language:"
+    )
+    assert _button_texts(message.answers[0]["reply_markup"]) == [
         ["🇷🇺 Русский", "🇬🇧 English"]
     ]
 
