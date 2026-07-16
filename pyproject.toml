@@ -42,3 +42,6 @@ exclude = [
   "tmp*",
   "errors_logs*",
 ]
+
+[tool.setuptools.package-data]
+"app.bot" = ["assets/*.png"]
