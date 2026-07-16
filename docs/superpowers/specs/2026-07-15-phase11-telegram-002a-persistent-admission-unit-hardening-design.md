@@ -22,10 +22,11 @@ production `.env`, вызов Telegram API с production token, upload package,
 ### A. Строгий двухступенчатый admission — выбран
 
 До workflow/DB initialization процесс получает local exclusive lock, затем в
-bounded timeout проверяет `getMe`, expected username, отсутствие webhook,
+едином bounded startup timeout проверяет `getMe`, expected username, отсутствие webhook,
 нулевой backlog и выполняет non-consuming zero-time `getUpdates` probe. После
 создания workflow/dispatcher webhook/backlog проверяются повторно, и только
-затем начинается polling с явным update allowlist.
+затем начинается polling с явным update allowlist и конечным лимитом
+параллельных update tasks.
 
 Плюсы: fail closed, не очищает updates, не мутирует webhook, не пишет DB при
 admission failure, обнаруживает local duplicate и активного remote poller.
@@ -56,6 +57,7 @@ webhook/backlog state и remote poll ownership. Aiogram retry также мож�
 - local non-blocking instance lock на configured runtime path;
 - bounded Telegram admission и повторную pre-poll проверку;
 - explicit `PERSISTENT_ALLOWED_UPDATES = ("message", "callback_query")`;
+- explicit `PERSISTENT_TASKS_CONCURRENCY_LIMIT = 8`;
 - sanitized startup receipt без token, numeric admin IDs или raw API payload.
 
 Local lock держится открытым весь polling lifetime. На Linux используется
@@ -89,13 +91,17 @@ Persistent bootstrap меняется на следующий порядок:
 6. Repeat webhook/backlog check immediately before polling.
 7. Emit one sanitized pass receipt and systemd readiness.
 8. Run dispatcher with explicit `message,callback_query` allowlist and explicit
-   polling timeout.
+   polling timeout, `handle_as_tasks=True` and concurrency limit `8`.
 9. Run watchdog task for the polling lifetime.
 10. On every exit, stop watchdog, close bot session and release lock.
 
 Telegram/network/timeouts are mapped to stable errors. The token and raw API
 exception text are never logged. Existing `check_bot_network` behavior remains
 separate and unchanged.
+
+Initial admission, workflow/dispatcher construction and the repeated state
+check share one overall `TELEGRAM_ADMISSION_TIMEOUT_SECONDS` startup budget;
+the second check cannot silently double the configured startup window.
 
 ## Settings contract
 
@@ -131,7 +137,8 @@ closed rather than consuming it.
 `deploy/systemd/amneziya-bot.service.example` changes to:
 
 - `Type=notify`, `NotifyAccess=main`;
-- bounded `TimeoutStartSec`, `TimeoutStopSec` and `WatchdogSec`;
+- `TimeoutStartSec=135s` (maximum 120-second startup budget plus service
+  margin), bounded `TimeoutStopSec` and `WatchdogSec`;
 - `Restart=on-failure`, longer `RestartSec`, `StartLimitIntervalSec` and
   `StartLimitBurst` to prevent a tight loop;
 - `RuntimeDirectory=amn2-bot`, private mode and matching lock path;
@@ -172,6 +179,8 @@ added.
 - workflow/dispatcher are not created before admission pass;
 - repeated pre-poll check is required;
 - polling receives only `message,callback_query` and configured timeout;
+- polling update tasks are bounded to eight concurrent handlers;
+- all pre-poll work shares one configured startup timeout;
 - readiness/watchdog/stopping datagrams are bounded and secret-free;
 - bot session and lock cleanup run on pass, failure and cancellation.
 

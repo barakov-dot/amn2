@@ -8,6 +8,15 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramNetworkError
 
 from app.bot import create_dispatcher
+from app.bot.persistent_runtime import (
+    PERSISTENT_ALLOWED_UPDATES,
+    PERSISTENT_TASKS_CONCURRENCY_LIMIT,
+    PersistentBotAdmissionConfig,
+    PersistentBotAdmissionError,
+    PersistentBotInstanceLock,
+    admit_persistent_bot,
+    recheck_persistent_bot_state,
+)
 from app.bot.workflows import BotWorkflow
 from app.config import Settings
 from app.db.connection import connect
@@ -19,21 +28,143 @@ from app.server.peer_apply import ServerConfigPeerApplier
 from app.server_config.loader import load_server_config, select_server
 from app.server_config.models import ServerConfig
 from app.services.access import AccessService
+from app.systemd_notify import SystemdNotifier
 from app.vpn.amneziawg_v2.config import ClientConfigDefaults
 
 
 async def run() -> None:
     settings = Settings()
-    workflow = create_workflow_from_settings(settings)
-    bot = create_bot(
-        telegram_bot_token=settings.telegram_bot_token,
-        telegram_proxy_url=settings.telegram_proxy_url,
+    await run_persistent_bot(settings)
+
+
+async def run_persistent_bot(
+    settings: Settings,
+    *,
+    bot_factory: Callable[..., Any] | None = None,
+    workflow_factory: Callable[[Settings], Any] | None = None,
+    dispatcher_factory: Callable[..., Any] | None = None,
+    admission_checker: Callable[..., Any] = admit_persistent_bot,
+    state_checker: Callable[..., Any] = recheck_persistent_bot_state,
+    lock_factory: Callable[..., Any] = PersistentBotInstanceLock,
+    notifier: SystemdNotifier | None = None,
+    receipt_writer: Callable[[str], Any] = print,
+) -> None:
+    bot_factory = bot_factory or create_bot
+    workflow_factory = workflow_factory or create_workflow_from_settings
+    dispatcher_factory = dispatcher_factory or create_dispatcher
+    active_notifier = notifier or SystemdNotifier.from_environment()
+    with lock_factory(settings.telegram_runtime_lock_path):
+        try:
+            bot = bot_factory(
+                telegram_bot_token=settings.telegram_bot_token,
+                telegram_proxy_url=settings.telegram_proxy_url,
+            )
+        except Exception:
+            raise PersistentBotAdmissionError(
+                "Telegram bot client creation failed"
+            ) from None
+
+        polling_task: asyncio.Task[Any] | None = None
+        watchdog_task: asyncio.Task[Any] | None = None
+        ready_sent = False
+        try:
+            config = PersistentBotAdmissionConfig(
+                expected_bot_username=settings.telegram_expected_bot_username,
+                timeout_seconds=settings.telegram_admission_timeout_seconds,
+            )
+            startup_timeout = asyncio.timeout(
+                settings.telegram_admission_timeout_seconds
+            )
+            try:
+                async with startup_timeout:
+                    result = await admission_checker(bot, config)
+                    workflow = workflow_factory(settings)
+                    dispatcher = dispatcher_factory(workflow=workflow)
+                    await state_checker(bot, config)
+            except PersistentBotAdmissionError:
+                if startup_timeout.expired():
+                    raise PersistentBotAdmissionError(
+                        "Telegram persistent startup timed out"
+                    ) from None
+                raise
+            except TimeoutError:
+                raise PersistentBotAdmissionError(
+                    "Telegram persistent startup timed out"
+                ) from None
+
+            polling_task = asyncio.create_task(
+                dispatcher.start_polling(
+                    bot,
+                    polling_timeout=settings.telegram_polling_timeout_seconds,
+                    allowed_updates=list(PERSISTENT_ALLOWED_UPDATES),
+                    close_bot_session=False,
+                    handle_as_tasks=True,
+                    tasks_concurrency_limit=PERSISTENT_TASKS_CONCURRENCY_LIMIT,
+                )
+            )
+            await asyncio.sleep(0)
+            if polling_task.done():
+                await polling_task
+                return
+
+            receipt_writer(result.render())
+            active_notifier.ready("Telegram polling admitted")
+            ready_sent = True
+            if active_notifier.watchdog_interval_seconds() is not None:
+                watchdog_task = asyncio.create_task(active_notifier.run_watchdog())
+            await _wait_for_polling_and_watchdog(polling_task, watchdog_task)
+        except TelegramNetworkError as exc:
+            raise RuntimeError(
+                telegram_network_error_message(settings.telegram_proxy_url)
+            ) from exc
+        finally:
+            try:
+                if ready_sent:
+                    active_notifier.stopping("Telegram polling stopped")
+            finally:
+                await _cancel_task(watchdog_task)
+                await _cancel_task(polling_task)
+                await _close_bot_session(bot)
+
+
+async def _wait_for_polling_and_watchdog(
+    polling_task: asyncio.Task[Any],
+    watchdog_task: asyncio.Task[Any] | None,
+) -> None:
+    if watchdog_task is None:
+        await polling_task
+        return
+
+    done, _ = await asyncio.wait(
+        {polling_task, watchdog_task},
+        return_when=asyncio.FIRST_COMPLETED,
     )
-    dispatcher = create_dispatcher(workflow=workflow)
+    if watchdog_task in done:
+        await watchdog_task
+    if polling_task in done:
+        await polling_task
+
+
+async def _cancel_task(task: asyncio.Task[Any] | None) -> None:
+    if task is None or task.done():
+        return
+    task.cancel()
     try:
-        await dispatcher.start_polling(bot)
-    except TelegramNetworkError as exc:
-        raise RuntimeError(telegram_network_error_message(settings.telegram_proxy_url)) from exc
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
+async def _close_bot_session(bot: Any) -> None:
+    close = getattr(getattr(bot, "session", None), "close", None)
+    if close is None:
+        return
+    try:
+        await close()
+    except Exception:
+        raise PersistentBotAdmissionError(
+            "Telegram bot session close failed"
+        ) from None
 
 
 def create_bot(*, telegram_bot_token: str, telegram_proxy_url: str = "") -> Bot:

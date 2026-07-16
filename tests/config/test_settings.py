@@ -285,6 +285,68 @@ def test_settings_reads_telegram_proxy_url():
     assert settings.telegram_proxy_url == "socks5://127.0.0.1:1080"
 
 
+def test_settings_reads_persistent_telegram_runtime_defaults_and_overrides():
+    default_settings = Settings(
+        _env_file=None,
+        telegram_bot_token="CHANGE_ME",
+        app_secret_key="test-secret",
+    )
+    custom_settings = Settings(
+        _env_file=None,
+        telegram_bot_token="CHANGE_ME",
+        app_secret_key="test-secret",
+        telegram_expected_bot_username=" @expected_bot ",
+        telegram_admission_timeout_seconds=45,
+        telegram_polling_timeout_seconds=25,
+        telegram_runtime_lock_path=" /tmp/amn2-bot.lock ",
+    )
+
+    assert default_settings.telegram_expected_bot_username == ""
+    assert default_settings.telegram_admission_timeout_seconds == 30
+    assert default_settings.telegram_polling_timeout_seconds == 20
+    assert default_settings.telegram_runtime_lock_path == "/run/amn2-bot/polling.lock"
+    assert custom_settings.telegram_expected_bot_username == "@expected_bot"
+    assert custom_settings.telegram_admission_timeout_seconds == 45
+    assert custom_settings.telegram_polling_timeout_seconds == 25
+    assert custom_settings.telegram_runtime_lock_path == "/tmp/amn2-bot.lock"
+
+
+@pytest.mark.parametrize("timeout_seconds", [0, 121])
+def test_settings_rejects_persistent_telegram_admission_timeout_out_of_range(
+    timeout_seconds,
+):
+    with pytest.raises(ValidationError, match="TELEGRAM_ADMISSION_TIMEOUT_SECONDS"):
+        Settings(
+            _env_file=None,
+            telegram_bot_token="CHANGE_ME",
+            app_secret_key="test-secret",
+            telegram_admission_timeout_seconds=timeout_seconds,
+        )
+
+
+@pytest.mark.parametrize("timeout_seconds", [0, 51])
+def test_settings_rejects_persistent_telegram_polling_timeout_out_of_range(
+    timeout_seconds,
+):
+    with pytest.raises(ValidationError, match="TELEGRAM_POLLING_TIMEOUT_SECONDS"):
+        Settings(
+            _env_file=None,
+            telegram_bot_token="CHANGE_ME",
+            app_secret_key="test-secret",
+            telegram_polling_timeout_seconds=timeout_seconds,
+        )
+
+
+def test_settings_rejects_blank_persistent_telegram_runtime_lock_path():
+    with pytest.raises(ValidationError, match="TELEGRAM_RUNTIME_LOCK_PATH"):
+        Settings(
+            _env_file=None,
+            telegram_bot_token="CHANGE_ME",
+            app_secret_key="test-secret",
+            telegram_runtime_lock_path="   ",
+        )
+
+
 def test_settings_reads_web_admin_and_logging_settings():
     settings = Settings(
         _env_file=None,

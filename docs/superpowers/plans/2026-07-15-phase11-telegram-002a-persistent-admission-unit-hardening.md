@@ -132,6 +132,7 @@ Run the Step 2 command and `git diff --check`. Expected: PASS.
 
 **Interfaces:**
 - Produces: `PERSISTENT_ALLOWED_UPDATES: tuple[str, str]`
+- Produces: `PERSISTENT_TASKS_CONCURRENCY_LIMIT = 8`
 - Produces: `PersistentBotAdmissionConfig`
 - Produces: `PersistentBotAdmissionResult.render() -> str`
 - Produces: `PersistentBotAdmissionError`
@@ -338,7 +339,9 @@ Add tests proving local lock failure and admission failure create no workflow;
 recheck failure creates no polling/readiness; readiness occurs after polling
 task starts; watchdog failure cancels polling and exits; network failure is
 sanitized; cancellation closes session and releases lock; receipt contains no
-token/admin ID/proxy credential.
+token/admin ID/proxy credential. Assert that all pre-poll work shares one
+`telegram_admission_timeout_seconds` budget and that polling explicitly uses
+`handle_as_tasks=True` with `tasks_concurrency_limit=8`.
 
 - [ ] **Step 2: Run RED tests**
 
@@ -362,15 +365,18 @@ with lock_factory(settings.telegram_runtime_lock_path):
             expected_bot_username=settings.telegram_expected_bot_username,
             timeout_seconds=settings.telegram_admission_timeout_seconds,
         )
-        result = await admission_checker(bot, config)
-        workflow = workflow_factory(settings)
-        dispatcher = dispatcher_factory(workflow=workflow)
-        await state_checker(bot, config)
+        async with asyncio.timeout(settings.telegram_admission_timeout_seconds):
+            result = await admission_checker(bot, config)
+            workflow = workflow_factory(settings)
+            dispatcher = dispatcher_factory(workflow=workflow)
+            await state_checker(bot, config)
         polling = asyncio.create_task(dispatcher.start_polling(
             bot,
             polling_timeout=settings.telegram_polling_timeout_seconds,
             allowed_updates=list(PERSISTENT_ALLOWED_UPDATES),
             close_bot_session=False,
+            handle_as_tasks=True,
+            tasks_concurrency_limit=8,
         ))
         await asyncio.sleep(0)
         if polling.done():
@@ -413,7 +419,7 @@ Expected: PASS.
 - [ ] **Step 1: Write RED unit-template assertions**
 
 Assert exact presence of `Type=notify`, `NotifyAccess=main`, `WatchdogSec=60s`,
-`TimeoutStartSec=45s`, `TimeoutStopSec=30s`, `RuntimeDirectory=amn2-bot`,
+`TimeoutStartSec=135s`, `TimeoutStopSec=30s`, `RuntimeDirectory=amn2-bot`,
 `RuntimeDirectoryMode=0750`, `StartLimitIntervalSec=300s`,
 `StartLimitBurst=3`, `RestartSec=30s`, `UMask=0077`, empty capability sets,
 all design sandbox directives, exact restricted address families and the four

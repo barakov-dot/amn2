@@ -25,6 +25,22 @@ def test_runtime_manifest_describes_supported_modes_and_git_policy():
     assert "APP_SECRET_KEY" in manifest["diagnostics"]["redacted_keys"]
 
 
+def test_runtime_manifest_defines_persistent_telegram_admission_contract():
+    manifest_path = ROOT / "deploy/runtime/manifest.yml"
+
+    manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+    telegram = manifest["telegram_persistent"]
+
+    assert telegram["activation"] == "separate_exact_gate"
+    assert telegram["allowed_updates"] == ["message", "callback_query"]
+    assert telegram["settings"] == {
+        "expected_bot_username": "TELEGRAM_EXPECTED_BOT_USERNAME",
+        "admission_timeout_seconds": "TELEGRAM_ADMISSION_TIMEOUT_SECONDS",
+        "polling_timeout_seconds": "TELEGRAM_POLLING_TIMEOUT_SECONDS",
+        "runtime_lock_path": "TELEGRAM_RUNTIME_LOCK_PATH",
+    }
+
+
 def test_runtime_checker_is_read_only_and_knows_both_runtimes():
     checker_path = ROOT / "deploy/runtime/check_vps.sh"
 

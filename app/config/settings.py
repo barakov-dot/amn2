@@ -25,6 +25,22 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str = Field(alias="TELEGRAM_BOT_TOKEN")
     telegram_proxy_url: str = Field(default="", alias="TELEGRAM_PROXY_URL")
+    telegram_expected_bot_username: str = Field(
+        default="",
+        alias="TELEGRAM_EXPECTED_BOT_USERNAME",
+    )
+    telegram_admission_timeout_seconds: int = Field(
+        default=30,
+        alias="TELEGRAM_ADMISSION_TIMEOUT_SECONDS",
+    )
+    telegram_polling_timeout_seconds: int = Field(
+        default=20,
+        alias="TELEGRAM_POLLING_TIMEOUT_SECONDS",
+    )
+    telegram_runtime_lock_path: str = Field(
+        default="/run/amn2-bot/polling.lock",
+        alias="TELEGRAM_RUNTIME_LOCK_PATH",
+    )
     app_secret_key: str = Field(alias="APP_SECRET_KEY")
     admin_telegram_ids: str = Field(default="", alias="ADMIN_TELEGRAM_IDS")
     access_mode: str = Field(default="free_test", alias="ACCESS_MODE")
@@ -157,6 +173,16 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_vpn_port_bounds(self) -> "Settings":
+        if not 1 <= self.telegram_admission_timeout_seconds <= 120:
+            raise ValueError("TELEGRAM_ADMISSION_TIMEOUT_SECONDS must be in 1..120")
+        if not 1 <= self.telegram_polling_timeout_seconds <= 50:
+            raise ValueError("TELEGRAM_POLLING_TIMEOUT_SECONDS must be in 1..50")
+        self.telegram_expected_bot_username = (
+            self.telegram_expected_bot_username.strip()
+        )
+        self.telegram_runtime_lock_path = self.telegram_runtime_lock_path.strip()
+        if not self.telegram_runtime_lock_path:
+            raise ValueError("TELEGRAM_RUNTIME_LOCK_PATH must be non-blank")
         if not 1 <= self.vpn_port_min <= 65535:
             raise ValueError("VPN_PORT_MIN must be in 1..65535")
         if not 1 <= self.vpn_port_max <= 65535:

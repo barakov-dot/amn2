@@ -1,5 +1,16 @@
-from app.main import create_bot, create_workflow
+import asyncio
+
+import pytest
+
+from app.bot.persistent_runtime import (
+    PERSISTENT_ALLOWED_UPDATES,
+    PersistentBotAdmissionError,
+    PersistentBotAdmissionResult,
+)
+from app.config import Settings
+from app.main import create_bot, create_workflow, run_persistent_bot
 from app.services.access import AccessService
+from app.systemd_notify import SystemdNotifyError
 from tests.server_config.test_loader import VALID_YAML
 
 
@@ -159,3 +170,324 @@ def test_create_bot_uses_proxy_session_when_proxy_url_is_configured(monkeypatch)
     assert bot.token == "123:abc"
     assert bot.session is created_sessions[0]
     assert bot.session.proxy == "socks5://127.0.0.1:1080"
+
+
+class _FakeSession:
+    def __init__(self, events):
+        self._events = events
+
+    async def close(self):
+        self._events.append("session_close")
+
+
+class _FakePersistentBot:
+    def __init__(self, events):
+        self.session = _FakeSession(events)
+
+
+class _FakeDispatcher:
+    def __init__(self, events):
+        self.events = events
+        self.started = asyncio.Event()
+        self.stop = asyncio.Event()
+
+    async def start_polling(self, bot, **kwargs):
+        self.events.append(("poll", kwargs))
+        self.started.set()
+        try:
+            await self.stop.wait()
+        except asyncio.CancelledError:
+            self.events.append("poll_cancelled")
+            raise
+
+
+class _RecordingLock:
+    def __init__(self, events, *, enter_error=None):
+        self.events = events
+        self.enter_error = enter_error
+
+    def __enter__(self):
+        self.events.append("lock_enter")
+        if self.enter_error is not None:
+            raise self.enter_error
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.events.append("lock_exit")
+
+
+class _FakeNotifier:
+    def __init__(self, events, *, watchdog_error=None):
+        self.events = events
+        self.watchdog_error = watchdog_error
+
+    def ready(self, status):
+        self.events.append(("ready", status))
+
+    def stopping(self, status):
+        self.events.append(("stopping", status))
+
+    def watchdog_interval_seconds(self):
+        return 1.0 if self.watchdog_error is not None else None
+
+    async def run_watchdog(self):
+        self.events.append("watchdog_start")
+        if self.watchdog_error is not None:
+            raise self.watchdog_error
+
+
+def _persistent_settings(tmp_path):
+    return Settings(
+        _env_file=None,
+        telegram_bot_token="123:secret-token-marker",
+        telegram_proxy_url="socks5://user:proxy-secret@127.0.0.1:1080",
+        telegram_expected_bot_username="@expected_bot",
+        telegram_admission_timeout_seconds=30,
+        telegram_polling_timeout_seconds=20,
+        telegram_runtime_lock_path=str(tmp_path / "polling.lock"),
+        app_secret_key="app-bootstrap-secret-value-with-more-than-32-chars",
+        admin_telegram_ids="9001",
+    )
+
+
+def _passing_admission(events):
+    async def check(bot, config):
+        events.append("admission")
+        assert config.expected_bot_username == "@expected_bot"
+        return PersistentBotAdmissionResult(
+            bot_identity="@expected_bot",
+            pending_update_count=0,
+            allowed_updates=PERSISTENT_ALLOWED_UPDATES,
+        )
+
+    return check
+
+
+def _passing_recheck(events):
+    async def check(bot, config):
+        events.append("recheck")
+
+    return check
+
+
+def test_persistent_bootstrap_orders_admission_before_workflow_and_explicit_polling(
+    tmp_path,
+):
+    async def scenario():
+        events = []
+        dispatcher = _FakeDispatcher(events)
+        notifier = _FakeNotifier(events)
+        task = asyncio.create_task(
+            run_persistent_bot(
+                _persistent_settings(tmp_path),
+                bot_factory=lambda **kwargs: events.append("bot")
+                or _FakePersistentBot(events),
+                workflow_factory=lambda settings: events.append("workflow")
+                or object(),
+                dispatcher_factory=lambda **kwargs: events.append("dispatcher")
+                or dispatcher,
+                admission_checker=_passing_admission(events),
+                state_checker=_passing_recheck(events),
+                lock_factory=lambda path: _RecordingLock(events),
+                notifier=notifier,
+                receipt_writer=lambda value: events.append(("receipt", value)),
+            )
+        )
+        await dispatcher.started.wait()
+        await asyncio.sleep(0)
+        dispatcher.stop.set()
+        await task
+        return events
+
+    events = asyncio.run(scenario())
+
+    assert events.index("lock_enter") < events.index("bot")
+    assert events.index("admission") < events.index("workflow")
+    assert events.index("workflow") < events.index("recheck")
+    poll = next(item for item in events if isinstance(item, tuple) and item[0] == "poll")
+    assert poll[1]["allowed_updates"] == ["message", "callback_query"]
+    assert poll[1]["polling_timeout"] == 20
+    assert poll[1]["close_bot_session"] is False
+    assert poll[1]["handle_as_tasks"] is True
+    assert poll[1]["tasks_concurrency_limit"] == 8
+    assert events.index("recheck") < events.index(poll)
+    assert events.index(poll) < events.index(("ready", "Telegram polling admitted"))
+    receipt = next(item[1] for item in events if isinstance(item, tuple) and item[0] == "receipt")
+    assert receipt.startswith("telegram_persistent_admission=pass")
+    assert "secret-token-marker" not in receipt
+    assert "proxy-secret" not in receipt
+    assert "9001" not in receipt
+    assert events[-3:] == [
+        ("stopping", "Telegram polling stopped"),
+        "session_close",
+        "lock_exit",
+    ]
+
+
+def test_persistent_bootstrap_admission_failure_precedes_workflow_and_closes_session(
+    tmp_path,
+):
+    async def failing_admission(bot, config):
+        events.append("admission")
+        raise PersistentBotAdmissionError("Telegram bot identity mismatch")
+
+    events = []
+
+    with pytest.raises(PersistentBotAdmissionError, match="identity mismatch"):
+        asyncio.run(
+            run_persistent_bot(
+                _persistent_settings(tmp_path),
+                bot_factory=lambda **kwargs: events.append("bot")
+                or _FakePersistentBot(events),
+                workflow_factory=lambda settings: events.append("workflow")
+                or object(),
+                dispatcher_factory=lambda **kwargs: events.append("dispatcher")
+                or _FakeDispatcher(events),
+                admission_checker=failing_admission,
+                state_checker=_passing_recheck(events),
+                lock_factory=lambda path: _RecordingLock(events),
+                notifier=_FakeNotifier(events),
+                receipt_writer=lambda value: events.append(("receipt", value)),
+            )
+        )
+
+    assert "workflow" not in events
+    assert "dispatcher" not in events
+    assert not any(isinstance(item, tuple) and item[0] == "ready" for item in events)
+    assert events[-2:] == ["session_close", "lock_exit"]
+
+
+def test_persistent_bootstrap_recheck_failure_prevents_polling_and_readiness(tmp_path):
+    events = []
+
+    async def failing_recheck(bot, config):
+        events.append("recheck")
+        raise PersistentBotAdmissionError("Telegram pending update count is nonzero")
+
+    with pytest.raises(PersistentBotAdmissionError, match="pending update count"):
+        asyncio.run(
+            run_persistent_bot(
+                _persistent_settings(tmp_path),
+                bot_factory=lambda **kwargs: _FakePersistentBot(events),
+                workflow_factory=lambda settings: events.append("workflow")
+                or object(),
+                dispatcher_factory=lambda **kwargs: events.append("dispatcher")
+                or _FakeDispatcher(events),
+                admission_checker=_passing_admission(events),
+                state_checker=failing_recheck,
+                lock_factory=lambda path: _RecordingLock(events),
+                notifier=_FakeNotifier(events),
+                receipt_writer=lambda value: events.append(("receipt", value)),
+            )
+        )
+
+    assert not any(isinstance(item, tuple) and item[0] == "poll" for item in events)
+    assert not any(isinstance(item, tuple) and item[0] == "ready" for item in events)
+    assert events[-2:] == ["session_close", "lock_exit"]
+
+
+def test_persistent_bootstrap_applies_one_timeout_to_all_pre_poll_startup(tmp_path):
+    async def scenario():
+        events = []
+        settings = _persistent_settings(tmp_path).model_copy(
+            update={"telegram_admission_timeout_seconds": 1}
+        )
+
+        async def stalled_recheck(bot, config):
+            events.append("recheck")
+            await asyncio.Event().wait()
+
+        with pytest.raises(
+            PersistentBotAdmissionError,
+            match="Telegram persistent startup timed out",
+        ):
+            await asyncio.wait_for(
+                run_persistent_bot(
+                    settings,
+                    bot_factory=lambda **kwargs: _FakePersistentBot(events),
+                    workflow_factory=lambda current_settings: events.append("workflow")
+                    or object(),
+                    dispatcher_factory=lambda **kwargs: events.append("dispatcher")
+                    or _FakeDispatcher(events),
+                    admission_checker=_passing_admission(events),
+                    state_checker=stalled_recheck,
+                    lock_factory=lambda path: _RecordingLock(events),
+                    notifier=_FakeNotifier(events),
+                    receipt_writer=lambda value: events.append(("receipt", value)),
+                ),
+                timeout=2.0,
+            )
+        return events
+
+    events = asyncio.run(scenario())
+
+    assert events[:5] == [
+        "lock_enter",
+        "admission",
+        "workflow",
+        "dispatcher",
+        "recheck",
+    ]
+    assert not any(isinstance(item, tuple) and item[0] == "poll" for item in events)
+    assert not any(isinstance(item, tuple) and item[0] == "ready" for item in events)
+    assert events[-2:] == ["session_close", "lock_exit"]
+
+
+def test_persistent_bootstrap_lock_failure_precedes_bot_and_network(tmp_path):
+    events = []
+    lock_error = PersistentBotAdmissionError(
+        "Persistent Telegram bot instance is already running"
+    )
+
+    with pytest.raises(PersistentBotAdmissionError, match="already running"):
+        asyncio.run(
+            run_persistent_bot(
+                _persistent_settings(tmp_path),
+                bot_factory=lambda **kwargs: events.append("bot"),
+                workflow_factory=lambda settings: events.append("workflow"),
+                dispatcher_factory=lambda **kwargs: events.append("dispatcher"),
+                admission_checker=_passing_admission(events),
+                state_checker=_passing_recheck(events),
+                lock_factory=lambda path: _RecordingLock(
+                    events,
+                    enter_error=lock_error,
+                ),
+                notifier=_FakeNotifier(events),
+                receipt_writer=lambda value: events.append(("receipt", value)),
+            )
+        )
+
+    assert events == ["lock_enter"]
+
+
+def test_persistent_bootstrap_watchdog_failure_cancels_polling_and_cleans_up(tmp_path):
+    async def scenario():
+        events = []
+        dispatcher = _FakeDispatcher(events)
+        with pytest.raises(SystemdNotifyError, match="watchdog failed"):
+            await run_persistent_bot(
+                _persistent_settings(tmp_path),
+                bot_factory=lambda **kwargs: _FakePersistentBot(events),
+                workflow_factory=lambda settings: object(),
+                dispatcher_factory=lambda **kwargs: dispatcher,
+                admission_checker=_passing_admission(events),
+                state_checker=_passing_recheck(events),
+                lock_factory=lambda path: _RecordingLock(events),
+                notifier=_FakeNotifier(
+                    events,
+                    watchdog_error=SystemdNotifyError("watchdog failed"),
+                ),
+                receipt_writer=lambda value: events.append(("receipt", value)),
+            )
+        return events
+
+    events = asyncio.run(scenario())
+
+    assert "watchdog_start" in events
+    assert "poll_cancelled" in events
+    assert events[-4:] == [
+        ("stopping", "Telegram polling stopped"),
+        "poll_cancelled",
+        "session_close",
+        "lock_exit",
+    ]

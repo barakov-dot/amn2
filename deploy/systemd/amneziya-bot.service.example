@@ -2,18 +2,46 @@
 Description=Amneziya Telegram bot
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=300s
+StartLimitBurst=3
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 User=amneziya
 Group=amneziya
 WorkingDirectory=/opt/amn2
 EnvironmentFile=/opt/amn2/.env
 ExecStart=/opt/amn2/venv/bin/python -m app.main
 Restart=on-failure
-RestartSec=5
+RestartSec=30s
+TimeoutStartSec=135s
+TimeoutStopSec=30s
+WatchdogSec=60s
+RuntimeDirectory=amn2-bot
+RuntimeDirectoryMode=0750
+UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/opt/amn2/data /opt/amn2/logs /opt/amn2/backups /opt/amn2/config_templates
 
 [Install]
 WantedBy=multi-user.target
