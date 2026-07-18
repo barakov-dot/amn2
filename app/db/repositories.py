@@ -985,6 +985,38 @@ class Repository:
             (owner_user_id, limit),
         ).fetchall()
 
+    def list_device_passports(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[sqlite3.Row]:
+        if not 1 <= limit <= 100:
+            raise ValueError("device passport limit must be between 1 and 100")
+        return self._conn.execute(
+            """
+            SELECT
+                device_id,
+                local_device_id,
+                owner_user_id,
+                platform,
+                official_client_type,
+                client_version,
+                import_method,
+                config_schema_version,
+                config_fingerprint,
+                last_seen_at,
+                acceptance_evidence_json,
+                revoked_at,
+                revoke_reason,
+                created_at,
+                updated_at
+            FROM device_passports
+            ORDER BY updated_at DESC, device_id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
     def update_device_passport_observation(
         self,
         *,

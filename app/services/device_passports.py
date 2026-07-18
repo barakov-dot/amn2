@@ -214,6 +214,23 @@ def list_device_passports(
     )
 
 
+def list_all_device_passports(
+    repo: Repository,
+    *,
+    reconciliations: dict[str, ReconciliationSnapshot] | None = None,
+    limit: int = 100,
+) -> tuple[DevicePassport, ...]:
+    snapshots = reconciliations or {}
+    return tuple(
+        _passport_from_row(
+            repo,
+            row,
+            reconciliation=snapshots.get(str(row["device_id"])),
+        )
+        for row in repo.list_device_passports(limit=limit)
+    )
+
+
 def attach_passport_to_local_device(
     repo: Repository,
     *,

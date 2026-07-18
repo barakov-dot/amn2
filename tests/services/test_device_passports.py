@@ -14,6 +14,7 @@ from app.services.device_passports import (
     create_device_passport,
     fingerprint_config,
     get_device_passport,
+    list_all_device_passports,
     list_device_passports,
     record_device_acceptance,
 )
@@ -148,6 +149,72 @@ def test_passport_list_returns_only_owner_records():
         passport.device_id
     ]
     assert list_device_passports(repo, user_id + 999) == ()
+
+
+def test_global_passport_list_is_bounded_and_sorted_by_latest_update():
+    conn, repo, first_owner_id, first_local_device_id = _repo()
+    second_owner_id = repo.upsert_user(
+        telegram_id=8002,
+        username="second-passport-user",
+        first_name="Second",
+        last_name="Owner",
+    )
+    server_id = repo.ensure_default_server(
+        name="server-1",
+        network_cidr="10.8.0.0/24",
+    )
+    second_local_device_id = repo.create_device(
+        user_id=second_owner_id,
+        server_id=server_id,
+        name="phone",
+        duration_days=30,
+        vpn_ip="10.8.0.3",
+        peer_public_key="second-passport-public-key",
+        peer_private_key_encrypted="encrypted-private-2",
+        preshared_key_encrypted="encrypted-psk-2",
+        config_version="amneziawg_v2",
+    )
+    first = create_device_passport(
+        repo,
+        owner_user_id=first_owner_id,
+        local_device_id=first_local_device_id,
+        platform="android_tv",
+        official_client_type="amnezia_vpn",
+        import_method="standard_conf",
+        config_schema_version="amneziawg_v2",
+        config_text="first-config",
+    )
+    second = create_device_passport(
+        repo,
+        owner_user_id=second_owner_id,
+        local_device_id=second_local_device_id,
+        platform="windows",
+        official_client_type="amneziawg",
+        import_method="standard_conf",
+        config_schema_version="amneziawg_v2",
+        config_text="second-config",
+    )
+    conn.execute(
+        "UPDATE device_passports SET updated_at = ? WHERE device_id = ?",
+        ("2026-07-18 11:00:00", first.device_id),
+    )
+    conn.execute(
+        "UPDATE device_passports SET updated_at = ? WHERE device_id = ?",
+        ("2026-07-18 12:00:00", second.device_id),
+    )
+    conn.commit()
+
+    items = list_all_device_passports(repo, limit=1)
+
+    assert [item.device_id for item in items] == [second.device_id]
+
+
+@pytest.mark.parametrize("limit", [0, 101])
+def test_global_passport_list_rejects_out_of_range_limit(limit: int):
+    _, repo, _, _ = _repo()
+
+    with pytest.raises(ValueError, match="limit must be between 1 and 100"):
+        list_all_device_passports(repo, limit=limit)
 
 
 def _repo() -> tuple[sqlite3.Connection, Repository, int, int]:
