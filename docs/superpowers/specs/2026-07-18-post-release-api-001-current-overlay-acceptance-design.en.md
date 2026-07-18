@@ -2,7 +2,7 @@
 
 Date: 2026-07-18.
 
-Status: `design-approved|written-spec-pending-review`.
+Status: `written-spec-approved-for-local-implementation`.
 
 Design approval:
 
@@ -10,10 +10,15 @@ Design approval:
 APPROVE_API_001_DESIGN
 ```
 
-The approval permits writing and committing this bilingual design. It does
-not authorize SSH, live preflight, a VPS API listener, or any production
-action. The written specification requires a separate review before TDD
-planning and implementation begin.
+Written specification approval:
+
+```text
+APPROVE_WRITTEN_API_001_SPEC_3A3AF86
+```
+
+These approvals permit TDD planning, local implementation, and verification.
+They do not authorize SSH, live preflight, a VPS API listener, or any
+production action.
 
 ## 1. Baseline and purpose
 

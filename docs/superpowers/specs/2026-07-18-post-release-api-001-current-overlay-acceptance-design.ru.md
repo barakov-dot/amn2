@@ -2,7 +2,7 @@
 
 Дата: 2026-07-18.
 
-Статус: `design-approved|written-spec-pending-review`.
+Статус: `written-spec-approved-for-local-implementation`.
 
 Утверждение дизайна:
 
@@ -16,10 +16,15 @@ APPROVE_API_001_DESIGN
 APPROVE_API_001_DESIGN -> WRITE_AND_COMMIT_BILINGUAL_SPEC -> WRITE_TDD_PLAN -> IMPLEMENT_FAIL_CLOSED_CLONE_DB_EXECUTOR -> RUN_SCOPED_AND_FULL_TESTS -> RUN_DIFF_AND_SECURITY_REVIEW -> SYNC_STATUS_COMMIT_AND_PUSH -> ISSUE_SEPARATE_EXACT_LIVE_APPROVAL_PHRASE
 ```
 
-Это утверждение разрешает записать и закоммитить bilingual design spec. Оно не
-разрешает SSH, live preflight, запуск API на VPS или иной production action.
-Переход к TDD-плану и реализации требует отдельного подтверждения именно
-письменной спецификации.
+Письменная спецификация отдельно утверждена:
+
+```text
+APPROVE_WRITTEN_API_001_SPEC_3A3AF86
+```
+
+Эти утверждения разрешают TDD-планирование, локальную реализацию и проверки.
+Они не разрешают SSH, live preflight, запуск API на VPS или иной production
+action.
 
 ## 1. Исходное состояние
 
