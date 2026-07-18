@@ -2,13 +2,22 @@
 
 Дата: 2026-07-18.
 
-Статус: `approved-design-pending-written-spec-review`.
+Статус: `written-spec-approved-for-local-implementation`.
 
 Утверждение:
 
 ```text
 APPROVE_POST_RELEASE_DEVICE_001_READ_ONLY_OPERATOR_UX_AND_TELEGRAM_GROUP_ICON_GATE_DESIGN
 ```
+
+Письменная спецификация отдельно утверждена:
+
+```text
+APPROVE_WRITTEN_DEVICE_001_AND_TELEGRAM_GROUP_ICON_001_SPEC_57EFE86
+```
+
+Это утверждение разрешает планирование, локальную реализацию и проверки, но
+не разрешает `setChatPhoto` или иной live Telegram mutation.
 
 Базовая ветка и commit:
 
