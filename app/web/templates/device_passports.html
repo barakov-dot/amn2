@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="section-heading page-heading">
+    <div>
+      <p class="eyebrow">DEVICE-001 · операторский обзор</p>
+      <h1>Паспорта устройств</h1>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-header">
+      <h2>Безопасные метаданные</h2>
+    </div>
+    <p class="muted-text">Последние {{ limit }} записей · только чтение · без live-проверки VPS</p>
+    {% if items %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID паспорта</th>
+              <th>Владелец</th>
+              <th>Локальное устройство</th>
+              <th>Платформа / клиент</th>
+              <th>Приёмка</th>
+              <th>Статус</th>
+              <th>Drift</th>
+              <th>Последние данные</th>
+              <th>Действия</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in items %}
+              <tr>
+                <td><a href="/device-passports/{{ item.device_id }}">{{ item.device_id }}</a></td>
+                <td><a href="/users/{{ item.owner.id }}">{{ item.owner.display }}</a></td>
+                <td>{{ item.local_device_id or "не привязан" }}</td>
+                <td>
+                  <span class="primary-text">{{ item.platform }}</span>
+                  <span class="muted-text">{{ item.official_client_type }} {{ item.client_version or "" }}</span>
+                </td>
+                <td>{{ item.acceptance_status }}</td>
+                <td><span class="status status-{{ item.state }}">{{ item.state }}</span></td>
+                <td>{{ item.drift_state }}</td>
+                <td>
+                  <span class="primary-text">seen: {{ item.last_seen_at or "-" }}</span>
+                  <span class="muted-text">observed: {{ item.last_observed_at or "-" }}</span>
+                  <span class="muted-text">updated: {{ item.updated_at }}</span>
+                </td>
+                <td><a href="/device-passports/{{ item.device_id }}">Открыть паспорт</a></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="empty-state">Паспорта устройств не найдены.</p>
+    {% endif %}
+  </section>
+{% endblock %}

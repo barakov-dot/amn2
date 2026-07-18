@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <section class="section-heading page-heading">
+    <div>
+      <p class="eyebrow">DEVICE-001 · только чтение</p>
+      <h1>{{ passport.device_id }}</h1>
+    </div>
+    <a href="/device-passports">Назад к паспортам</a>
+  </section>
+
+  <section class="detail-grid">
+    <article class="panel">
+      <div class="panel-header"><h2>Паспорт</h2></div>
+      <dl class="details">
+        <div><dt>Владелец</dt><dd><a href="/users/{{ owner.id }}">{{ owner.display }}</a></dd></div>
+        <div><dt>Локальное устройство</dt><dd>{{ passport.local_device_id or "не привязан" }}</dd></div>
+        <div><dt>Платформа</dt><dd>{{ passport.platform }}</dd></div>
+        <div><dt>Официальный клиент</dt><dd>{{ passport.official_client_type }} {{ passport.client_version or "" }}</dd></div>
+        <div><dt>Метод импорта</dt><dd>{{ passport.import_method }}</dd></div>
+        <div><dt>Схема конфига</dt><dd>{{ passport.config_schema_version }}</dd></div>
+        <div><dt>Отпечаток конфига</dt><dd class="wrap-text">{{ passport.config_fingerprint }}</dd></div>
+        <div><dt>Состояние</dt><dd><span class="status status-{{ state }}">{{ state }}</span></dd></div>
+        <div><dt>Последняя активность</dt><dd>{{ passport.last_seen_at or "-" }}</dd></div>
+        <div><dt>Обновлён</dt><dd>{{ passport.updated_at }}</dd></div>
+      </dl>
+    </article>
+
+    <article class="panel">
+      <div class="panel-header"><h2>Сверка состояния</h2></div>
+      <dl class="details">
+        <div><dt>Drift</dt><dd>{{ passport.drift_state }}</dd></div>
+        <div><dt>Причина drift</dt><dd>{{ passport.drift_reason or "-" }}</dd></div>
+        <div><dt>Последнее наблюдение</dt><dd>{{ passport.last_observed_at or "-" }}</dd></div>
+        <div><dt>Рекомендация только для чтения</dt><dd>{{ passport.recommended_next_action }}</dd></div>
+      </dl>
+    </article>
+  </section>
+
+  <section class="detail-grid">
+    <article class="panel">
+      <div class="panel-header"><h2>Ожидаемое состояние</h2></div>
+      <dl class="details">
+        {% for key, value in passport.desired_state.items() %}
+          <div><dt>{{ key }}</dt><dd class="wrap-text">{{ value if value is not none else "-" }}</dd></div>
+        {% endfor %}
+      </dl>
+    </article>
+    <article class="panel">
+      <div class="panel-header"><h2>Наблюдаемое состояние</h2></div>
+      <dl class="details">
+        {% for key, value in passport.observed_state.items() %}
+          <div><dt>{{ key }}</dt><dd class="wrap-text">{{ value if value is not none else "-" }}</dd></div>
+        {% endfor %}
+      </dl>
+    </article>
+  </section>
+
+  <section class="detail-grid">
+    <article class="panel">
+      <div class="panel-header"><h2>Приёмка устройства</h2></div>
+      <p><span class="status status-{{ acceptance_status }}">{{ acceptance_status }}</span></p>
+      {% if passport.acceptance_evidence %}
+        <dl class="details">
+          {% for key, value in passport.acceptance_evidence.items() %}
+            <div><dt>{{ key }}</dt><dd class="wrap-text">{{ value }}</dd></div>
+          {% endfor %}
+        </dl>
+      {% else %}
+        <p class="empty-state">Подтверждение приёмки ещё не записано.</p>
+      {% endif %}
+    </article>
+    <article class="panel">
+      <div class="panel-header"><h2>Возможности и ограничения</h2></div>
+      <dl class="details">
+        {% for key, value in passport.capability_boundary.items() %}
+          <div><dt>{{ key }}</dt><dd>{{ "true" if value else "false" }}</dd></div>
+        {% endfor %}
+      </dl>
+    </article>
+  </section>
+
+  <section class="panel">
+    <div class="panel-header"><h2>Жизненный цикл</h2></div>
+    {% if lifecycle %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Этап</th><th>Статус</th><th>Время</th><th>Длительность, мс</th><th>Источник</th></tr>
+          </thead>
+          <tbody>
+            {% for event in lifecycle %}
+              <tr>
+                <td>{{ event.stage }}</td>
+                <td>{{ event.status }}</td>
+                <td>{{ event.occurred_at }}</td>
+                <td>{{ event.duration_ms }}</td>
+                <td>{{ event.evidence.source }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <p class="empty-state">События жизненного цикла ещё не записаны.</p>
+    {% endif %}
+  </section>
+{% endblock %}

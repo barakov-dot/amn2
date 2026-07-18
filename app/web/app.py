@@ -66,6 +66,10 @@ from app.web.auth import check_password
 from app.web.auth import generate_csrf_token
 from app.web.auth import require_web_admin_config
 from app.web.auth import verify_csrf_token
+from app.web.device_passports import (
+    build_device_passport_detail_view,
+    build_device_passport_list_view,
+)
 from app.web.logs import read_log_tail
 from app.web.server_health import HealthSummary
 from app.web.server_health import run_server_health_check
@@ -712,6 +716,56 @@ def create_web_app(
         except ConfigTemplateError as exc:
             return _plain_error_response(exc)
         return RedirectResponse("/config-templates", status_code=303)
+
+    @app.get("/device-passports")
+    async def device_passports_index(request: Request):
+        if not _is_authenticated(request):
+            return RedirectResponse("/login", status_code=303)
+        try:
+            with _open_repository(actual_settings) as (repo, _conn):
+                view = build_device_passport_list_view(repo)
+        except LookupError:
+            return PlainTextResponse("Device passport not found", status_code=404)
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+            return PlainTextResponse(
+                "Device passport data is unavailable",
+                status_code=500,
+            )
+        return templates.TemplateResponse(
+            request,
+            "device_passports.html",
+            _template_context(
+                request,
+                title="Паспорта устройств",
+                authenticated=True,
+                **view,
+            ),
+        )
+
+    @app.get("/device-passports/{device_id}")
+    async def device_passport_detail(request: Request, device_id: str):
+        if not _is_authenticated(request):
+            return RedirectResponse("/login", status_code=303)
+        try:
+            with _open_repository(actual_settings) as (repo, _conn):
+                view = build_device_passport_detail_view(repo, device_id)
+        except LookupError:
+            return PlainTextResponse("Device passport not found", status_code=404)
+        except (ValueError, TypeError, KeyError, json.JSONDecodeError):
+            return PlainTextResponse(
+                "Device passport data is unavailable",
+                status_code=500,
+            )
+        return templates.TemplateResponse(
+            request,
+            "device_passport_detail.html",
+            _template_context(
+                request,
+                title=f"Паспорт {device_id}",
+                authenticated=True,
+                **view,
+            ),
+        )
 
     @app.get("/users")
     async def users_index(request: Request):
