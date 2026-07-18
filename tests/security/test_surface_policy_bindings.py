@@ -32,6 +32,16 @@ def test_policy_backed_bindings_match_surface_policies():
         assert binding.path == policy.path
 
 
+def test_device_passport_get_routes_use_explicit_policy_bindings():
+    bindings = _binding_map(WEB_RUNTIME_ROUTE_BINDINGS)
+    assert bindings[("GET", "/device-passports")].policy_id == (
+        "web.device_passports.index"
+    )
+    assert bindings[("GET", "/device-passports/{device_id}")].policy_id == (
+        "web.device_passports.detail"
+    )
+
+
 def test_web_runtime_routes_are_bound_or_exempted(tmp_path: Path):
     actual_routes = _route_keys(create_web_app(_settings(tmp_path)))
     bindings = _binding_map(WEB_RUNTIME_ROUTE_BINDINGS)

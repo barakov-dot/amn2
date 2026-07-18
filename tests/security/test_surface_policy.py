@@ -18,6 +18,8 @@ REQUIRED_POLICY_IDS = {
     "web.auth.logout",
     "web.config_templates.save",
     "web.config_templates.reset",
+    "web.device_passports.index",
+    "web.device_passports.detail",
     "web.integration_status.index",
     "web.api_tokens.index",
     "web.api_tokens.issue",
@@ -95,6 +97,10 @@ P7_WRITE_CONTOUR_POLICY_IDS = {
 PHASE10_PLAN_QUOTA_WRITE_CONTOUR_POLICY_IDS = {
     "web.plans.device_quota_update",
 }
+DEVICE_PASSPORT_READ_ONLY_POLICY_IDS = {
+    "web.device_passports.index",
+    "web.device_passports.detail",
+}
 
 SECRET_RISKS = {"secret-read", "public-token-secret-read"}
 PUBLIC_TOKEN_RISKS = {
@@ -164,7 +170,33 @@ def test_enabled_behavior_is_limited_to_approved_product_contours():
         API_ROUTE_SHELL_POLICY_IDS
         | P7_WRITE_CONTOUR_POLICY_IDS
         | PHASE10_PLAN_QUOTA_WRITE_CONTOUR_POLICY_IDS
+        | DEVICE_PASSPORT_READ_ONLY_POLICY_IDS
     )
+
+
+def test_device_passport_web_surfaces_are_read_only_and_secret_safe():
+    expected = {
+        "web.device_passports.index": "/device-passports",
+        "web.device_passports.detail": "/device-passports/{device_id}",
+    }
+    for policy_id, path in expected.items():
+        policy = get_surface_policy(policy_id)
+        assert policy.surface == "web"
+        assert policy.method == "GET"
+        assert policy.path == path
+        assert policy.actor == "web-admin"
+        assert policy.auth_method == "session"
+        assert policy.risk_class == "secret-adjacent-read"
+        assert policy.secret_class == "secret-adjacent"
+        assert policy.side_effects == ()
+        assert policy.audit_required is False
+        assert policy.live_retest_required is False
+        assert policy.implementation_mode == "implemented"
+        assert policy.enables_new_behavior is True
+        gates = " ".join(policy.gates).lower()
+        assert "no db mutation" in gates
+        assert "no remote observation" in gates
+        assert "no raw config" in gates
 
 
 def test_local_agent_first_slice_matches_existing_agent_policy():

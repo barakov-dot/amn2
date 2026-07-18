@@ -173,6 +173,20 @@ WEB_RUNTIME_ROUTE_BINDINGS: tuple[SurfaceBinding, ...] = (
     _binding(
         "web",
         "GET",
+        "/device-passports",
+        source="app.web.app:create_web_app",
+        policy_id="web.device_passports.index",
+    ),
+    _binding(
+        "web",
+        "GET",
+        "/device-passports/{device_id}",
+        source="app.web.app:create_web_app",
+        policy_id="web.device_passports.detail",
+    ),
+    _binding(
+        "web",
+        "GET",
         "/users",
         source="app.web.app:create_web_app",
         exemption_reason=READ_ONLY_WEB_VIEW,
