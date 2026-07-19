@@ -226,10 +226,10 @@ class AccessService:
         config_artifact_writer: Callable[[str], str | Path] | None,
         remote_mutation_observer: Callable[[RemoteMutationResult], None] | None,
     ) -> OperatorDeviceCreateResult:
-        normalized_device_name = device_name.strip()
+        normalized_device_display_name = device_name.strip()
         if admin_telegram_id <= 0:
             raise ValueError("admin_telegram_id must be positive")
-        if not normalized_device_name:
+        if not normalized_device_display_name:
             raise ValueError("device_name must be non-blank")
         if duration_days <= 0:
             raise ValueError("duration_days must be positive")
@@ -267,7 +267,7 @@ class AccessService:
         device_id, config_text = self._create_device_with_allocated_ip(
             user_id=owner_user_id,
             server_id=server_id,
-            device_name=normalized_device_name,
+            device_name=normalized_device_display_name,
             server=server,
             duration_days=duration_days,
             private_key=keypair.private_key,

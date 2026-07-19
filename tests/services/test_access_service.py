@@ -21,6 +21,7 @@ from app.services.access import (
     OrderNotApprovable,
     RemoteOperationPartialFailure,
 )
+from app.services.config_identity import build_config_identity
 from app.server.peer_apply import PeerApplyError
 import app.vpn.amneziawg_v2.config as awg_config
 
@@ -561,6 +562,32 @@ def test_create_operator_device_uses_explicit_owner_and_records_audit(tmp_path):
     assert conn.execute(
         "SELECT COUNT(*) FROM orders WHERE device_id = ?", (result.device_id,)
     ).fetchone()[0] == 0
+
+
+def test_create_operator_device_stores_precomputed_canonical_display_name(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    owner_user_id = repo.create_operator_recipient(operator_label="Иван")
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=RecordingPeerApplier(),
+    )
+    identity = build_config_identity(user_label="Иван", device_label="Pixel 8")
+
+    result = service.create_operator_device(
+        owner_user_id=owner_user_id,
+        server_id=server_id,
+        device_name=identity.display_name,
+        duration_days=30,
+        admin_telegram_id=999,
+    )
+
+    assert repo.get_device(result.device_id)["name"] == identity.display_name
 
 
 def test_create_operator_owner_shared_profile_bypasses_client_device_limit(tmp_path):

@@ -1,5 +1,7 @@
 import base64
 
+import pytest
+
 from app.bot.delivery import (
     APP_LINKS,
     CONFIG_READY_TEMPLATE_KEY,
@@ -159,6 +161,45 @@ def test_build_config_delivery_uses_canonical_standalone_awg_import_filename():
     assert package.config_filename == "Neobyatnaya.NET-17.conf"
     assert package.qr_filename == "Neobyatnaya.NET-17.qr.png"
     assert "Neobyatnaya-AMNZ-17" in package.message_text
+
+
+def test_build_config_delivery_accepts_canonical_admin_attachment_filename():
+    package = build_config_delivery(
+        device_id=17,
+        device_name="NEOBYATNAYA.NET — Иван — Pixel 8",
+        config_version="amneziawg_v2",
+        config_text="[Interface]\nPrivateKey = test\n[Peer]",
+        template_text="Устройство: {device_name}",
+        attachment_filename="NEOBYATNAYA.NET-Ivan-Pixel-8-d17.conf",
+    )
+
+    assert package.config_filename == "NEOBYATNAYA.NET-Ivan-Pixel-8-d17.conf"
+    assert package.qr_filename == "Neobyatnaya.NET-17.qr.png"
+    assert "NEOBYATNAYA.NET — Иван — Pixel 8" in package.message_text
+
+
+@pytest.mark.parametrize(
+    "attachment_filename",
+    [
+        "../device.conf",
+        "folder/device.conf",
+        "folder\\device.conf",
+        "device.conf:stream.conf",
+        f"{'a' * 92}.conf",
+        "device.txt",
+    ],
+)
+def test_build_config_delivery_rejects_unsafe_attachment_filename(
+    attachment_filename,
+):
+    with pytest.raises(ValueError, match="attachment_filename"):
+        build_config_delivery(
+            device_id=17,
+            config_version="amneziawg_v2",
+            config_text="[Interface]\nPrivateKey = test\n[Peer]",
+            template_text="ready",
+            attachment_filename=attachment_filename,
+        )
 
 
 def test_build_config_delivery_owner_shared_uses_brand_filename_and_unbounded_scope():

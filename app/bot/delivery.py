@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import re
 from dataclasses import dataclass
 from string import Formatter
 
@@ -84,6 +85,7 @@ def build_config_delivery(
     config_text: str,
     template_text: str,
     assignment_mode: str = DEDICATED_DEVICE,
+    attachment_filename: str | None = None,
 ) -> ConfigDeliveryPackage:
     assignment_policy = config_assignment_policy(assignment_mode)
     vpn_import_link = build_vpn_import_link(config_text)
@@ -91,6 +93,11 @@ def build_config_delivery(
     basename = _config_basename(
         device_id=device_id,
         assignment_mode=assignment_policy.mode,
+    )
+    config_filename = (
+        _validate_attachment_filename(attachment_filename)
+        if attachment_filename is not None
+        else f"{basename}.conf"
     )
     context = {
         "device_id": str(device_id),
@@ -103,7 +110,7 @@ def build_config_delivery(
     return ConfigDeliveryPackage(
         template_key=CONFIG_READY_TEMPLATE_KEY,
         message_text=render_template(template_text, context),
-        config_filename=f"{basename}.conf",
+        config_filename=config_filename,
         config_bytes=config_text.encode("utf-8"),
         qr_filename=f"{basename}.qr.png",
         qr_png_bytes=_build_qr_png(config_text),
@@ -130,6 +137,12 @@ def _config_basename(*, device_id: int, assignment_mode: str) -> str:
     if assignment_mode == OWNER_SHARED:
         return CANONICAL_STANDALONE_AWG_IMPORT_BASENAME
     return f"{CANONICAL_STANDALONE_AWG_IMPORT_BASENAME}-{device_id}"
+
+
+def _validate_attachment_filename(filename: str) -> str:
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,90}\.conf", filename) is None:
+        raise ValueError("attachment_filename must be a safe .conf basename")
+    return filename
 
 
 def render_template(template_text: str, values: dict[str, str]) -> str:
