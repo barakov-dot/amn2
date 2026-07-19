@@ -76,6 +76,7 @@ def test_cascade_revoke_closes_remote_peer_ticket_delivery_assignment_and_passpo
     repo.mark_order_fulfilled(order_id, local_device_id)
     remover = RecordingPeerRemover()
 
+    audit: list[dict[str, object]] = []
     result = cascade_revoke_physical_device(
         repo,
         local_device_id=local_device_id,
@@ -83,6 +84,7 @@ def test_cascade_revoke_closes_remote_peer_ticket_delivery_assignment_and_passpo
         revoked_at=NOW + timedelta(minutes=1),
         peer_remover=remover,
         apply_remote=True,
+        audit_recorder=audit.append,
     )
 
     assert remover.calls == [(server_id, "peer-public")]
@@ -90,6 +92,11 @@ def test_cascade_revoke_closes_remote_peer_ticket_delivery_assignment_and_passpo
     assert result.enrollment_tickets_revoked == 1
     assert result.delivery_links_closed == 1
     assert result.assignments_closed == 1
+    assert audit[0]["passport_device_id"] == claim.passport.device_id
+    assert audit[0]["device_rows_revoked"] == 1
+    assert "peer-public" not in str(audit)
+    assert "encrypted-private" not in str(audit)
+    assert "encrypted-psk" not in str(audit)
     assert repo.get_device(local_device_id)["status"] == "revoked"
     passport = get_device_passport(repo, claim.passport.device_id)
     assert passport.revoked_at == NOW + timedelta(minutes=1)

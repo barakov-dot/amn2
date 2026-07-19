@@ -22,6 +22,7 @@
         <table>
           <thead>
             <tr>
+              <th>Получатель</th>
               <th>Telegram ID</th>
               <th>Имя</th>
               <th>Email</th>
@@ -34,7 +35,8 @@
           <tbody>
             {% for user in users %}
               <tr>
-                <td><a href="/users/{{ user.id }}">{{ user.telegram_id }}</a></td>
+                <td><a href="/users/{{ user.id }}">{{ user.display_label }}</a></td>
+                <td>{{ user.telegram_id if user.has_telegram_identity else "—" }}</td>
                 <td>
                   <span class="primary-text">{{ user.username or "без username" }}</span>
                   <span class="muted-text">{{ user.first_name or "" }} {{ user.last_name or "" }}</span>

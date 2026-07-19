@@ -750,6 +750,12 @@ def create_web_app(
         try:
             with _open_repository(actual_settings) as (repo, _conn):
                 view = build_device_passport_detail_view(repo, device_id)
+                local_device_id = view["passport"].get("local_device_id")
+                view["config_identity"] = (
+                    str(repo.get_device(int(local_device_id))["name"])
+                    if local_device_id is not None
+                    else "не привязан"
+                )
         except LookupError:
             return PlainTextResponse("Device passport not found", status_code=404)
         except (ValueError, TypeError, KeyError, json.JSONDecodeError):
@@ -2255,7 +2261,10 @@ def _load_dashboard(settings: Settings) -> dict[str, Any]:
 
 def _load_users(settings: Settings) -> list[dict[str, Any]]:
     with _open_repository(settings) as (repo, _conn):
-        return [_row_to_dict(row) for row in repo.list_users_for_admin(limit=500)]
+        return [
+            _user_presentation(row)
+            for row in repo.list_users_for_admin(limit=500)
+        ]
 
 
 def _load_plans(settings: Settings) -> dict[str, Any]:
@@ -2282,7 +2291,10 @@ def _load_plans(settings: Settings) -> dict[str, Any]:
 def _load_disabled_devices(settings: Settings) -> list[dict[str, Any]]:
     with _open_repository(settings) as (repo, _conn):
         return [
-            _row_to_dict(row)
+            {
+                **_row_to_dict(row),
+                "user_display": user_display_label(row),
+            }
             for row in repo.list_disabled_devices_with_users(limit=100)
         ]
 
@@ -2531,7 +2543,7 @@ def _display_setting_value(name: str, value: Any, *, is_path: bool = False) -> s
 
 def _load_user_detail(settings: Settings, user_id: int) -> dict[str, Any]:
     with _open_repository(settings) as (repo, _conn):
-        user = _row_to_dict(repo.get_user_for_admin(user_id))
+        user = _user_presentation(repo.get_user_for_admin(user_id))
         next_device_sequence = repo.next_device_sequence(
             settings.bot_device_name_prefix,
             minimum_sequence=settings.bot_device_name_sequence_seed,
@@ -2637,6 +2649,21 @@ def _build_user_vpn_actions(devices: list[dict[str, Any]]) -> dict[str, dict[str
 
 def _plural(count: int, singular: str, plural: str) -> str:
     return singular if count == 1 else plural
+
+
+def _user_presentation(row: Any) -> dict[str, Any]:
+    user = _row_to_dict(row)
+    user["display_label"] = user_display_label(user)
+    user["has_telegram_identity"] = user["telegram_id"] is not None
+    return user
+
+
+def _safe_user_audit_identity(user: dict[str, Any]) -> dict[str, object]:
+    return {
+        "user_id": int(user["id"]),
+        "user_label": user_display_label(user),
+        "telegram_id": user["telegram_id"],
+    }
 
 
 def _load_server_detail(settings: Settings, server_id: int) -> dict[str, Any]:
@@ -3328,8 +3355,10 @@ def _disable_user_vpn(settings: Settings, request: Request, user_id: int) -> int
                 action="web_user_disable_vpn",
                 target_user_id=user_id,
                 metadata={
-                    "telegram_id": user["telegram_id"],
+                    **_safe_user_audit_identity(user),
                     "status": "blocked",
+                    "device_ids": [int(device["id"]) for device in devices],
+                    "device_names": [str(device["name"]) for device in devices],
                     "disabled_device_count": disabled_count,
                     "vps_apply": vps_apply,
                 },
@@ -3354,8 +3383,10 @@ def _enable_user_vpn(settings: Settings, request: Request, user_id: int) -> int:
                 action="web_user_enable_vpn",
                 target_user_id=user_id,
                 metadata={
-                    "telegram_id": user["telegram_id"],
+                    **_safe_user_audit_identity(user),
                     "status": "active",
+                    "device_ids": [int(device["id"]) for device in devices],
+                    "device_names": [str(device["name"]) for device in devices],
                     "enabled_device_count": enabled_count,
                 },
             )
@@ -3392,8 +3423,9 @@ def _delete_user_device(
                 action="web_device_revoke_cascade",
                 target_user_id=user_id,
                 metadata={
-                    "telegram_id": user["telegram_id"],
+                    **_safe_user_audit_identity(user),
                     "device_id": device_id,
+                    "device_name": str(device["name"]),
                     **metadata,
                 },
             )

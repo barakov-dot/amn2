@@ -4,11 +4,13 @@
   <section class="section-heading page-heading">
     <div>
       <p class="eyebrow">User management</p>
-      <h1>{{ user.username or user.telegram_id }}</h1>
+      <h1>{{ user.display_label }}</h1>
     </div>
     <div class="button-row">
       <a class="button button-secondary" href="/users">Back</a>
-      <a class="button" href="/users/{{ user.id }}/edit">Edit</a>
+      {% if user.has_telegram_identity %}
+        <a class="button" href="/users/{{ user.id }}/edit">Edit</a>
+      {% endif %}
     </div>
   </section>
 
@@ -19,8 +21,12 @@
       </div>
       <dl class="details">
         <div>
+          <dt>Recipient</dt>
+          <dd>{{ user.display_label }}</dd>
+        </div>
+        <div>
           <dt>Telegram ID</dt>
-          <dd>{{ user.telegram_id }}</dd>
+          <dd>{{ user.telegram_id if user.has_telegram_identity else "Telegram identity unavailable" }}</dd>
         </div>
         <div>
           <dt>Name</dt>

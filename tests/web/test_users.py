@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -11,6 +12,14 @@ from app.db.repositories import Repository
 from app.db.schema import initialize_schema
 from app.security.crypto import SecretBox
 from app.server.peer_apply import PeerApplyError
+from app.services.device_enrollment import (
+    claim_device_enrollment_ticket,
+    issue_device_enrollment_ticket,
+)
+from app.services.device_passports import (
+    attach_passport_to_local_device,
+    fingerprint_config,
+)
 from app.web.app import create_web_app
 from app.web.auth import create_password_hash
 
@@ -83,6 +92,43 @@ def test_users_lists_existing_telegram_users_and_device_counts(tmp_path: Path):
     assert "admin" in response.text.lower()
     assert "1 / 2" in response.text
     assert 'href="/devices/disabled"' in response.text
+
+
+def test_operator_recipient_pages_use_label_and_hide_telegram_identity_actions(
+    tmp_path: Path,
+):
+    settings = _settings(tmp_path)
+    with _repo(Path(settings.database_path)) as repo:
+        user_id = repo.create_operator_recipient(operator_label="Alice — Pixel 8")
+        server_id = repo.ensure_default_server(
+            name="local",
+            network_cidr="10.8.0.0/24",
+        )
+        repo.create_device(
+            user_id=user_id,
+            server_id=server_id,
+            name="NEOBYATNAYA.NET — Alice — Pixel 8 — Living room TV",
+            duration_days=365,
+            vpn_ip="10.8.0.44",
+            peer_public_key="operator-public",
+            peer_private_key_encrypted="v1:operator-private",
+            preshared_key_encrypted="v1:operator-psk",
+            config_version="amneziawg_v2",
+        )
+    client = _authenticated_client(settings)
+
+    users = client.get("/users")
+    detail = client.get(f"/users/{user_id}")
+
+    assert users.status_code == 200
+    assert detail.status_code == 200
+    assert "Alice — Pixel 8" in users.text
+    assert "Alice — Pixel 8" in detail.text
+    assert "NEOBYATNAYA.NET — Alice — Pixel 8 — Living room TV" in detail.text
+    assert ">None<" not in users.text
+    assert ">None<" not in detail.text
+    assert f'href="/users/{user_id}/edit"' not in detail.text
+    assert "Telegram identity unavailable" in detail.text
 
 
 def test_disabled_devices_page_lists_only_disabled_devices(tmp_path: Path):
@@ -716,6 +762,138 @@ def test_enable_user_vpn_reapplies_disabled_device_with_stored_key_and_ip(
         latest_action = repo.list_admin_actions_for_target_user(user_id)[0]
         assert latest_action["action"] == "web_user_enable_vpn"
         assert '"enabled_device_count": 1' in latest_action["metadata_json"]
+
+
+def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
+    tmp_path: Path,
+    monkeypatch,
+):
+    remove_calls: list[tuple[str, str]] = []
+    apply_calls: list[tuple[str, str, str, str]] = []
+
+    class FakePeerApplier:
+        def __init__(self, server, *, password=None):
+            self._server = server
+
+        def remove_peer(self, *, server, peer_public_key: str) -> None:
+            remove_calls.append((server.name, peer_public_key))
+
+        def apply_peer(
+            self,
+            *,
+            server,
+            peer_public_key: str,
+            preshared_key: str,
+            vpn_ip: str,
+        ) -> None:
+            apply_calls.append(
+                (server.name, peer_public_key, preshared_key, vpn_ip)
+            )
+
+    monkeypatch.setattr(web_app, "ServerConfigPeerApplier", FakePeerApplier)
+    settings = _settings(
+        tmp_path,
+        admin_telegram_ids="9001",
+        vps_apply_enabled=True,
+        server_config_path=_write_server_config(tmp_path, server_name="local"),
+    )
+    canonical_name = "NEOBYATNAYA.NET — Alice — Pixel 8 — Living room TV"
+    with _repo(Path(settings.database_path)) as repo:
+        user_id = repo.create_operator_recipient(operator_label="Alice — Pixel 8")
+        server_id = repo.ensure_default_server(
+            name="local",
+            network_cidr="10.8.0.0/24",
+        )
+        secret_box = SecretBox.from_app_secret(TEST_APP_SECRET)
+        device_id = repo.create_device(
+            user_id=user_id,
+            server_id=server_id,
+            name=canonical_name,
+            duration_days=365,
+            vpn_ip="10.8.0.44",
+            peer_public_key="operator-public",
+            peer_private_key_encrypted=secret_box.encrypt_text("operator-private"),
+            preshared_key_encrypted=secret_box.encrypt_text("operator-psk"),
+            config_version="amneziawg_v2",
+        )
+        issue = issue_device_enrollment_ticket(
+            repo,
+            user_id=user_id,
+            platform="android_tv",
+            config_schema_version="amneziawg_v2",
+            now=datetime(2026, 7, 19, tzinfo=timezone.utc),
+            raw_token="amn2_enroll_operatorrecipientabcdefghijklmnopqrstuvwxyz",
+            ticket_id="ent_operator_recipient",
+        )
+        claim = claim_device_enrollment_ticket(
+            repo,
+            raw_token=issue.raw_token,
+            idempotency_key="operator-recipient-claim",
+            official_client_type="amnezia_vpn",
+            client_version="4.8.19.0",
+            import_method="managed_ticket",
+            config_fingerprint=fingerprint_config("safe-test-config"),
+            now=datetime(2026, 7, 19, 0, 0, 1, tzinfo=timezone.utc),
+        )
+        attach_passport_to_local_device(
+            repo,
+            passport_device_id=claim.passport.device_id,
+            local_device_id=device_id,
+        )
+    client = _authenticated_client(settings)
+
+    detail = client.get(f"/users/{user_id}")
+    disabled = client.post(
+        f"/users/{user_id}/disable-vpn",
+        data={"csrf_token": _csrf_token(detail.text)},
+        follow_redirects=False,
+    )
+    assert disabled.status_code == 303
+    assert remove_calls == [("local", "operator-public")]
+
+    detail = client.get(f"/users/{user_id}")
+    enabled = client.post(
+        f"/users/{user_id}/enable-vpn",
+        data={"csrf_token": _csrf_token(detail.text)},
+        follow_redirects=False,
+    )
+    assert enabled.status_code == 303
+    assert apply_calls == [
+        ("local", "operator-public", "operator-psk", "10.8.0.44")
+    ]
+
+    detail = client.get(f"/users/{user_id}")
+    revoked = client.post(
+        f"/users/{user_id}/devices/{device_id}/delete",
+        data={"csrf_token": _csrf_token(detail.text)},
+        follow_redirects=False,
+    )
+    assert revoked.status_code == 303
+    assert remove_calls == [
+        ("local", "operator-public"),
+        ("local", "operator-public"),
+    ]
+    with _repo(Path(settings.database_path)) as repo:
+        assert repo.get_device(device_id)["status"] == "revoked"
+        actions = repo.list_admin_actions_for_target_user(user_id)
+        metadata = [json.loads(action["metadata_json"]) for action in actions]
+        assert {item["user_label"] for item in metadata} == {"Alice — Pixel 8"}
+        assert all(item["user_id"] == user_id for item in metadata)
+        assert any(item.get("device_id") == device_id for item in metadata)
+        assert any(item.get("device_name") == canonical_name for item in metadata)
+        audit_text = json.dumps(metadata, ensure_ascii=False)
+        assert "operator-private" not in audit_text
+        assert "operator-psk" not in audit_text
+        assert "operator-public" not in audit_text
+
+    passport = client.get(f"/device-passports/{claim.passport.device_id}")
+    assert passport.status_code == 200
+    assert "Alice — Pixel 8" in passport.text
+    assert canonical_name in passport.text
+    assert '<span class="status status-revoked">revoked</span>' in passport.text
+    assert ">None<" not in passport.text
+    assert "operator-private" not in passport.text
+    assert "operator-psk" not in passport.text
 
 
 def test_delete_single_user_device_revokes_only_selected_peer_and_cleans_links(

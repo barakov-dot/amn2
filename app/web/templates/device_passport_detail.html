@@ -15,6 +15,7 @@
       <dl class="details">
         <div><dt>Владелец</dt><dd><a href="/users/{{ owner.id }}">{{ owner.display }}</a></dd></div>
         <div><dt>Локальное устройство</dt><dd>{{ passport.local_device_id or "не привязан" }}</dd></div>
+        <div><dt>Каноническая идентичность конфига</dt><dd>{{ config_identity }}</dd></div>
         <div><dt>Платформа</dt><dd>{{ passport.platform }}</dd></div>
         <div><dt>Официальный клиент</dt><dd>{{ passport.official_client_type }} {{ passport.client_version or "" }}</dd></div>
         <div><dt>Метод импорта</dt><dd>{{ passport.import_method }}</dd></div>

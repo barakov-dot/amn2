@@ -235,6 +235,49 @@ def test_operator_device_apply_uses_common_service_and_returns_safe_result(tmp_p
         assert actions[0]["admin_telegram_id"] == 9001
 
 
+def test_operator_device_apply_uses_labelled_owner_for_canonical_identity(
+    tmp_path: Path,
+):
+    settings = _settings(
+        tmp_path,
+        admin_telegram_ids="9001",
+        server_config_path=_write_server_config(tmp_path),
+        vps_apply_enabled=True,
+        operator_device_create_enabled=True,
+    )
+    with _repo(Path(settings.database_path)) as repo:
+        user_id = repo.create_operator_recipient(operator_label="Alice — Pixel 8")
+    command_client = DockerCommandClient()
+    client = _authenticated_client(
+        settings,
+        command_client=command_client,
+        artifact_writer=lambda path, _config: path,
+    )
+    page = client.get(f"/users/{user_id}")
+
+    response = client.post(
+        f"/users/{user_id}/devices/create-operator",
+        data={
+            "server_name": "local",
+            "device_name": "Living room TV",
+            "duration_days": "365",
+            "config_version": "amneziawg_v2",
+            "execution_target": "local",
+            "mode": "apply",
+            "confirm_one_device_gate": "on",
+            "csrf_token": _csrf_token(page.text),
+        },
+    )
+
+    assert response.status_code == 200
+    canonical_name = "NEOBYATNAYA.NET — Alice — Pixel 8 — Living room TV"
+    assert canonical_name in response.text
+    assert ">None<" not in response.text
+    with _repo(Path(settings.database_path)) as repo:
+        devices = repo.list_user_devices_for_admin(user_id)
+        assert [device["name"] for device in devices] == [canonical_name]
+
+
 def test_operator_device_partial_failure_is_redacted_and_audited(
     tmp_path: Path,
     monkeypatch,
