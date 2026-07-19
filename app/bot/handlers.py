@@ -553,7 +553,7 @@ async def handle_admin_create_order(message, *, workflow) -> None:
 
 async def handle_admin_issue_config(message, *, workflow) -> None:
     admin_telegram_id = int(message.from_user.id)
-    if not workflow.is_admin(admin_telegram_id):
+    if not workflow.is_configured_admin(admin_telegram_id):
         await message.answer("Admin access required.")
         return
     try:
@@ -597,7 +597,7 @@ async def handle_admin_issue_config(message, *, workflow) -> None:
 
 async def handle_admin_resend_issued_config(message, *, workflow) -> None:
     admin_telegram_id = int(message.from_user.id)
-    if not workflow.is_admin(admin_telegram_id):
+    if not workflow.is_configured_admin(admin_telegram_id):
         await message.answer("Admin access required.")
         return
     parts = str(getattr(message, "text", "")).split()
@@ -609,10 +609,14 @@ async def handle_admin_resend_issued_config(message, *, workflow) -> None:
     except ValueError:
         await message.answer("Usage: /admin_resend_issued_config device_id")
         return
-    result = workflow.build_admin_config_handoff_for_device(
-        admin_telegram_id=admin_telegram_id,
-        device_id=device_id,
-    )
+    try:
+        result = workflow.build_admin_config_handoff_for_device(
+            admin_telegram_id=admin_telegram_id,
+            device_id=device_id,
+        )
+    except ConfigMaterialUnavailable:
+        await message.answer("Config is unavailable for this device.")
+        return
     if result is None:
         await message.answer("Admin access required.")
         return

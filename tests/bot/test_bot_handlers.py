@@ -953,6 +953,29 @@ def test_handle_admin_issue_config_rejects_non_admin_before_parsing_or_mutation(
     assert message.answers[0]["text"] == "Admin access required."
 
 
+def test_secret_command_rejects_database_admin_outside_configured_set():
+    message = FakeMessage(user_id=1001)
+    message.text = "/admin_issue_config recipient | phone | android"
+    workflow = FakeWorkflow(admin_ids={9001})
+    workflow.database_admin_ids = {1001}
+
+    asyncio.run(handle_admin_issue_config(message, workflow=workflow))
+
+    assert workflow.admin_config_issues == []
+    assert message.answers == [
+        {"text": "Admin access required.", "reply_markup": None}
+    ]
+
+    resend_message = FakeMessage(user_id=1001)
+    resend_message.text = "/admin_resend_issued_config 7"
+    asyncio.run(handle_admin_resend_issued_config(resend_message, workflow=workflow))
+
+    assert workflow.admin_config_resends == []
+    assert resend_message.answers == [
+        {"text": "Admin access required.", "reply_markup": None}
+    ]
+
+
 def test_handle_admin_issue_config_sends_one_secretless_conf_to_invoking_admin():
     message = FakeMessage(user_id=9001)
     message.text = "/admin_issue_config recipient | phone | android"
@@ -1013,6 +1036,22 @@ def test_handle_admin_resend_issued_config_sends_existing_device_only_to_admin()
     assert message.bot.sent_documents[0]["chat_id"] == 9001
     assert message.bot.sent_documents[0]["caption"] is None
     assert message.bot.sent_photos == []
+
+
+def test_handle_admin_resend_issued_config_returns_safe_unavailable_response():
+    class UnavailableWorkflow(FakeWorkflow):
+        def build_admin_config_handoff_for_device(self, **kwargs):
+            raise ConfigMaterialUnavailable("secret-bearing internal detail")
+
+    message = FakeMessage(user_id=9001)
+    message.text = "/admin_resend_issued_config 404"
+    workflow = UnavailableWorkflow(admin_ids={9001})
+
+    asyncio.run(handle_admin_resend_issued_config(message, workflow=workflow))
+
+    assert len(message.answers) == 1
+    assert message.answers[0]["text"] == "Config is unavailable for this device."
+    assert "secret-bearing" not in message.answers[0]["text"]
 
 
 class FakeMessage:
@@ -1097,6 +1136,11 @@ class FakeWorkflow:
         self.admin_config_resends = []
 
     def is_admin(self, telegram_id):
+        return telegram_id in self._admin_ids or telegram_id in getattr(
+            self, "database_admin_ids", set()
+        )
+
+    def is_configured_admin(self, telegram_id):
         return telegram_id in self._admin_ids
 
     def issue_admin_config(

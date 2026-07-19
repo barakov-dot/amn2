@@ -12,6 +12,7 @@ from app.server.peer_apply import PeerApplyError
 from app.services.access import AccessService, RemoteOperationPartialFailure
 from app.services.config_delivery import ConfigMaterialUnavailable
 from app.services.device_lifecycle import list_device_lifecycle_events
+from app.services.device_passports import create_device_passport
 from app.services.traffic import PeerTraffic, TrafficService
 
 SECRET = "bot-workflow-secret-value-with-more-than-32-chars"
@@ -1061,6 +1062,124 @@ def test_issue_admin_config_rejects_non_admin_before_issuance(tmp_path):
 
     assert result is None
     assert factory_calls == []
+
+
+def test_database_admin_cannot_issue_config_without_configured_membership(tmp_path):
+    class ReadSpyRepository(Repository):
+        def __init__(self, conn):
+            super().__init__(conn)
+            self.user_auth_reads = 0
+            self.secret_device_reads = 0
+
+        def get_user_by_telegram_id(self, telegram_id):
+            self.user_auth_reads += 1
+            return super().get_user_by_telegram_id(telegram_id)
+
+        def get_completed_admin_config_issuance_receipt_by_device_id(self, **kwargs):
+            self.secret_device_reads += 1
+            return super().get_completed_admin_config_issuance_receipt_by_device_id(
+                **kwargs
+            )
+
+    conn = connect(tmp_path / "configured-admin.sqlite3")
+    initialize_schema(conn)
+    repo = ReadSpyRepository(conn)
+    repo.upsert_user(
+        telegram_id=1001,
+        username="db-admin",
+        first_name="Database",
+        last_name="Admin",
+    )
+    repo.set_user_admin(
+        telegram_id=1001,
+        is_admin=True,
+        granted_by_admin_telegram_id=9001,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    factory_calls = []
+
+    class UnexpectedIssuance:
+        def issue_manifest(self, manifest):
+            factory_calls.append(manifest)
+            return SimpleNamespace(status="completed", receipts=())
+
+    workflow = BotWorkflow(
+        repo=repo,
+        admin_telegram_ids={9001},
+        default_server_id=server_id,
+        admin_config_issuance_factory=lambda **kwargs: UnexpectedIssuance(),
+    )
+    repo.user_auth_reads = 0
+
+    result = workflow.issue_admin_config(
+        admin_telegram_id=1001,
+        recipient_label="recipient",
+        device_label="phone",
+        platform="android",
+    )
+    resend = workflow.build_admin_config_handoff_for_device(
+        admin_telegram_id=1001,
+        device_id=404,
+    )
+
+    assert result is None
+    assert resend is None
+    assert repo.user_auth_reads == 0
+    assert repo.secret_device_reads == 0
+    assert factory_calls == []
+
+
+def test_admin_resend_rejects_ordinary_device_without_issuance_provenance(tmp_path):
+    repo = _repo(tmp_path)
+    user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="alice",
+        first_name="Alice",
+        last_name=None,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    device_id = _create_encrypted_device(
+        repo,
+        user_id=user_id,
+        server_id=server_id,
+        name="ordinary-phone",
+    )
+    create_device_passport(
+        repo,
+        device_id="dev_00000000000000000000000000000001",
+        owner_user_id=user_id,
+        local_device_id=device_id,
+        platform="android",
+        official_client_type="amnezia_vpn",
+        import_method="conf_file",
+        config_schema_version="amneziawg_v2",
+        config_fingerprint="sha256:" + "0" * 64,
+    )
+    workflow = BotWorkflow(
+        repo=repo,
+        admin_telegram_ids={9001},
+        secret_box=SecretBox.from_app_secret(SECRET),
+    )
+
+    with pytest.raises(ConfigMaterialUnavailable, match="issuance provenance"):
+        workflow.build_admin_config_handoff_for_device(
+            admin_telegram_id=9001,
+            device_id=device_id,
+        )
+
+
+def test_admin_resend_reports_nonexistent_device_as_unavailable(tmp_path):
+    workflow = BotWorkflow(
+        repo=_repo(tmp_path),
+        admin_telegram_ids={9001},
+        secret_box=SecretBox.from_app_secret(SECRET),
+    )
+
+    with pytest.raises(ConfigMaterialUnavailable, match="provenance"):
+        workflow.build_admin_config_handoff_for_device(
+            admin_telegram_id=9001,
+            device_id=404,
+        )
 
 
 def test_issue_admin_config_returns_distinct_secret_handoff_to_admin(tmp_path):

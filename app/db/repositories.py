@@ -1793,6 +1793,30 @@ class Repository:
             (request_id, item_index),
         ).fetchone()
 
+    def get_completed_admin_config_issuance_receipt_by_device_id(
+        self,
+        *,
+        device_id: int,
+    ) -> sqlite3.Row | None:
+        rows = self._conn.execute(
+            """
+            SELECT receipt.*
+            FROM admin_config_issuance_receipts AS receipt
+            INNER JOIN admin_config_issuance_requests AS request
+                ON request.request_id = receipt.request_id
+            WHERE receipt.device_id = ?
+              AND receipt.status = 'completed'
+              AND receipt.passport_device_id IS NOT NULL
+              AND length(trim(receipt.config_filename)) > 0
+            ORDER BY receipt.id DESC
+            LIMIT 2
+            """,
+            (device_id,),
+        ).fetchall()
+        if len(rows) != 1:
+            return None
+        return rows[0]
+
     def create_admin_config_issuance_receipt(
         self,
         *,

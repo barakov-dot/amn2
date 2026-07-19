@@ -1239,6 +1239,85 @@ def test_api_token_rotation_lineage_is_stored_without_raw_token(tmp_path):
     assert "new-raw-token" not in dict(rotated).values()
 
 
+def test_completed_admin_issuance_provenance_lookup_rejects_ambiguity(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    user_id, server_id = _create_user_and_server(repo)
+    device_id = _insert_device(
+        conn,
+        user_id=user_id,
+        server_id=server_id,
+        vpn_ip="10.8.0.22",
+        peer_public_key="provenance-peer",
+        status="active",
+    )
+    repo.create_device_passport(
+        device_id="dev_00000000000000000000000000000002",
+        owner_user_id=user_id,
+        local_device_id=device_id,
+        platform="android",
+        official_client_type="amnezia_vpn",
+        client_version=None,
+        import_method="conf_file",
+        config_schema_version="amneziawg_v2",
+        config_fingerprint="sha256:" + "0" * 64,
+        last_seen_at=None,
+        acceptance_evidence=None,
+    )
+    fingerprint = "sha256:" + "1" * 64
+    repo.create_admin_config_issuance_request(
+        request_id="request-one",
+        request_fingerprint=fingerprint,
+        item_count=1,
+    )
+    repo.create_admin_config_issuance_receipt(
+        request_id="request-one",
+        item_index=0,
+        item_fingerprint=fingerprint,
+        recipient_user_id=user_id,
+    )
+    repo.complete_admin_config_issuance_receipt(
+        request_id="request-one",
+        item_index=0,
+        device_id=device_id,
+        passport_device_id="dev_00000000000000000000000000000002",
+        config_filename="issued.conf",
+    )
+    receipt = repo.get_completed_admin_config_issuance_receipt_by_device_id(
+        device_id=device_id
+    )
+
+    assert receipt is not None
+    assert receipt["request_id"] == "request-one"
+
+    repo.create_admin_config_issuance_request(
+        request_id="request-two",
+        request_fingerprint="sha256:" + "2" * 64,
+        item_count=1,
+    )
+    repo.create_admin_config_issuance_receipt(
+        request_id="request-two",
+        item_index=0,
+        item_fingerprint="sha256:" + "2" * 64,
+        recipient_user_id=user_id,
+    )
+    repo.complete_admin_config_issuance_receipt(
+        request_id="request-two",
+        item_index=0,
+        device_id=device_id,
+        passport_device_id="dev_00000000000000000000000000000002",
+        config_filename="ambiguous.conf",
+    )
+
+    assert (
+        repo.get_completed_admin_config_issuance_receipt_by_device_id(
+            device_id=device_id
+        )
+        is None
+    )
+
+
 def _create_user_and_server(repo: Repository) -> tuple[int, int]:
     user_id = repo.upsert_user(
         telegram_id=2001,

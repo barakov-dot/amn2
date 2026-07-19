@@ -16,8 +16,11 @@ from app.security.crypto import SecretBox
 from app.security.redaction import redact
 from app.server.operations import remote_changed_local_failed_result
 from app.server.peer_apply import PeerApplyError
-from app.services.config_delivery import build_device_config_delivery
 from app.services.admin_config_issuance import AdminConfigIssuanceService
+from app.services.config_delivery import (
+    ConfigMaterialUnavailable,
+    build_device_config_delivery,
+)
 from app.services.device_lifecycle import LifecycleEvidence, record_device_lifecycle_stage
 from app.services.device_revoke import cascade_revoke_physical_device
 from app.services.access import (
@@ -105,7 +108,6 @@ class BotWorkflow:
         self._device_name_sequence_seed = max(0, int(device_name_sequence_seed))
         self._vps_writes_enabled = bool(vps_writes_enabled)
         self._admin_config_issuance_factory = admin_config_issuance_factory
-        self._admin_config_filenames: dict[int, str] = {}
         if not self._device_name_prefix:
             raise ValueError("device_name_prefix must be non-blank")
 
@@ -115,6 +117,9 @@ class BotWorkflow:
         user = self._repo.get_user_by_telegram_id(telegram_id)
         return bool(user is not None and int(user["is_admin"]) == 1)
 
+    def is_configured_admin(self, telegram_id: int) -> bool:
+        return telegram_id in self._admin_telegram_ids
+
     def issue_admin_config(
         self,
         *,
@@ -123,7 +128,7 @@ class BotWorkflow:
         device_label: str,
         platform: str,
     ) -> AdminConfigHandoff | None:
-        if not self.is_admin(admin_telegram_id):
+        if not self.is_configured_admin(admin_telegram_id):
             return None
         if self._default_server_id is None or (
             self._access_service is None
@@ -186,7 +191,6 @@ class BotWorkflow:
             filename=str(receipt.config_filename),
             config_bytes=config_bytes,
         )
-        self._admin_config_filenames[handoff.device_id] = handoff.filename
         return handoff
 
     def record_admin_config_delivery(
@@ -197,7 +201,7 @@ class BotWorkflow:
         delivered: bool,
         reference: str,
     ) -> bool:
-        if not self.is_admin(admin_telegram_id):
+        if not self.is_configured_admin(admin_telegram_id):
             return False
         now = datetime.now(timezone.utc)
         record_device_lifecycle_stage(
@@ -220,22 +224,37 @@ class BotWorkflow:
         admin_telegram_id: int,
         device_id: int,
     ) -> AdminConfigHandoff | None:
-        if not self.is_admin(admin_telegram_id):
+        if not self.is_configured_admin(admin_telegram_id):
             return None
         if self._secret_box is None:
             raise RuntimeError("Config resend workflow is not configured")
-        device = self._repo.get_device(device_id)
+        receipt = self._repo.get_completed_admin_config_issuance_receipt_by_device_id(
+            device_id=device_id
+        )
+        if receipt is None:
+            raise ConfigMaterialUnavailable(
+                "Admin config issuance provenance is unavailable"
+            )
+        try:
+            device = self._repo.get_device(device_id)
+        except LookupError as exc:
+            raise ConfigMaterialUnavailable(
+                "Admin config issuance device is unavailable"
+            ) from exc
         passport = self._repo.get_device_passport_by_local_device_id(device_id)
-        if passport is None:
-            raise RuntimeError("device passport was not created")
+        if (
+            passport is None
+            or str(passport["device_id"]) != str(receipt["passport_device_id"])
+        ):
+            raise ConfigMaterialUnavailable(
+                "Admin config issuance passport is unavailable"
+            )
         resend = self._build_delivery_for_device(device)
         return AdminConfigHandoff(
             recipient_user_id=int(device["user_id"]),
             device_id=device_id,
             passport_device_id=str(passport["device_id"]),
-            filename=self._admin_config_filenames.get(
-                device_id, resend.delivery.config_filename
-            ),
+            filename=str(receipt["config_filename"]),
             config_bytes=resend.delivery.config_bytes,
         )
 
