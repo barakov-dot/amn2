@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -13,6 +14,13 @@ from app.server.operations import (
 )
 from app.security.crypto import SecretBox
 from app.services.config_identity import build_config_identity
+from app.services.device_lifecycle import LifecycleEvidence, record_device_lifecycle_stage
+from app.services.device_passports import (
+    create_device_passport,
+    fingerprint_config,
+    generate_device_passport_id,
+    validate_device_passport_context,
+)
 from app.config_assignment import (
     DEDICATED_DEVICE,
     OWNER_SHARED,
@@ -80,6 +88,14 @@ class OperatorDeviceCreateResult:
     config_artifact_path: str | None
     config_filename: str
     assignment_mode: str = DEDICATED_DEVICE
+
+
+@dataclass(frozen=True)
+class OperatorDeviceContext:
+    platform: str
+    official_client_type: str = "amnezia_vpn"
+    client_version: str | None = None
+    import_method: str = "conf_file"
 
 
 class PeerApplier(Protocol):
@@ -184,6 +200,9 @@ class AccessService:
         config_version: str = "amneziawg_v2",
         assignment_mode: str = DEDICATED_DEVICE,
         config_artifact_writer: Callable[[str], str | Path] | None = None,
+        device_context: OperatorDeviceContext = OperatorDeviceContext(
+            platform="unknown"
+        ),
     ) -> OperatorDeviceCreateResult:
         remote_mutation: RemoteMutationResult | None = None
 
@@ -202,6 +221,7 @@ class AccessService:
                     config_version=config_version,
                     assignment_mode=assignment_mode,
                     config_artifact_writer=config_artifact_writer,
+                    device_context=device_context,
                     remote_mutation_observer=record_remote_mutation,
                 )
         except Exception as exc:
@@ -226,6 +246,7 @@ class AccessService:
         config_version: str,
         assignment_mode: str,
         config_artifact_writer: Callable[[str], str | Path] | None,
+        device_context: OperatorDeviceContext,
         remote_mutation_observer: Callable[[RemoteMutationResult], None] | None,
     ) -> OperatorDeviceCreateResult:
         normalized_device_display_name = device_name.strip()
@@ -238,6 +259,13 @@ class AccessService:
         config_version = validate_config_version(config_version)
         assignment_mode = validate_config_assignment_mode(assignment_mode)
         assignment_policy = config_assignment_policy(assignment_mode)
+        validate_device_passport_context(
+            platform=device_context.platform,
+            official_client_type=device_context.official_client_type,
+            client_version=device_context.client_version,
+            import_method=device_context.import_method,
+            config_schema_version=config_version,
+        )
 
         try:
             owner = self._repo.get_user(owner_user_id)
@@ -312,6 +340,32 @@ class AccessService:
         artifact_path = None
         if config_artifact_writer is not None:
             artifact_path = str(config_artifact_writer(config_text))
+        passport_device_id = generate_device_passport_id()
+        create_device_passport(
+            self._repo,
+            device_id=passport_device_id,
+            owner_user_id=owner_user_id,
+            local_device_id=device_id,
+            platform=device_context.platform,
+            official_client_type=device_context.official_client_type,
+            client_version=device_context.client_version,
+            import_method=device_context.import_method,
+            config_schema_version=config_version,
+            config_fingerprint=fingerprint_config(config_text),
+        )
+        config_ready_at = datetime.now(timezone.utc)
+        record_device_lifecycle_stage(
+            self._repo,
+            passport_device_id=passport_device_id,
+            stage="config_ready",
+            status="completed",
+            started_at=config_ready_at,
+            occurred_at=config_ready_at,
+            evidence=LifecycleEvidence(
+                source="operator_config_renderer",
+                reference=f"schema:{config_version}",
+            ),
+        )
         config_identity = build_config_identity(
             user_label=user_label,
             device_label=normalized_device_display_name,

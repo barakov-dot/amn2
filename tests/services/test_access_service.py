@@ -17,11 +17,14 @@ from app.services.access import (
     OperatorOwnerNotFound,
     OperatorOwnerSharedRequiresAdmin,
     OperatorPeerApplierRequired,
+    OperatorDeviceContext,
     OrderAlreadyFulfilled,
     OrderNotApprovable,
     RemoteOperationPartialFailure,
 )
 from app.services.config_identity import build_config_identity
+from app.services.device_lifecycle import list_device_lifecycle_events
+from app.services.device_passports import fingerprint_config, get_device_passport
 from app.server.peer_apply import PeerApplyError
 import app.vpn.amneziawg_v2.config as awg_config
 
@@ -441,6 +444,11 @@ class FailingAdminActionRepository(Repository):
         raise RuntimeError("audit failed")
 
 
+class FailingDevicePassportRepository(Repository):
+    def create_device_passport(self, **kwargs):
+        raise RuntimeError("passport persistence unavailable")
+
+
 class RecordingPeerApplier:
     def __init__(self, *, error=None, remote_allocated_ips=None):
         self.calls = []
@@ -562,6 +570,64 @@ def test_create_operator_device_uses_explicit_owner_and_records_audit(tmp_path):
     assert conn.execute(
         "SELECT COUNT(*) FROM orders WHERE device_id = ?", (result.device_id,)
     ).fetchone()[0] == 0
+
+
+def test_create_operator_device_records_passport_and_config_ready_evidence(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    owner_user_id = repo.create_operator_recipient(operator_label="Operator")
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=RecordingPeerApplier(),
+    )
+
+    result = service.create_operator_device(
+        owner_user_id=owner_user_id,
+        server_id=server_id,
+        device_name="Linux laptop",
+        duration_days=30,
+        admin_telegram_id=999,
+        device_context=OperatorDeviceContext(
+            platform="linux",
+            official_client_type="amnezia_vpn",
+            client_version="4.8.19.0",
+            import_method="conf_file",
+        ),
+    )
+
+    passport_row = repo.get_device_passport_by_local_device_id(result.device_id)
+    assert passport_row is not None
+    passport = get_device_passport(repo, str(passport_row["device_id"]))
+    assert passport.local_device_id == result.device_id
+    assert passport.owner_user_id == owner_user_id
+    assert passport.server_id == server_id
+    assert passport.config_schema_version == "amneziawg_v2"
+    assert passport.platform == "linux"
+    assert passport.official_client_type == "amnezia_vpn"
+    assert passport.client_version == "4.8.19.0"
+    assert passport.import_method == "conf_file"
+    assert passport.config_fingerprint == fingerprint_config(result.config_text)
+
+    lifecycle = list_device_lifecycle_events(
+        repo,
+        passport_device_id=passport.device_id,
+    )
+    assert [(event.stage, event.status) for event in lifecycle] == [
+        ("config_ready", "completed")
+    ]
+    assert lifecycle[0].evidence.safe_metadata() == {
+        "source": "operator_config_renderer",
+        "reference": "schema:amneziawg_v2",
+    }
+    database_dump = "\n".join(conn.iterdump())
+    assert result.config_text not in database_dump
+    assert "PrivateKey =" not in lifecycle[0].evidence.reference
+    assert all(event.stage != "delivered" for event in lifecycle)
 
 
 def test_create_operator_device_stores_precomputed_canonical_display_name(tmp_path):
@@ -870,6 +936,37 @@ def test_create_operator_device_requires_live_peer_applier(tmp_path):
     assert repo.count_active_devices(owner_user_id) == 0
 
 
+def test_create_operator_device_rejects_invalid_context_before_remote_apply(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    owner_user_id = repo.create_operator_recipient(operator_label="Operator")
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    peer_applier = RecordingPeerApplier()
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=peer_applier,
+    )
+
+    with pytest.raises(ValueError, match="unsupported device platform"):
+        service.create_operator_device(
+            owner_user_id=owner_user_id,
+            server_id=server_id,
+            device_name="Laptop",
+            duration_days=30,
+            admin_telegram_id=999,
+            device_context=OperatorDeviceContext(platform="unsupported-os"),
+        )
+
+    assert peer_applier.calls == []
+    assert repo.count_active_devices(owner_user_id) == 0
+    assert conn.execute("SELECT COUNT(*) FROM device_passports").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM device_lifecycle_events").fetchone()[0] == 0
+
+
 def test_create_operator_device_reports_partial_failure_after_remote_apply(tmp_path):
     conn = connect(tmp_path / "test.sqlite3")
     initialize_schema(conn)
@@ -907,6 +1004,44 @@ def test_create_operator_device_reports_partial_failure_after_remote_apply(tmp_p
     assert "explicit owner" in failure.recovery_note.lower()
     assert peer_applier.calls
     assert repo.count_active_devices(owner_user_id) == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM device_lifecycle_events WHERE stage = 'delivered'"
+    ).fetchone()[0] == 0
+
+
+def test_create_operator_device_passport_failure_preserves_partial_failure(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = FailingDevicePassportRepository(conn)
+    owner_user_id = repo.create_operator_recipient(operator_label="Operator")
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    peer_applier = RecordingPeerApplier()
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=peer_applier,
+    )
+
+    with pytest.raises(RemoteOperationPartialFailure) as exc_info:
+        service.create_operator_device(
+            owner_user_id=owner_user_id,
+            server_id=server_id,
+            device_name="Linux laptop",
+            duration_days=30,
+            admin_telegram_id=999,
+            device_context=OperatorDeviceContext(platform="linux"),
+        )
+
+    assert exc_info.value.result.operation_id == "access.create_operator_device"
+    assert exc_info.value.result.consistency_status == "remote-changed-local-failed"
+    assert peer_applier.calls
+    assert repo.count_active_devices(owner_user_id) == 0
+    assert conn.execute("SELECT COUNT(*) FROM device_passports").fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM device_lifecycle_events WHERE stage = 'delivered'"
+    ).fetchone()[0] == 0
 
 
 def test_create_operator_device_does_not_apply_peer_when_render_fails(
@@ -946,6 +1081,9 @@ def test_create_operator_device_does_not_apply_peer_when_render_fails(
 
     assert peer_applier.calls == []
     assert repo.count_active_devices(owner_user_id) == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM device_lifecycle_events WHERE stage = 'delivered'"
+    ).fetchone()[0] == 0
 
 
 def test_create_operator_device_artifact_failure_is_partial_after_remote_apply(tmp_path):
@@ -989,3 +1127,6 @@ def test_create_operator_device_artifact_failure_is_partial_after_remote_apply(t
     ).fetchone()
     assert reconciliation["action"] == "access.create_operator_device.partial_failure"
     assert "remote-changed-local-failed" in reconciliation["metadata_json"]
+    assert conn.execute(
+        "SELECT COUNT(*) FROM device_lifecycle_events WHERE stage = 'delivered'"
+    ).fetchone()[0] == 0

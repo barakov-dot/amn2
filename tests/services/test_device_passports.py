@@ -13,6 +13,7 @@ from app.services.device_passports import (
     DeviceAcceptanceEvidence,
     create_device_passport,
     fingerprint_config,
+    generate_device_passport_id,
     get_device_passport,
     list_all_device_passports,
     list_device_passports,
@@ -49,6 +50,32 @@ def test_device_passport_uses_generated_stable_id_and_safe_config_fingerprint():
     assert "never-store-this" not in database_dump
     assert passport.reconciliation.drift_state == "unknown"
     assert passport.reconciliation.last_observed_at is None
+
+
+def test_device_passport_exposes_linked_server_and_conf_file_import():
+    _, repo, user_id, local_device_id = _repo()
+    server_id = int(repo.get_device(local_device_id)["server_id"])
+
+    passport = create_device_passport(
+        repo,
+        owner_user_id=user_id,
+        local_device_id=local_device_id,
+        platform="linux",
+        official_client_type="amnezia_vpn",
+        import_method="conf_file",
+        config_schema_version="amneziawg_v2",
+        config_text=RAW_CONFIG,
+    )
+
+    assert passport.server_id == server_id
+    assert passport.safe_metadata()["server_id"] == server_id
+
+
+def test_device_passport_id_can_be_generated_before_persistence():
+    device_id = generate_device_passport_id()
+
+    assert device_id.startswith("dev_")
+    assert len(device_id) == 36
 
 
 def test_device_passport_safe_metadata_states_capability_boundary():

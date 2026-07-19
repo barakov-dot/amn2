@@ -18,6 +18,7 @@ from app.services.device_lifecycle import (
 )
 from app.services.device_passports import (
     DeviceAcceptanceEvidence,
+    create_device_passport,
     fingerprint_config,
     record_device_acceptance,
 )
@@ -146,6 +147,56 @@ def test_failed_stage_records_only_safe_failure_stage():
     assert event.status == "failed"
     assert event.failure_stage == "config_ready"
     assert "client" not in str(event.safe_metadata()).lower()
+
+
+def test_operator_passport_can_start_at_config_ready_without_false_delivery():
+    repo, user_id = _repo()
+    server_id = repo.ensure_default_server(
+        name="operator-server",
+        network_cidr="10.9.0.0/24",
+    )
+    local_device_id = repo.create_device(
+        user_id=user_id,
+        server_id=server_id,
+        name="operator-device",
+        duration_days=30,
+        vpn_ip="10.9.0.2",
+        peer_public_key="operator-public-key",
+        peer_private_key_encrypted="encrypted-private",
+        preshared_key_encrypted="encrypted-psk",
+        config_version="amneziawg_v2",
+    )
+    passport = create_device_passport(
+        repo,
+        owner_user_id=user_id,
+        local_device_id=local_device_id,
+        platform="linux",
+        official_client_type="amnezia_vpn",
+        import_method="conf_file",
+        config_schema_version="amneziawg_v2",
+        config_text="operator-config",
+    )
+
+    event = record_device_lifecycle_stage(
+        repo,
+        passport_device_id=passport.device_id,
+        stage="config_ready",
+        status="completed",
+        started_at=NOW,
+        occurred_at=NOW,
+        evidence=LifecycleEvidence(
+            source="operator_config_renderer",
+            reference="schema:amneziawg_v2",
+        ),
+    )
+
+    lifecycle = list_device_lifecycle_events(
+        repo,
+        passport_device_id=passport.device_id,
+    )
+    assert event.stage == "config_ready"
+    assert [item.stage for item in lifecycle] == ["config_ready"]
+    assert all(item.stage != "delivered" for item in lifecycle)
 
 
 def test_lifecycle_rejects_sensitive_multiline_evidence_and_stage_skips():

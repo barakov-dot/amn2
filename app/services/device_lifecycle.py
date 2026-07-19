@@ -99,7 +99,12 @@ def record_device_lifecycle_stage(
         stage_index = LIFECYCLE_STAGES.index(stage)
         if stage_index > 0:
             previous = LIFECYCLE_STAGES[stage_index - 1]
-            if not any(
+            operator_config_ready = (
+                stage == "config_ready"
+                and ticket_id is None
+                and passport_device_id is not None
+            )
+            if not operator_config_ready and not any(
                 event.stage == previous and event.status == "completed"
                 for event in existing
             ):

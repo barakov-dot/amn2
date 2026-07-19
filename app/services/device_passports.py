@@ -25,7 +25,14 @@ OFFICIAL_CLIENT_TYPES = frozenset(
     {"amnezia_vpn", "amneziawg", "defaultvpn", "unknown_official"}
 )
 DEVICE_IMPORT_METHODS = frozenset(
-    {"standard_conf", "native_vpn_json", "qr", "managed_ticket", "unknown"}
+    {
+        "standard_conf",
+        "conf_file",
+        "native_vpn_json",
+        "qr",
+        "managed_ticket",
+        "unknown",
+    }
 )
 CONFIG_FINGERPRINT_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 
@@ -59,6 +66,7 @@ class DevicePassport:
     device_id: str
     local_device_id: int | None
     owner_user_id: int
+    server_id: int | None
     platform: str
     official_client_type: str
     client_version: str | None
@@ -79,6 +87,7 @@ class DevicePassport:
             "device_id": self.device_id,
             "local_device_id": self.local_device_id,
             "owner_user_id": self.owner_user_id,
+            "server_id": self.server_id,
             "platform": self.platform,
             "official_client_type": self.official_client_type,
             "client_version": self.client_version,
@@ -123,6 +132,27 @@ def fingerprint_config(config_text: str) -> str:
     return f"sha256:{digest}"
 
 
+def generate_device_passport_id() -> str:
+    return f"dev_{uuid.uuid4().hex}"
+
+
+def validate_device_passport_context(
+    *,
+    platform: str,
+    official_client_type: str,
+    import_method: str,
+    config_schema_version: str,
+    client_version: str | None = None,
+) -> None:
+    _validate_passport_fields(
+        platform=platform,
+        official_client_type=official_client_type,
+        import_method=import_method,
+        config_schema_version=config_schema_version,
+        client_version=client_version,
+    )
+
+
 def create_device_passport(
     repo: Repository,
     *,
@@ -151,7 +181,7 @@ def create_device_passport(
         config_text=config_text,
         config_fingerprint=config_fingerprint,
     )
-    actual_device_id = device_id or f"dev_{uuid.uuid4().hex}"
+    actual_device_id = device_id or generate_device_passport_id()
     if not re.fullmatch(r"dev_[0-9a-f]{32}", actual_device_id):
         raise ValueError("device_id must use the generated dev_<uuid> format")
     _validate_acceptance_evidence(acceptance_evidence)
@@ -308,6 +338,11 @@ def _passport_from_row(
 ) -> DevicePassport:
     evidence = _parse_acceptance_evidence(row["acceptance_evidence_json"])
     snapshot = reconciliation or _unknown_snapshot(repo, row)
+    local_device = (
+        repo.get_device(int(row["local_device_id"]))
+        if row["local_device_id"] is not None
+        else None
+    )
     return DevicePassport(
         device_id=str(row["device_id"]),
         local_device_id=(
@@ -316,6 +351,11 @@ def _passport_from_row(
             else None
         ),
         owner_user_id=int(row["owner_user_id"]),
+        server_id=(
+            int(local_device["server_id"])
+            if local_device is not None
+            else None
+        ),
         platform=str(row["platform"]),
         official_client_type=str(row["official_client_type"]),
         client_version=(
