@@ -102,10 +102,13 @@ def build_config_identity(
 ) -> ConfigIdentity:
     normalized_user_label = _display_label(user_label, name="user_label")
     normalized_device_label = _display_label(device_label, name="device_label")
-    if collision_device_id is not None and (
-        isinstance(collision_device_id, bool) or collision_device_id <= 0
-    ):
-        raise ValueError("collision_device_id must be positive")
+    if collision_device_id is not None:
+        if (
+            isinstance(collision_device_id, bool)
+            or not isinstance(collision_device_id, int)
+            or collision_device_id <= 0
+        ):
+            raise ValueError("collision_device_id must be positive")
 
     user_component = _filename_component(normalized_user_label, fallback="user")
     device_component = _filename_component(
@@ -116,6 +119,9 @@ def build_config_identity(
         f"-d{collision_device_id}" if collision_device_id is not None else ""
     )
     extension = ".conf"
+    minimum_stem = f"{BRAND}-u-d"
+    if len(minimum_stem) + len(collision_suffix) + len(extension) > MAX_FILENAME_LENGTH:
+        raise ValueError("collision_device_id is too large for canonical filename")
     filename_stem = f"{BRAND}-{user_component}-{device_component}"
     maximum_stem_length = (
         MAX_FILENAME_LENGTH - len(collision_suffix) - len(extension)

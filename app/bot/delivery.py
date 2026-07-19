@@ -36,6 +36,14 @@ QR_CODE_CAPTION = (
 IMPORT_LINK_COPY_BUTTON_TEXT = "Скопировать ссылку"
 TELEGRAM_COPY_TEXT_MAX_LENGTH = 256
 CANONICAL_STANDALONE_AWG_IMPORT_BASENAME = "Neobyatnaya.NET"
+_WINDOWS_RESERVED_FILENAME_STEMS = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
 
 DEFAULT_CONFIG_READY_TEMPLATE = """Ваш VPN-конфиг готов.
 
@@ -140,7 +148,12 @@ def _config_basename(*, device_id: int, assignment_mode: str) -> str:
 
 
 def _validate_attachment_filename(filename: str) -> str:
-    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,90}\.conf", filename) is None:
+    filename_stem = filename.removesuffix(".conf")
+    windows_device_stem = filename_stem.split(".", maxsplit=1)[0]
+    if (
+        re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,90}\.conf", filename) is None
+        or windows_device_stem.upper() in _WINDOWS_RESERVED_FILENAME_STEMS
+    ):
         raise ValueError("attachment_filename must be a safe .conf basename")
     return filename
 

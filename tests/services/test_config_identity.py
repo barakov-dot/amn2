@@ -12,6 +12,15 @@ def test_build_config_identity_uses_exact_display_and_transliterated_filename():
     assert identity.filename == "NEOBYATNAYA.NET-Ivan-Pixel-8.conf"
 
 
+def test_build_config_identity_strips_outer_display_label_whitespace():
+    identity = build_config_identity(
+        user_label="  Иван  ",
+        device_label="  Pixel 8  ",
+    )
+
+    assert identity.display_name == "NEOBYATNAYA.NET — Иван — Pixel 8"
+
+
 @pytest.mark.parametrize(
     ("user_label", "device_label", "expected_filename"),
     [
@@ -75,4 +84,13 @@ def test_collision_device_id_must_be_a_positive_integer(collision_device_id):
             user_label="Alice",
             device_label="Phone",
             collision_device_id=collision_device_id,
+        )
+
+
+def test_collision_device_id_rejects_suffix_that_cannot_fit_canonical_filename():
+    with pytest.raises(ValueError, match="collision_device_id is too large"):
+        build_config_identity(
+            user_label="Alice",
+            device_label="Phone",
+            collision_device_id=10**80,
         )

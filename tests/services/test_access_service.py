@@ -577,17 +577,85 @@ def test_create_operator_device_stores_precomputed_canonical_display_name(tmp_pa
         ),
         peer_applier=RecordingPeerApplier(),
     )
-    identity = build_config_identity(user_label="Иван", device_label="Pixel 8")
-
     result = service.create_operator_device(
         owner_user_id=owner_user_id,
         server_id=server_id,
-        device_name=identity.display_name,
+        device_name="  Pixel 8  ",
         duration_days=30,
         admin_telegram_id=999,
     )
 
+    identity = build_config_identity(
+        user_label="Иван",
+        device_label="Pixel 8",
+        collision_device_id=result.device_id,
+    )
     assert repo.get_device(result.device_id)["name"] == identity.display_name
+    assert result.config_filename == identity.filename
+
+
+def test_create_operator_device_uses_safe_owner_label_fallbacks(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    username_user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="alice",
+        first_name="Alice",
+        last_name=None,
+    )
+    full_name_user_id = repo.upsert_user(
+        telegram_id=1002,
+        username=None,
+        first_name="Bob",
+        last_name="Smith",
+    )
+    local_user_id = repo.upsert_user(
+        telegram_id=987654321,
+        username=None,
+        first_name=None,
+        last_name=None,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=RecordingPeerApplier(),
+    )
+
+    username_result = service.create_operator_device(
+        owner_user_id=username_user_id,
+        server_id=server_id,
+        device_name="Tablet",
+        duration_days=30,
+        admin_telegram_id=999,
+    )
+    full_name_result = service.create_operator_device(
+        owner_user_id=full_name_user_id,
+        server_id=server_id,
+        device_name="Laptop",
+        duration_days=30,
+        admin_telegram_id=999,
+    )
+    local_result = service.create_operator_device(
+        owner_user_id=local_user_id,
+        server_id=server_id,
+        device_name="Router",
+        duration_days=30,
+        admin_telegram_id=999,
+    )
+
+    assert repo.get_device(username_result.device_id)["name"] == (
+        "NEOBYATNAYA.NET — alice — Tablet"
+    )
+    assert repo.get_device(full_name_result.device_id)["name"] == (
+        "NEOBYATNAYA.NET — Bob Smith — Laptop"
+    )
+    fallback_name = str(repo.get_device(local_result.device_id)["name"])
+    assert fallback_name == f"NEOBYATNAYA.NET — User-{local_user_id} — Router"
+    assert "987654321" not in fallback_name
 
 
 def test_create_operator_owner_shared_profile_bypasses_client_device_limit(tmp_path):

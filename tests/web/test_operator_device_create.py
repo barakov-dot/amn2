@@ -226,7 +226,9 @@ def test_operator_device_apply_uses_common_service_and_returns_safe_result(tmp_p
     with _repo(Path(settings.database_path)) as repo:
         devices = repo.list_user_devices_for_admin(user_id)
         assert len(devices) == 1
-        assert devices[0]["name"] == "Living room TV"
+        assert devices[0]["name"] == (
+            "NEOBYATNAYA.NET — alice — Living room TV"
+        )
         assert devices[0]["assignment_mode"] == "dedicated_device"
         actions = repo.list_admin_actions_for_target_user(user_id)
         assert actions[0]["action"] == "access.create_operator_device"

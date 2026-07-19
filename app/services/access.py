@@ -12,6 +12,7 @@ from app.server.operations import (
     remote_changed_local_failed_result,
 )
 from app.security.crypto import SecretBox
+from app.services.config_identity import build_config_identity
 from app.config_assignment import (
     DEDICATED_DEVICE,
     OWNER_SHARED,
@@ -77,6 +78,7 @@ class OperatorDeviceCreateResult:
     device_id: int
     config_text: str
     config_artifact_path: str | None
+    config_filename: str
     assignment_mode: str = DEDICATED_DEVICE
 
 
@@ -261,13 +263,18 @@ class AccessService:
                 "Operator device creation requires an explicit live peer applier"
             )
 
+        user_label = _operator_config_user_label(owner, user_id=owner_user_id)
+        config_identity = build_config_identity(
+            user_label=user_label,
+            device_label=normalized_device_display_name,
+        )
         server = self._repo.get_server(server_id)
         keypair = generate_keypair()
         preshared_key = generate_key()
         device_id, config_text = self._create_device_with_allocated_ip(
             user_id=owner_user_id,
             server_id=server_id,
-            device_name=normalized_device_display_name,
+            device_name=config_identity.display_name,
             server=server,
             duration_days=duration_days,
             private_key=keypair.private_key,
@@ -305,10 +312,16 @@ class AccessService:
         artifact_path = None
         if config_artifact_writer is not None:
             artifact_path = str(config_artifact_writer(config_text))
+        config_identity = build_config_identity(
+            user_label=user_label,
+            device_label=normalized_device_display_name,
+            collision_device_id=device_id,
+        )
         return OperatorDeviceCreateResult(
             device_id=device_id,
             config_text=config_text,
             config_artifact_path=artifact_path,
+            config_filename=config_identity.filename,
             assignment_mode=assignment_mode,
         )
 
@@ -543,3 +556,23 @@ def _is_duplicate_ip_integrity_error(exc: sqlite3.IntegrityError) -> bool:
         "vpn_ip" in message
         or "idx_devices_reserved_ip_unique" in message
     ) and "UNIQUE constraint failed" in message
+
+
+def _operator_config_user_label(owner, *, user_id: int) -> str:
+    operator_label = str(owner["operator_label"] or "").strip()
+    if operator_label:
+        return operator_label
+    username = str(owner["username"] or "").strip()
+    if username:
+        return username
+    full_name = " ".join(
+        part
+        for part in (
+            str(owner["first_name"] or "").strip(),
+            str(owner["last_name"] or "").strip(),
+        )
+        if part
+    )
+    if full_name:
+        return full_name
+    return f"User-{user_id}"
