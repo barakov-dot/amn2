@@ -770,7 +770,7 @@ def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
 ):
     remove_calls: list[tuple[str, str]] = []
     apply_calls: list[tuple[str, str, str, str]] = []
-    callback_states: list[tuple[str, str, str]] = []
+    callback_states: list[tuple[str, str, str, str]] = []
     rendered_responses: list[str] = []
 
     class FakePeerApplier:
@@ -783,9 +783,20 @@ def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
                 unrelated_status = str(
                     callback_repo.get_device(unrelated_device_id)["status"]
                 )
+                unrelated_disabled_status = str(
+                    callback_repo.get_device(unrelated_disabled_device_id)["status"]
+                )
             assert target_status == "active"
             assert unrelated_status == "pending"
-            callback_states.append(("remove", target_status, unrelated_status))
+            assert unrelated_disabled_status == "disabled"
+            callback_states.append(
+                (
+                    "remove",
+                    target_status,
+                    unrelated_status,
+                    unrelated_disabled_status,
+                )
+            )
             remove_calls.append((server.name, peer_public_key))
 
         def apply_peer(
@@ -801,9 +812,20 @@ def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
                 unrelated_status = str(
                     callback_repo.get_device(unrelated_device_id)["status"]
                 )
+                unrelated_disabled_status = str(
+                    callback_repo.get_device(unrelated_disabled_device_id)["status"]
+                )
             assert target_status == "disabled"
             assert unrelated_status == "pending"
-            callback_states.append(("apply", target_status, unrelated_status))
+            assert unrelated_disabled_status == "disabled"
+            callback_states.append(
+                (
+                    "apply",
+                    target_status,
+                    unrelated_status,
+                    unrelated_disabled_status,
+                )
+            )
             apply_calls.append(
                 (server.name, peer_public_key, preshared_key, vpn_ip)
             )
@@ -853,6 +875,29 @@ def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
             (unrelated_device_id,),
         )
         repo._conn.commit()
+        unrelated_disabled_user_id = repo.create_operator_recipient(
+            operator_label="Unrelated disabled recipient"
+        )
+        unrelated_disabled_device_id = repo.create_device(
+            user_id=unrelated_disabled_user_id,
+            server_id=server_id,
+            name="NEOBYATNAYA.NET — Unrelated disabled recipient — Laptop",
+            duration_days=365,
+            vpn_ip="10.8.0.46",
+            peer_public_key="unrelated-disabled-public",
+            peer_private_key_encrypted=secret_box.encrypt_text(
+                "unrelated-disabled-private"
+            ),
+            preshared_key_encrypted=secret_box.encrypt_text(
+                "unrelated-disabled-psk"
+            ),
+            config_version="amneziawg_v2",
+        )
+        repo.disable_user_devices(
+            unrelated_disabled_user_id,
+            reason="unrelated-test-fixture",
+            disabled_at="2026-07-19T00:00:00Z",
+        )
         issue = issue_device_enrollment_ticket(
             repo,
             user_id=user_id,
@@ -888,9 +933,12 @@ def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
     )
     assert disabled.status_code == 303
     assert remove_calls == [("local", "operator-public")]
-    assert callback_states == [("remove", "active", "pending")]
+    assert callback_states == [("remove", "active", "pending", "disabled")]
     with _repo(Path(settings.database_path)) as repo:
         assert repo.get_device(unrelated_device_id)["status"] == "pending"
+        assert (
+            repo.get_device(unrelated_disabled_device_id)["status"] == "disabled"
+        )
 
     detail = client.get(f"/users/{user_id}")
     rendered_responses.append(detail.text)
@@ -904,11 +952,14 @@ def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
         ("local", "operator-public", "operator-psk", "10.8.0.44")
     ]
     assert callback_states == [
-        ("remove", "active", "pending"),
-        ("apply", "disabled", "pending"),
+        ("remove", "active", "pending", "disabled"),
+        ("apply", "disabled", "pending", "disabled"),
     ]
     with _repo(Path(settings.database_path)) as repo:
         assert repo.get_device(unrelated_device_id)["status"] == "pending"
+        assert (
+            repo.get_device(unrelated_disabled_device_id)["status"] == "disabled"
+        )
 
     detail = client.get(f"/users/{user_id}")
     rendered_responses.append(detail.text)
@@ -923,13 +974,16 @@ def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
         ("local", "operator-public"),
     ]
     assert callback_states == [
-        ("remove", "active", "pending"),
-        ("apply", "disabled", "pending"),
-        ("remove", "active", "pending"),
+        ("remove", "active", "pending", "disabled"),
+        ("apply", "disabled", "pending", "disabled"),
+        ("remove", "active", "pending", "disabled"),
     ]
     with _repo(Path(settings.database_path)) as repo:
         assert repo.get_device(device_id)["status"] == "revoked"
         assert repo.get_device(unrelated_device_id)["status"] == "pending"
+        assert (
+            repo.get_device(unrelated_disabled_device_id)["status"] == "disabled"
+        )
         actions = repo.list_admin_actions_for_target_user(user_id)
         metadata = [json.loads(action["metadata_json"]) for action in actions]
         assert {item["user_label"] for item in metadata} == {"Alice — Pixel 8"}
@@ -957,6 +1011,9 @@ def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
         assert "unrelated-public" not in rendered
         assert "unrelated-private" not in rendered
         assert "unrelated-psk" not in rendered
+        assert "unrelated-disabled-public" not in rendered
+        assert "unrelated-disabled-private" not in rendered
+        assert "unrelated-disabled-psk" not in rendered
 
 
 def test_delete_single_user_device_revokes_only_selected_peer_and_cleans_links(
