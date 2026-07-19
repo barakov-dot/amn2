@@ -23,7 +23,7 @@ from app.vpn.config_versions import render_client_config_for_version
 @dataclass(frozen=True)
 class DeviceConfigDelivery:
     device_id: int
-    user_telegram_id: int
+    user_telegram_id: int | None
     config_text: str
     delivery: ConfigDeliveryPackage
     assignment_mode: str
@@ -103,7 +103,11 @@ def build_device_config_delivery(
     )
     return DeviceConfigDelivery(
         device_id=int(device["id"]),
-        user_telegram_id=int(user["telegram_id"]),
+        user_telegram_id=(
+            int(user["telegram_id"])
+            if user["telegram_id"] is not None
+            else None
+        ),
         config_text=config_text,
         delivery=delivery,
         assignment_mode=assignment_policy.mode,

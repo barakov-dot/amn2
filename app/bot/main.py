@@ -9,11 +9,13 @@ from app.bot.handlers import (
     handle_admin_create_order,
     handle_admin_grant,
     handle_admin_integrations,
+    handle_admin_issue_config,
     handle_admin_pending,
     handle_admin_servers,
     handle_admin_status,
     handle_admin_traffic,
     handle_admin_resend_config,
+    handle_admin_resend_issued_config,
     handle_admin_reset_template,
     handle_admin_template,
     handle_admin_users,
@@ -77,6 +79,14 @@ def create_dispatcher(*, workflow=None) -> Dispatcher:
     @router.message(Command("admin_create_order"))
     async def admin_create_order(message: Message) -> None:
         await handle_admin_create_order(message, workflow=workflow)
+
+    @router.message(Command("admin_issue_config"))
+    async def admin_issue_config(message: Message) -> None:
+        await handle_admin_issue_config(message, workflow=workflow)
+
+    @router.message(Command("admin_resend_issued_config"))
+    async def admin_resend_issued_config(message: Message) -> None:
+        await handle_admin_resend_issued_config(message, workflow=workflow)
 
     @router.callback_query(F.data == REQUEST_CONFIG_PREFIX)
     async def request_config(callback: CallbackQuery) -> None:

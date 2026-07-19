@@ -1,8 +1,9 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
-from app.bot.workflows import BotWorkflow
+from app.bot.workflows import AdminConfigHandoff, BotWorkflow
 from app.db.connection import connect
 from app.db.repositories import Repository
 from app.db.schema import initialize_schema
@@ -10,6 +11,7 @@ from app.security.crypto import SecretBox
 from app.server.peer_apply import PeerApplyError
 from app.services.access import AccessService, RemoteOperationPartialFailure
 from app.services.config_delivery import ConfigMaterialUnavailable
+from app.services.device_lifecycle import list_device_lifecycle_events
 from app.services.traffic import PeerTraffic, TrafficService
 
 SECRET = "bot-workflow-secret-value-with-more-than-32-chars"
@@ -1039,6 +1041,152 @@ def test_admin_can_list_service_users(tmp_path):
     assert denied == []
 
 
+def test_issue_admin_config_rejects_non_admin_before_issuance(tmp_path):
+    repo = _repo(tmp_path)
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    factory_calls = []
+    workflow = BotWorkflow(
+        repo=repo,
+        admin_telegram_ids={9001},
+        default_server_id=server_id,
+        admin_config_issuance_factory=lambda **kwargs: factory_calls.append(kwargs),
+    )
+
+    result = workflow.issue_admin_config(
+        admin_telegram_id=1001,
+        recipient_label="recipient",
+        device_label="phone",
+        platform="android",
+    )
+
+    assert result is None
+    assert factory_calls == []
+
+
+def test_issue_admin_config_returns_distinct_secret_handoff_to_admin(tmp_path):
+    repo = _repo(tmp_path)
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    manifests = []
+
+    class FakeIssuanceService:
+        def __init__(self, *, attachment_builder):
+            self.attachment_builder = attachment_builder
+
+        def issue_manifest(self, manifest):
+            manifests.append(manifest)
+            self.attachment_builder("recipient--phone.conf", "[Interface]\nPrivateKey = secret")
+            return SimpleNamespace(
+                status="completed",
+                receipts=(
+                    SimpleNamespace(
+                        recipient_user_id=41,
+                        device_id=7,
+                        passport_device_id="dev_passport_7",
+                        config_filename="recipient--phone.conf",
+                    ),
+                ),
+            )
+
+    def factory(**kwargs):
+        assert kwargs["admin_telegram_id"] == 9001
+        return FakeIssuanceService(attachment_builder=kwargs["attachment_builder"])
+
+    workflow = BotWorkflow(
+        repo=repo,
+        admin_telegram_ids={9001},
+        default_server_id=server_id,
+        admin_config_issuance_factory=factory,
+    )
+
+    result = workflow.issue_admin_config(
+        admin_telegram_id=9001,
+        recipient_label="recipient",
+        device_label="phone",
+        platform="android",
+    )
+
+    assert result == AdminConfigHandoff(
+        recipient_user_id=41,
+        device_id=7,
+        passport_device_id="dev_passport_7",
+        filename="recipient--phone.conf",
+        config_bytes=b"[Interface]\nPrivateKey = secret",
+    )
+    assert manifests[0]["server"] == "local"
+    assert manifests[0]["items"] == [
+        {
+            "recipient_label": "recipient",
+            "device_label": "phone",
+            "platform": "android",
+        }
+    ]
+
+
+def test_failed_admin_handoff_can_resend_existing_device_without_second_peer(tmp_path):
+    repo = _repo(tmp_path)
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    peer_applier = RecordingPeerApplier()
+    secret_box = SecretBox.from_app_secret(SECRET)
+    workflow = BotWorkflow(
+        repo=repo,
+        admin_telegram_ids={9001},
+        access_service=AccessService(
+            repo=repo,
+            secret_box=secret_box,
+            max_devices_per_user=5,
+            duration_days=30,
+            peer_applier=peer_applier,
+        ),
+        default_server_id=server_id,
+        secret_box=secret_box,
+    )
+
+    issued = workflow.issue_admin_config(
+        admin_telegram_id=9001,
+        recipient_label="recipient",
+        device_label="phone",
+        platform="android",
+    )
+    workflow.record_admin_config_delivery(
+        admin_telegram_id=9001,
+        passport_device_id=issued.passport_device_id,
+        delivered=False,
+        reference="telegram_error:RuntimeError",
+    )
+    resent = workflow.build_admin_config_handoff_for_device(
+        admin_telegram_id=9001,
+        device_id=issued.device_id,
+    )
+    workflow.record_admin_config_delivery(
+        admin_telegram_id=9001,
+        passport_device_id=issued.passport_device_id,
+        delivered=True,
+        reference="telegram_message:55",
+    )
+
+    assert resent.device_id == issued.device_id
+    assert resent.config_bytes == issued.config_bytes
+    assert len(peer_applier.calls) == 1
+    delivered = [
+        event
+        for event in list_device_lifecycle_events(
+            repo, passport_device_id=issued.passport_device_id
+        )
+        if event.stage == "delivered"
+    ]
+    assert [event.status for event in delivered] == ["failed", "completed"]
+    safe_audit = json.dumps(
+        [
+            dict(row)
+            for row in repo.list_admin_actions_for_target_user(
+                issued.recipient_user_id
+            )
+        ]
+    )
+    assert "PrivateKey" not in safe_audit
+    assert issued.config_bytes.decode("utf-8") not in safe_audit
+
+
 def _repo(tmp_path):
     conn = connect(tmp_path / "bot-workflows.sqlite3")
     initialize_schema(conn)
@@ -1114,6 +1262,9 @@ class RecordingPeerApplier:
         )
         if self._error is not None:
             raise self._error
+
+    def list_allocated_ips(self, *, server):
+        return []
 
 
 class StaticTrafficCollector:

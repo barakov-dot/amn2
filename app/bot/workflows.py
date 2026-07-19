@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from app.bot.delivery import (
     CONFIG_READY_TEMPLATE_KEY,
@@ -16,6 +17,8 @@ from app.security.redaction import redact
 from app.server.operations import remote_changed_local_failed_result
 from app.server.peer_apply import PeerApplyError
 from app.services.config_delivery import build_device_config_delivery
+from app.services.admin_config_issuance import AdminConfigIssuanceService
+from app.services.device_lifecycle import LifecycleEvidence, record_device_lifecycle_stage
 from app.services.device_revoke import cascade_revoke_physical_device
 from app.services.access import (
     AccessService,
@@ -59,6 +62,15 @@ class ResendResult:
     delivery: ConfigDeliveryPackage
 
 
+@dataclass(frozen=True)
+class AdminConfigHandoff:
+    recipient_user_id: int
+    device_id: int
+    passport_device_id: str
+    filename: str
+    config_bytes: bytes
+
+
 class PeerRemover:
     def remove_peer(self, *, server, peer_public_key: str) -> None:
         pass
@@ -79,6 +91,7 @@ class BotWorkflow:
         device_name_prefix: str = "Neobyatnaya-AMNZ",
         device_name_sequence_seed: int = 4,
         vps_writes_enabled: bool = False,
+        admin_config_issuance_factory=None,
     ) -> None:
         self._repo = repo
         self._admin_telegram_ids = admin_telegram_ids
@@ -91,6 +104,8 @@ class BotWorkflow:
         self._device_name_prefix = device_name_prefix.strip()
         self._device_name_sequence_seed = max(0, int(device_name_sequence_seed))
         self._vps_writes_enabled = bool(vps_writes_enabled)
+        self._admin_config_issuance_factory = admin_config_issuance_factory
+        self._admin_config_filenames: dict[int, str] = {}
         if not self._device_name_prefix:
             raise ValueError("device_name_prefix must be non-blank")
 
@@ -99,6 +114,130 @@ class BotWorkflow:
             return True
         user = self._repo.get_user_by_telegram_id(telegram_id)
         return bool(user is not None and int(user["is_admin"]) == 1)
+
+    def issue_admin_config(
+        self,
+        *,
+        admin_telegram_id: int,
+        recipient_label: str,
+        device_label: str,
+        platform: str,
+    ) -> AdminConfigHandoff | None:
+        if not self.is_admin(admin_telegram_id):
+            return None
+        if self._default_server_id is None or (
+            self._access_service is None
+            and self._admin_config_issuance_factory is None
+        ):
+            raise RuntimeError("Admin config issuance workflow is not configured")
+
+        captured_attachment: tuple[str, bytes] | None = None
+
+        def capture_attachment(filename: str, config_text: str) -> None:
+            nonlocal captured_attachment
+            captured_attachment = (filename, config_text.encode("utf-8"))
+
+        factory = self._admin_config_issuance_factory
+        if factory is None:
+            factory = lambda **kwargs: AdminConfigIssuanceService(
+                repo=self._repo,
+                access_service=self._access_service,
+                duration_days=self._access_service._duration_days,
+                **kwargs,
+            )
+        service = factory(
+            admin_telegram_id=admin_telegram_id,
+            attachment_builder=capture_attachment,
+        )
+        server = self._repo.get_server(self._default_server_id)
+        issued = service.issue_manifest(
+            {
+                "request_id": f"telegram-{admin_telegram_id}-{uuid4().hex}",
+                "server": str(server["name"]),
+                "items": [
+                    {
+                        "recipient_label": recipient_label,
+                        "device_label": device_label,
+                        "platform": platform,
+                    }
+                ],
+            }
+        )
+        if issued.status != "completed" or len(issued.receipts) != 1:
+            raise RuntimeError("Admin config issuance did not complete")
+        receipt = issued.receipts[0]
+        if (
+            receipt.recipient_user_id is None
+            or receipt.device_id is None
+            or receipt.passport_device_id is None
+            or receipt.config_filename is None
+            or captured_attachment is None
+        ):
+            raise RuntimeError("Admin config issuance returned incomplete handoff")
+        captured_filename, config_bytes = captured_attachment
+        if captured_filename != receipt.config_filename or not captured_filename.endswith(
+            ".conf"
+        ):
+            raise RuntimeError("Admin config issuance returned invalid attachment")
+        handoff = AdminConfigHandoff(
+            recipient_user_id=int(receipt.recipient_user_id),
+            device_id=int(receipt.device_id),
+            passport_device_id=str(receipt.passport_device_id),
+            filename=str(receipt.config_filename),
+            config_bytes=config_bytes,
+        )
+        self._admin_config_filenames[handoff.device_id] = handoff.filename
+        return handoff
+
+    def record_admin_config_delivery(
+        self,
+        *,
+        admin_telegram_id: int,
+        passport_device_id: str,
+        delivered: bool,
+        reference: str,
+    ) -> bool:
+        if not self.is_admin(admin_telegram_id):
+            return False
+        now = datetime.now(timezone.utc)
+        record_device_lifecycle_stage(
+            self._repo,
+            passport_device_id=passport_device_id,
+            stage="delivered",
+            status="completed" if delivered else "failed",
+            started_at=now,
+            occurred_at=now,
+            evidence=LifecycleEvidence(
+                source="telegram_admin_document",
+                reference=reference,
+            ),
+        )
+        return True
+
+    def build_admin_config_handoff_for_device(
+        self,
+        *,
+        admin_telegram_id: int,
+        device_id: int,
+    ) -> AdminConfigHandoff | None:
+        if not self.is_admin(admin_telegram_id):
+            return None
+        if self._secret_box is None:
+            raise RuntimeError("Config resend workflow is not configured")
+        device = self._repo.get_device(device_id)
+        passport = self._repo.get_device_passport_by_local_device_id(device_id)
+        if passport is None:
+            raise RuntimeError("device passport was not created")
+        resend = self._build_delivery_for_device(device)
+        return AdminConfigHandoff(
+            recipient_user_id=int(device["user_id"]),
+            device_id=device_id,
+            passport_device_id=str(passport["device_id"]),
+            filename=self._admin_config_filenames.get(
+                device_id, resend.delivery.config_filename
+            ),
+            config_bytes=resend.delivery.config_bytes,
+        )
 
     def register_user(
         self,

@@ -8,6 +8,7 @@ from app.bot.persistent_runtime import (
     PersistentBotAdmissionResult,
 )
 from app.config import Settings
+from app.bot.main import create_dispatcher
 from app.main import create_bot, create_workflow, run_persistent_bot
 from app.services.access import AccessService
 from app.systemd_notify import SystemdNotifyError
@@ -37,6 +38,18 @@ def test_create_workflow_wires_access_service_for_admin_approval(tmp_path):
         "days_90",
         "days_180",
     ]
+
+
+def test_dispatcher_registers_admin_issue_and_safe_resend_commands():
+    dispatcher = create_dispatcher(workflow=object())
+    router = dispatcher.sub_routers[0]
+
+    message_handler_names = {
+        handler.callback.__name__ for handler in router.message.handlers
+    }
+
+    assert "admin_issue_config" in message_handler_names
+    assert "admin_resend_issued_config" in message_handler_names
 
 
 def test_create_workflow_wires_device_name_sequence_settings(tmp_path):

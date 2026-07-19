@@ -7,6 +7,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.texts import DEFAULT_LOCALE, text
 from app.db.repositories import user_display_label
+from app.services.device_passports import DEVICE_PLATFORMS
 from app.services.operator_credential_status import OperatorCredentialStatusView
 from app.services.operator_server_status import OperatorServerStatusView
 from app.services.traffic import DeviceTrafficView
@@ -34,6 +35,8 @@ ADMIN_USERS_CALLBACK = "admin:users"
 ADMIN_TEMPLATE_RESET_CALLBACK = "admin:template:reset"
 ADMIN_APPROVE_PREFIX = "admin:approve"
 ADMIN_RESEND_PREFIX = "admin:resend"
+ADMIN_ISSUE_CONFIG_COMMAND = "/admin_issue_config"
+ADMIN_CONFIG_LABEL_MAX_LENGTH = 120
 
 VERSION_LABELS = {
     "amneziawg_v1_5": "AmneziaWG 1.5",
@@ -199,6 +202,21 @@ def build_user_device_keyboard(
             ],
         )
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def parse_admin_issue_config_command(text_value: str) -> tuple[str, str, str] | None:
+    command, separator, arguments = text_value.strip().partition(" ")
+    if command.split("@", maxsplit=1)[0] != ADMIN_ISSUE_CONFIG_COMMAND or not separator:
+        return None
+    parts = tuple(part.strip() for part in arguments.split("|"))
+    if len(parts) != 3 or any(not part for part in parts):
+        return None
+    if any(len(part) > ADMIN_CONFIG_LABEL_MAX_LENGTH for part in parts):
+        raise ValueError("admin config label is too long")
+    platform = parts[2].lower()
+    if platform not in DEVICE_PLATFORMS:
+        raise ValueError("unsupported device platform")
+    return parts[0], parts[1], platform
 
 
 def build_user_devices_reset_keyboard(

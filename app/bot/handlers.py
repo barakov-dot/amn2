@@ -19,6 +19,7 @@ from app.bot.ux import (
     ADMIN_STATUS_CALLBACK,
     ADMIN_TRAFFIC_CALLBACK,
     ADMIN_RESEND_PREFIX,
+    parse_admin_issue_config_command,
     ADMIN_TEMPLATE_RESET_CALLBACK,
     ADMIN_TEMPLATES_CALLBACK,
     ADMIN_USERS_CALLBACK,
@@ -548,6 +549,121 @@ async def handle_admin_create_order(message, *, workflow) -> None:
         await message.answer(text("handler.admin_required"))
         return
     await message.answer(result.text)
+
+
+async def handle_admin_issue_config(message, *, workflow) -> None:
+    admin_telegram_id = int(message.from_user.id)
+    if not workflow.is_admin(admin_telegram_id):
+        await message.answer("Admin access required.")
+        return
+    try:
+        parsed = parse_admin_issue_config_command(
+            str(getattr(message, "text", ""))
+        )
+    except ValueError:
+        await message.answer("Invalid recipient, device, or platform.")
+        return
+    if parsed is None:
+        await message.answer(
+            "Usage: /admin_issue_config recipient | device | platform"
+        )
+        return
+    recipient_label, device_label, platform = parsed
+    try:
+        result = workflow.issue_admin_config(
+            admin_telegram_id=admin_telegram_id,
+            recipient_label=recipient_label,
+            device_label=device_label,
+            platform=platform,
+        )
+    except ValueError:
+        await message.answer("Invalid recipient, device, or platform.")
+        return
+    if result is None:
+        await message.answer("Admin access required.")
+        return
+    await _send_admin_config_handoff(
+        message,
+        workflow=workflow,
+        admin_telegram_id=admin_telegram_id,
+        result=result,
+        success_text=f"Config for device #{result.device_id} delivered to admin.",
+        failure_text=(
+            "Config delivery failed. Safely resend the existing device with "
+            f"/admin_resend_issued_config {result.device_id}."
+        ),
+    )
+
+
+async def handle_admin_resend_issued_config(message, *, workflow) -> None:
+    admin_telegram_id = int(message.from_user.id)
+    if not workflow.is_admin(admin_telegram_id):
+        await message.answer("Admin access required.")
+        return
+    parts = str(getattr(message, "text", "")).split()
+    if len(parts) != 2:
+        await message.answer("Usage: /admin_resend_issued_config device_id")
+        return
+    try:
+        device_id = int(parts[1])
+    except ValueError:
+        await message.answer("Usage: /admin_resend_issued_config device_id")
+        return
+    result = workflow.build_admin_config_handoff_for_device(
+        admin_telegram_id=admin_telegram_id,
+        device_id=device_id,
+    )
+    if result is None:
+        await message.answer("Admin access required.")
+        return
+    await _send_admin_config_handoff(
+        message,
+        workflow=workflow,
+        admin_telegram_id=admin_telegram_id,
+        result=result,
+        success_text=f"Config for existing device #{device_id} delivered to admin.",
+        failure_text=(
+            f"Config resend failed. Retry /admin_resend_issued_config {device_id}."
+        ),
+    )
+
+
+async def _send_admin_config_handoff(
+    message,
+    *,
+    workflow,
+    admin_telegram_id: int,
+    result,
+    success_text: str,
+    failure_text: str,
+) -> None:
+    try:
+        telegram_message = await message.bot.send_document(
+            chat_id=admin_telegram_id,
+            document=BufferedInputFile(result.config_bytes, filename=result.filename),
+            caption=None,
+        )
+    except Exception as exc:
+        workflow.record_admin_config_delivery(
+            admin_telegram_id=admin_telegram_id,
+            passport_device_id=result.passport_device_id,
+            delivered=False,
+            reference=f"telegram_error:{type(exc).__name__}",
+        )
+        await message.answer(failure_text)
+        return
+    message_id = getattr(telegram_message, "message_id", None)
+    workflow.record_admin_config_delivery(
+        admin_telegram_id=admin_telegram_id,
+        passport_device_id=result.passport_device_id,
+        delivered=True,
+        reference=(
+            f"telegram_message:{message_id}"
+            if message_id is not None
+            else "telegram_document:confirmed"
+        ),
+    )
+    await message.answer(success_text)
 
 
 def is_request_config_callback(data: str) -> bool:

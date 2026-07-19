@@ -2,6 +2,8 @@ import asyncio
 from types import SimpleNamespace
 
 from app.bot.handlers import (
+    handle_admin_issue_config,
+    handle_admin_resend_issued_config,
     handle_admin_approve,
     handle_admin_pending,
     handle_admin_servers,
@@ -29,6 +31,7 @@ from app.bot.handlers import (
     handle_user_revoke_device,
     handle_user_revoke_device_confirm,
 )
+from app.bot.workflows import AdminConfigHandoff
 from app.bot.ux import (
     LANGUAGE_CALLBACK_PREFIX,
     MY_DEVICES_CALLBACK,
@@ -939,6 +942,79 @@ def test_handle_admin_create_order_creates_manual_access_request():
     assert "request #77" in message.answers[0]["text"]
 
 
+def test_handle_admin_issue_config_rejects_non_admin_before_parsing_or_mutation():
+    message = FakeMessage(user_id=1001)
+    message.text = "/admin_issue_config malformed"
+    workflow = FakeWorkflow(admin_ids={9001})
+
+    asyncio.run(handle_admin_issue_config(message, workflow=workflow))
+
+    assert workflow.admin_config_issues == []
+    assert message.answers[0]["text"] == "Admin access required."
+
+
+def test_handle_admin_issue_config_sends_one_secretless_conf_to_invoking_admin():
+    message = FakeMessage(user_id=9001)
+    message.text = "/admin_issue_config recipient | phone | android"
+    message.bot = FakeBot()
+    workflow = FakeWorkflow(admin_ids={9001})
+
+    asyncio.run(handle_admin_issue_config(message, workflow=workflow))
+
+    assert workflow.admin_config_issues == [(9001, "recipient", "phone", "android")]
+    assert len(message.bot.sent_documents) == 1
+    sent = message.bot.sent_documents[0]
+    assert sent["chat_id"] == 9001
+    assert sent["document"].filename == "recipient--phone.conf"
+    assert sent["caption"] is None
+    assert message.bot.sent_messages == []
+    assert message.bot.sent_photos == []
+    assert workflow.admin_config_deliveries == [(9001, "dev_passport_7", True)]
+    visible_text = " ".join(answer["text"] for answer in message.answers)
+    assert "PrivateKey" not in visible_text
+    assert "vpn://" not in visible_text
+
+
+def test_handle_admin_issue_config_validates_platform_before_mutation():
+    message = FakeMessage(user_id=9001)
+    message.text = "/admin_issue_config recipient | phone | unsupported"
+    workflow = FakeWorkflow(admin_ids={9001})
+
+    asyncio.run(handle_admin_issue_config(message, workflow=workflow))
+
+    assert workflow.admin_config_issues == []
+    assert "Invalid" in message.answers[0]["text"]
+
+
+def test_handle_admin_issue_config_records_failed_delivery_and_offers_safe_resend():
+    message = FakeMessage(user_id=9001)
+    message.text = "/admin_issue_config recipient | phone | android"
+    message.bot = FakeBot(document_error=RuntimeError("secret must not leak"))
+    workflow = FakeWorkflow(admin_ids={9001})
+
+    asyncio.run(handle_admin_issue_config(message, workflow=workflow))
+
+    assert workflow.admin_config_deliveries == [(9001, "dev_passport_7", False)]
+    response = message.answers[0]["text"]
+    assert "/admin_resend_issued_config 7" in response
+    assert "secret must not leak" not in response
+    assert "PrivateKey" not in response
+
+
+def test_handle_admin_resend_issued_config_sends_existing_device_only_to_admin():
+    message = FakeMessage(user_id=9001)
+    message.text = "/admin_resend_issued_config 7"
+    workflow = FakeWorkflow(admin_ids={9001})
+
+    asyncio.run(handle_admin_resend_issued_config(message, workflow=workflow))
+
+    assert workflow.admin_config_resends == [(9001, 7)]
+    assert len(message.bot.sent_documents) == 1
+    assert message.bot.sent_documents[0]["chat_id"] == 9001
+    assert message.bot.sent_documents[0]["caption"] is None
+    assert message.bot.sent_photos == []
+
+
 class FakeMessage:
     def __init__(self, *, user_id, username=None, first_name=None, last_name=None):
         self.from_user = SimpleNamespace(
@@ -950,6 +1026,7 @@ class FakeMessage:
         self.answers = []
         self.photos = []
         self.text = ""
+        self.bot = FakeBot()
 
     async def answer(self, text, reply_markup=None):
         self.answers.append({"text": text, "reply_markup": reply_markup})
@@ -1015,9 +1092,50 @@ class FakeWorkflow:
         self.server_status_reads = []
         self.integration_status_reads = []
         self.admin_traffic_reads = []
+        self.admin_config_issues = []
+        self.admin_config_deliveries = []
+        self.admin_config_resends = []
 
     def is_admin(self, telegram_id):
         return telegram_id in self._admin_ids
+
+    def issue_admin_config(
+        self,
+        *,
+        admin_telegram_id,
+        recipient_label,
+        device_label,
+        platform,
+    ):
+        self.admin_config_issues.append(
+            (admin_telegram_id, recipient_label, device_label, platform)
+        )
+        return AdminConfigHandoff(
+            recipient_user_id=41,
+            device_id=7,
+            passport_device_id="dev_passport_7",
+            filename="recipient--phone.conf",
+            config_bytes=b"[Interface]\nPrivateKey = secret",
+        )
+
+    def record_admin_config_delivery(
+        self, *, admin_telegram_id, passport_device_id, delivered, reference
+    ):
+        self.admin_config_deliveries.append(
+            (admin_telegram_id, passport_device_id, delivered)
+        )
+
+    def build_admin_config_handoff_for_device(
+        self, *, admin_telegram_id, device_id
+    ):
+        self.admin_config_resends.append((admin_telegram_id, device_id))
+        return AdminConfigHandoff(
+            recipient_user_id=41,
+            device_id=device_id,
+            passport_device_id="dev_passport_7",
+            filename="recipient--phone.conf",
+            config_bytes=b"[Interface]\nPrivateKey = secret",
+        )
 
     def get_operator_status(self, *, admin_telegram_id, now=None):
         if not self.is_admin(admin_telegram_id):
@@ -1321,10 +1439,11 @@ class FakeWorkflow:
 
 
 class FakeBot:
-    def __init__(self):
+    def __init__(self, *, document_error=None):
         self.sent_messages = []
         self.sent_documents = []
         self.sent_photos = []
+        self.document_error = document_error
 
     async def send_message(self, chat_id, text, reply_markup=None):
         self.sent_messages.append(
@@ -1332,9 +1451,12 @@ class FakeBot:
         )
 
     async def send_document(self, chat_id, document, caption=None):
+        if self.document_error is not None:
+            raise self.document_error
         self.sent_documents.append(
             {"chat_id": chat_id, "document": document, "caption": caption}
         )
+        return SimpleNamespace(message_id=55)
 
     async def send_photo(self, chat_id, photo, caption=None):
         self.sent_photos.append(
