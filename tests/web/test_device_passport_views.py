@@ -26,7 +26,7 @@ def test_list_view_contains_safe_owner_and_status_metadata():
     assert view["count"] == 1
     item = view["items"][0]
     assert item["device_id"] == passport_id
-    assert item["owner"] == {"id": user_id, "display": "passport-owner"}
+    assert item["owner"] == {"id": user_id, "display": "@passport-owner"}
     assert item["local_device_id"] == local_device_id
     assert item["state"] == "active"
     assert item["acceptance_status"] == "passed"
@@ -48,6 +48,30 @@ def test_detail_view_contains_lifecycle_and_capability_boundary():
     assert view["passport"]["capability_boundary"]["hardware_fingerprint"] is False
     assert view["passport"]["recommended_next_action"] == "collect_fresh_observation"
     assert view["lifecycle"] == []
+
+
+def test_passport_owner_uses_operator_label_without_telegram_id():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    user_id = repo.create_operator_recipient(operator_label="Alice — Pixel 8")
+    passport = create_device_passport(
+        repo,
+        owner_user_id=user_id,
+        local_device_id=None,
+        platform="android",
+        official_client_type="amnezia_vpn",
+        client_version=None,
+        import_method="standard_conf",
+        config_schema_version="amneziawg_v2",
+        config_text="operator-config",
+    )
+
+    view = build_device_passport_detail_view(repo, passport.device_id)
+
+    assert view["owner"] == {"id": user_id, "display": "Alice — Pixel 8"}
 
 
 def _seed_passport() -> tuple[sqlite3.Connection, Repository, int, int, str]:

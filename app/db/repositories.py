@@ -3,7 +3,7 @@ import json
 import re
 import sqlite3
 from contextlib import contextmanager
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 from app.config_assignment import (
@@ -16,6 +16,41 @@ USER_STATUSES = {"active", "blocked", "deleted"}
 USER_LOCALES = {"ru", "en"}
 SERVER_STATUSES = {"active", "degraded", "disabled"}
 DEVICE_STATUSES = {"pending", "active", "disabled", "expired", "revoked", "failed"}
+
+
+def user_display_label(row: Mapping[str, Any]) -> str:
+    operator_label = str(_mapping_value(row, "operator_label") or "").strip()
+    if operator_label:
+        return operator_label
+    username = str(_mapping_value(row, "username") or "").strip()
+    if username:
+        return f"@{username}"
+    name = " ".join(
+        part
+        for part in (
+            str(_mapping_value(row, "first_name") or "").strip(),
+            str(_mapping_value(row, "last_name") or "").strip(),
+        )
+        if part
+    )
+    if name:
+        return name
+    telegram_id = _mapping_value(row, "telegram_id")
+    if telegram_id is not None:
+        return f"telegram_id={telegram_id}"
+    return "operator recipient"
+
+
+def _mapping_value(
+    row: Mapping[str, Any], key: str, default: Any = None
+) -> Any:
+    get = getattr(row, "get", None)
+    if get is not None:
+        return get(key, default)
+    try:
+        return row[key]
+    except (KeyError, IndexError):
+        return default
 
 
 class Repository:
@@ -73,6 +108,36 @@ class Repository:
         return self._conn.execute(
             "SELECT * FROM users WHERE telegram_id = ?",
             (telegram_id,),
+        ).fetchone()
+
+    def create_operator_recipient(self, *, operator_label: str) -> int:
+        label = operator_label.strip()
+        if not label:
+            raise ValueError("operator_label must not be blank")
+        if self.get_user_by_operator_label(label) is not None:
+            raise ValueError("operator_label already exists")
+        try:
+            cursor = self._conn.execute(
+                "INSERT INTO users (telegram_id, operator_label) VALUES (NULL, ?)",
+                (label,),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("operator_label already exists") from exc
+        self._commit()
+        return int(cursor.lastrowid)
+
+    def get_user_by_operator_label(
+        self, operator_label: str
+    ) -> sqlite3.Row | None:
+        label = operator_label.strip()
+        if not label:
+            return None
+        return self._conn.execute(
+            """
+            SELECT * FROM users
+            WHERE lower(trim(operator_label)) = lower(trim(?))
+            """,
+            (label,),
         ).fetchone()
 
     def get_user(self, user_id: int) -> sqlite3.Row:
@@ -2253,6 +2318,7 @@ class Repository:
             SELECT
                 orders.*,
                 users.telegram_id,
+                users.operator_label,
                 users.username,
                 users.first_name,
                 users.last_name
@@ -2270,6 +2336,7 @@ class Repository:
             SELECT
                 orders.*,
                 users.telegram_id,
+                users.operator_label,
                 users.username,
                 users.first_name,
                 users.last_name
@@ -2297,6 +2364,7 @@ class Repository:
                 devices.vpn_ip,
                 devices.assignment_mode,
                 users.telegram_id,
+                users.operator_label,
                 users.username,
                 users.first_name,
                 users.last_name
@@ -2328,6 +2396,7 @@ class Repository:
                 devices.assignment_mode,
                 users.id AS user_id,
                 users.telegram_id,
+                users.operator_label,
                 users.username,
                 users.first_name,
                 users.last_name,
@@ -2360,6 +2429,7 @@ class Repository:
                 devices.status,
                 devices.assignment_mode,
                 users.telegram_id,
+                users.operator_label,
                 users.username,
                 users.first_name,
                 users.last_name

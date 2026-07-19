@@ -2,6 +2,7 @@ import sqlite3
 
 import pytest
 
+from app.db import repositories
 from app.db.connection import connect
 from app.db.repositories import Repository
 from app.db.schema import initialize_schema
@@ -36,6 +37,118 @@ def test_repository_creates_user_server_order_and_device(tmp_path):
     assert repo.get_order(order_id)["status"] == "manual_review"
     assert repo.get_device(device_id)["vpn_ip"] == "10.8.0.2"
     assert repo.get_device(device_id)["assignment_mode"] == "dedicated_device"
+
+
+def test_repository_creates_operator_recipient_without_telegram_identity(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+
+    recipient_id = repo.create_operator_recipient(operator_label="Alice — Pixel 8")
+    recipient = repo.get_user(recipient_id)
+
+    assert recipient["telegram_id"] is None
+    assert recipient["operator_label"] == "Alice — Pixel 8"
+    assert repo.get_user_by_operator_label("Alice — Pixel 8")["id"] == recipient_id
+    assert repositories.user_display_label(recipient) == "Alice — Pixel 8"
+
+
+def test_operator_recipient_rejects_blank_and_normalized_duplicate_labels(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+
+    with pytest.raises(ValueError, match="operator_label must not be blank"):
+        repo.create_operator_recipient(operator_label="   ")
+
+    recipient_id = repo.create_operator_recipient(operator_label="  Alice — Pixel 8  ")
+    assert repo.get_user(recipient_id)["operator_label"] == "Alice — Pixel 8"
+
+    with pytest.raises(ValueError, match="operator_label already exists"):
+        repo.create_operator_recipient(operator_label="alice — pixel 8")
+
+
+def test_operator_identity_keeps_telegram_upsert_behavior_unchanged(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+
+    user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="alice",
+        first_name="Alice",
+        last_name=None,
+    )
+    updated_id = repo.upsert_user(
+        telegram_id=1001,
+        username="alice-updated",
+        first_name="Alice",
+        last_name="Telegram",
+    )
+
+    assert updated_id == user_id
+    user = repo.get_user(user_id)
+    assert user["telegram_id"] == 1001
+    assert user["operator_label"] is None
+    assert user["username"] == "alice-updated"
+
+
+def test_schema_migrates_legacy_users_without_losing_dependent_rows(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    conn.executescript(
+        """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER NOT NULL UNIQUE,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            locale TEXT NOT NULL DEFAULT 'ru',
+            is_admin INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            email TEXT,
+            email_verified_at TEXT
+        );
+        CREATE TABLE devices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            server_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            duration_days INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active'
+                CHECK (status IN ('pending', 'active', 'disabled', 'expired', 'revoked', 'failed')),
+            vpn_ip TEXT NOT NULL,
+            peer_public_key TEXT NOT NULL,
+            peer_private_key_encrypted TEXT NOT NULL,
+            preshared_key_encrypted TEXT NOT NULL,
+            config_version TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
+        INSERT INTO users (
+            id, telegram_id, username, first_name, last_name
+        ) VALUES (41, 1001, 'legacy', 'Legacy', 'User');
+        INSERT INTO devices (
+            id, user_id, server_id, name, duration_days, status, vpn_ip,
+            peer_public_key, peer_private_key_encrypted,
+            preshared_key_encrypted, config_version
+        ) VALUES (
+            73, 41, 1, 'Legacy phone', 7, 'active', '10.8.0.2',
+            'legacy-public', 'legacy-private', 'legacy-psk', 'amneziawg_v2'
+        );
+        """
+    )
+    conn.execute("PRAGMA foreign_keys = ON")
+
+    initialize_schema(conn)
+    repo = Repository(conn)
+
+    assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    assert repo.get_user(41)["telegram_id"] == 1001
+    assert repo.get_user(41)["operator_label"] is None
+    assert repo.get_device(73)["user_id"] == 41
 
 
 def test_plan_max_devices_is_optional_configurable_and_validated(tmp_path):

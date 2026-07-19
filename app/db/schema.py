@@ -6,7 +6,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            telegram_id INTEGER NOT NULL UNIQUE,
+            telegram_id INTEGER UNIQUE,
+            operator_label TEXT,
             username TEXT,
             first_name TEXT,
             last_name TEXT,
@@ -17,7 +18,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             is_admin INTEGER NOT NULL DEFAULT 0
                 CHECK (is_admin IN (0, 1)),
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            CHECK (telegram_id IS NOT NULL OR length(trim(operator_label)) > 0)
         );
 
         CREATE TABLE IF NOT EXISTS servers (
@@ -320,6 +322,14 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         "locale",
         "TEXT NOT NULL DEFAULT 'ru' CHECK (locale IN ('ru', 'en'))",
     )
+    _migrate_users_operator_identity(conn)
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_operator_label_unique
+            ON users(lower(trim(operator_label)))
+            WHERE operator_label IS NOT NULL
+        """
+    )
     _ensure_column(
         conn,
         "orders",
@@ -375,6 +385,99 @@ def _ensure_column(
         conn.execute(
             f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
         )
+
+
+def _migrate_users_operator_identity(conn: sqlite3.Connection) -> None:
+    columns = {
+        row["name"] if isinstance(row, sqlite3.Row) else row[1]: row
+        for row in conn.execute("PRAGMA table_info(users)")
+    }
+    telegram_column = columns.get("telegram_id")
+    telegram_not_null = bool(
+        telegram_column["notnull"]
+        if isinstance(telegram_column, sqlite3.Row)
+        else telegram_column[3]
+    )
+    if "operator_label" in columns and not telegram_not_null:
+        return
+
+    foreign_keys_row = conn.execute("PRAGMA foreign_keys").fetchone()
+    foreign_keys_enabled = int(foreign_keys_row[0])
+    if conn.in_transaction:
+        conn.commit()
+
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.executescript(
+            """
+            BEGIN;
+            CREATE TABLE users_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_id INTEGER UNIQUE,
+                operator_label TEXT,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'blocked', 'deleted')),
+                locale TEXT NOT NULL DEFAULT 'ru'
+                    CHECK (locale IN ('ru', 'en')),
+                is_admin INTEGER NOT NULL DEFAULT 0
+                    CHECK (is_admin IN (0, 1)),
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                email TEXT,
+                email_verified_at TEXT,
+                CHECK (telegram_id IS NOT NULL OR length(trim(operator_label)) > 0)
+            );
+
+            INSERT INTO users_new (
+                id,
+                telegram_id,
+                operator_label,
+                username,
+                first_name,
+                last_name,
+                status,
+                locale,
+                is_admin,
+                created_at,
+                updated_at,
+                email,
+                email_verified_at
+            )
+            SELECT
+                id,
+                telegram_id,
+                NULL,
+                username,
+                first_name,
+                last_name,
+                status,
+                locale,
+                is_admin,
+                created_at,
+                updated_at,
+                email,
+                email_verified_at
+            FROM users;
+
+            DROP TABLE users;
+            ALTER TABLE users_new RENAME TO users;
+            """
+        )
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise sqlite3.IntegrityError(
+                f"foreign key violations after users migration: {violations!r}"
+            )
+        conn.commit()
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        conn.execute(f"PRAGMA foreign_keys = {foreign_keys_enabled}")
 
 
 def _migrate_devices_disabled_status(conn: sqlite3.Connection) -> None:

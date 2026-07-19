@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.bot.texts import DEFAULT_LOCALE, text
+from app.db.repositories import user_display_label
 from app.services.operator_credential_status import OperatorCredentialStatusView
 from app.services.operator_server_status import OperatorServerStatusView
 from app.services.traffic import DeviceTrafficView
@@ -760,15 +761,7 @@ def _probe_state(value: bool | None, *, locale: str) -> str:
 
 
 def _format_user_identity(row: Mapping[str, object]) -> str:
-    username = _row_get(row, "username")
-    if username:
-        return f"@{username}"
-    first_name = _row_get(row, "first_name")
-    last_name = _row_get(row, "last_name")
-    full_name = " ".join(str(part) for part in (first_name, last_name) if part)
-    if full_name:
-        return full_name
-    return f"telegram_id={row['telegram_id']}"
+    return user_display_label(row)
 
 
 def _row_get(row: Mapping[str, object], key: str, default: object = None) -> object:

@@ -25,6 +25,7 @@ from app.db.connection import connect
 from app.db.repositories import Repository
 from app.db.repositories import SERVER_STATUSES
 from app.db.repositories import USER_STATUSES
+from app.db.repositories import user_display_label
 from app.db.schema import initialize_schema
 from app.security.crypto import SecretBox
 from app.security.redaction import redact
@@ -2929,7 +2930,11 @@ def _collect_server_peer_sync(settings: Settings, server_id: int) -> dict[str, A
                     "config_version": str(device["config_version"]),
                     "user_id": int(user["id"]),
                     "user_display": _format_sync_user_display(user),
-                    "user_telegram_id": int(user["telegram_id"]),
+                    "user_telegram_id": (
+                        int(user["telegram_id"])
+                        if user["telegram_id"] is not None
+                        else None
+                    ),
                     "peer_public_key": peer.peer_public_key,
                     "vpn_ip": str(device["vpn_ip"]),
                     "allowed_ips": peer.allowed_ips,
@@ -2984,20 +2989,7 @@ def _empty_peer_sync_report(*, error: str) -> dict[str, Any]:
 
 
 def _format_sync_user_display(user: Any) -> str:
-    username = str(user["username"] or "").strip()
-    if username:
-        return f"@{username}"
-    name = " ".join(
-        part
-        for part in (
-            str(user["first_name"] or "").strip(),
-            str(user["last_name"] or "").strip(),
-        )
-        if part
-    )
-    if name:
-        return name
-    return f"telegram_id={user['telegram_id']}"
+    return user_display_label(user)
 
 
 def _managed_config_view(row: Any) -> dict[str, Any]:
@@ -3008,7 +3000,11 @@ def _managed_config_view(row: Any) -> dict[str, Any]:
         "config_version": str(row["config_version"]),
         "user_id": int(row["user_id"]),
         "user_display": _format_sync_user_display(row),
-        "user_telegram_id": int(row["telegram_id"]),
+        "user_telegram_id": (
+            int(row["telegram_id"])
+            if row["telegram_id"] is not None
+            else None
+        ),
         "peer_public_key": str(row["peer_public_key"]),
         "vpn_ip": str(row["vpn_ip"]),
         "live_allowed_ips": "",

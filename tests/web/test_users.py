@@ -17,6 +17,28 @@ from app.web.auth import create_password_hash
 TEST_APP_SECRET = "test-secret-for-web-users-1234567890"
 
 
+def test_managed_config_view_supports_operator_recipient_without_telegram_id():
+    view = web_app._managed_config_view(
+        {
+            "id": 17,
+            "name": "Pixel 8",
+            "status": "active",
+            "config_version": "amneziawg_v2",
+            "user_id": 23,
+            "telegram_id": None,
+            "operator_label": "Alice — Pixel 8",
+            "username": None,
+            "first_name": None,
+            "last_name": None,
+            "peer_public_key": "public",
+            "vpn_ip": "10.8.0.2",
+        }
+    )
+
+    assert view["user_display"] == "Alice — Pixel 8"
+    assert view["user_telegram_id"] is None
+
+
 def test_users_redirects_when_unauthenticated(tmp_path: Path):
     client = _client(tmp_path)
 

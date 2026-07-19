@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.db.repositories import Repository
+from app.db.repositories import Repository, user_display_label
 from app.services.device_lifecycle import list_device_lifecycle_events
 from app.services.device_passports import (
     DevicePassport,
@@ -84,16 +84,4 @@ def _owner_view(repo: Repository, owner_user_id: int) -> dict[str, object]:
     row = repo.get_user(owner_user_id)
     if row is None:
         raise LookupError("device passport owner not found")
-    display = str(row["username"] or "").strip()
-    if not display:
-        display = " ".join(
-            part
-            for part in (
-                str(row["first_name"] or "").strip(),
-                str(row["last_name"] or "").strip(),
-            )
-            if part
-        )
-    if not display:
-        display = str(row["telegram_id"])
-    return {"id": owner_user_id, "display": display}
+    return {"id": owner_user_id, "display": user_display_label(row)}
