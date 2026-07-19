@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from uuid import uuid4
 
 from app.bot.delivery import (
     CONFIG_READY_TEMPLATE_KEY,
@@ -124,12 +123,15 @@ class BotWorkflow:
         self,
         *,
         admin_telegram_id: int,
+        request_id: str,
         recipient_label: str,
         device_label: str,
         platform: str,
     ) -> AdminConfigHandoff | None:
         if not self.is_configured_admin(admin_telegram_id):
             return None
+        if not self._vps_writes_enabled:
+            raise RuntimeError("VPS writes are disabled")
         if self._default_server_id is None or (
             self._access_service is None
             and self._admin_config_issuance_factory is None
@@ -157,7 +159,7 @@ class BotWorkflow:
         server = self._repo.get_server(self._default_server_id)
         issued = service.issue_manifest(
             {
-                "request_id": f"telegram-{admin_telegram_id}-{uuid4().hex}",
+                "request_id": request_id,
                 "server": str(server["name"]),
                 "items": [
                     {
@@ -171,6 +173,11 @@ class BotWorkflow:
         if issued.status != "completed" or len(issued.receipts) != 1:
             raise RuntimeError("Admin config issuance did not complete")
         receipt = issued.receipts[0]
+        if captured_attachment is None and receipt.device_id is not None:
+            return self.build_admin_config_handoff_for_device(
+                admin_telegram_id=admin_telegram_id,
+                device_id=int(receipt.device_id),
+            )
         if (
             receipt.recipient_user_id is None
             or receipt.device_id is None

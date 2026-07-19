@@ -570,14 +570,21 @@ async def handle_admin_issue_config(message, *, workflow) -> None:
         return
     recipient_label, device_label, platform = parsed
     try:
+        request_id = _telegram_message_request_id(message)
         result = workflow.issue_admin_config(
             admin_telegram_id=admin_telegram_id,
+            request_id=request_id,
             recipient_label=recipient_label,
             device_label=device_label,
             platform=platform,
         )
     except ValueError:
         await message.answer("Invalid recipient, device, or platform.")
+        return
+    except RuntimeError as exc:
+        if str(exc) != "VPS writes are disabled":
+            raise
+        await message.answer("Config issuance is disabled.")
         return
     if result is None:
         await message.answer("Admin access required.")
@@ -593,6 +600,20 @@ async def handle_admin_issue_config(message, *, workflow) -> None:
             f"/admin_resend_issued_config {result.device_id}."
         ),
     )
+
+
+def _telegram_message_request_id(message) -> str:
+    message_id = getattr(message, "message_id", None)
+    chat_id = getattr(getattr(message, "chat", None), "id", None)
+    if (
+        isinstance(message_id, bool)
+        or not isinstance(message_id, int)
+        or message_id <= 0
+        or isinstance(chat_id, bool)
+        or not isinstance(chat_id, int)
+    ):
+        raise ValueError("Telegram message identity is unavailable")
+    return f"telegram-{chat_id}-{message_id}"
 
 
 async def handle_admin_resend_issued_config(message, *, workflow) -> None:

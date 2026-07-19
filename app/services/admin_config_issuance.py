@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -242,6 +243,7 @@ def validate_admin_config_issuance_manifest(
         raise ValueError(f"manifest must contain 1 to {MAX_MANIFEST_ITEMS} items")
 
     items = []
+    seen_recipient_devices: set[tuple[str, str]] = set()
     for item_index, raw_item in enumerate(raw_items):
         if not isinstance(raw_item, Mapping):
             raise ValueError(f"manifest item {item_index} must be a JSON object")
@@ -258,10 +260,19 @@ def validate_admin_config_issuance_manifest(
             import_method="conf_file",
             config_schema_version="amneziawg_v2",
         )
+        recipient_label = _required_bounded_text(raw_item, "recipient_label")
+        device_label = _required_bounded_text(raw_item, "device_label")
+        duplicate_key = (
+            _duplicate_label_key(recipient_label),
+            _duplicate_label_key(device_label),
+        )
+        if duplicate_key in seen_recipient_devices:
+            raise ValueError("manifest contains duplicate recipient/device labels")
+        seen_recipient_devices.add(duplicate_key)
         items.append(
             IssuanceManifestItem(
-                recipient_label=_required_bounded_text(raw_item, "recipient_label"),
-                device_label=_required_bounded_text(raw_item, "device_label"),
+                recipient_label=recipient_label,
+                device_label=device_label,
                 platform=platform,
             )
         )
@@ -280,6 +291,10 @@ def _required_bounded_text(values: Mapping[str, object], key: str) -> str:
     if len(normalized) > MAX_LABEL_LENGTH:
         raise ValueError(f"{key} must be at most {MAX_LABEL_LENGTH} characters")
     return normalized
+
+
+def _duplicate_label_key(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", value).split()).casefold()
 
 
 def _safe_error_code(exc: Exception) -> str:

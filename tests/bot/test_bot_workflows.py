@@ -1055,6 +1055,7 @@ def test_issue_admin_config_rejects_non_admin_before_issuance(tmp_path):
 
     result = workflow.issue_admin_config(
         admin_telegram_id=1001,
+        request_id="telegram-1001-1",
         recipient_label="recipient",
         device_label="phone",
         platform="android",
@@ -1062,6 +1063,34 @@ def test_issue_admin_config_rejects_non_admin_before_issuance(tmp_path):
 
     assert result is None
     assert factory_calls == []
+
+
+def test_issue_admin_config_rejects_disabled_vps_writes_before_db_mutation(tmp_path):
+    repo = _repo(tmp_path)
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    factory_calls = []
+    workflow = BotWorkflow(
+        repo=repo,
+        admin_telegram_ids={9001},
+        default_server_id=server_id,
+        vps_writes_enabled=False,
+        admin_config_issuance_factory=lambda **kwargs: factory_calls.append(kwargs),
+    )
+
+    with pytest.raises(RuntimeError, match="VPS writes are disabled"):
+        workflow.issue_admin_config(
+            admin_telegram_id=9001,
+            request_id="telegram-9001-77",
+            recipient_label="recipient",
+            device_label="phone",
+            platform="android",
+        )
+
+    assert factory_calls == []
+    assert repo._conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+    assert repo._conn.execute(
+        "SELECT COUNT(*) FROM admin_config_issuance_requests"
+    ).fetchone()[0] == 0
 
 
 def test_database_admin_cannot_issue_config_without_configured_membership(tmp_path):
@@ -1113,6 +1142,7 @@ def test_database_admin_cannot_issue_config_without_configured_membership(tmp_pa
 
     result = workflow.issue_admin_config(
         admin_telegram_id=1001,
+        request_id="telegram-1001-2",
         recipient_label="recipient",
         device_label="phone",
         platform="android",
@@ -1214,11 +1244,13 @@ def test_issue_admin_config_returns_distinct_secret_handoff_to_admin(tmp_path):
         repo=repo,
         admin_telegram_ids={9001},
         default_server_id=server_id,
+        vps_writes_enabled=True,
         admin_config_issuance_factory=factory,
     )
 
     result = workflow.issue_admin_config(
         admin_telegram_id=9001,
+        request_id="telegram-9001-77",
         recipient_label="recipient",
         device_label="phone",
         platform="android",
@@ -1232,6 +1264,7 @@ def test_issue_admin_config_returns_distinct_secret_handoff_to_admin(tmp_path):
         config_bytes=b"[Interface]\nPrivateKey = secret",
     )
     assert manifests[0]["server"] == "local"
+    assert manifests[0]["request_id"] == "telegram-9001-77"
     assert manifests[0]["items"] == [
         {
             "recipient_label": "recipient",
@@ -1258,10 +1291,19 @@ def test_failed_admin_handoff_can_resend_existing_device_without_second_peer(tmp
         ),
         default_server_id=server_id,
         secret_box=secret_box,
+        vps_writes_enabled=True,
     )
 
     issued = workflow.issue_admin_config(
         admin_telegram_id=9001,
+        request_id="telegram-9001-78",
+        recipient_label="recipient",
+        device_label="phone",
+        platform="android",
+    )
+    replayed = workflow.issue_admin_config(
+        admin_telegram_id=9001,
+        request_id="telegram-9001-78",
         recipient_label="recipient",
         device_label="phone",
         platform="android",
@@ -1284,6 +1326,8 @@ def test_failed_admin_handoff_can_resend_existing_device_without_second_peer(tmp
     )
 
     assert resent.device_id == issued.device_id
+    assert replayed.device_id == issued.device_id
+    assert replayed.config_bytes == issued.config_bytes
     assert resent.config_bytes == issued.config_bytes
     assert len(peer_applier.calls) == 1
     delivered = [

@@ -81,6 +81,33 @@ def _item(recipient, device, platform="android"):
     }
 
 
+def test_manifest_rejects_normalized_duplicate_recipient_device_before_mutation(
+    tmp_path,
+):
+    conn, repo = _repo(tmp_path)
+    peer_applier = FakePeerApplier()
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=_access(repo, peer_applier),
+        admin_telegram_id=7001,
+        attachment_builder=lambda _filename, _content: None,
+    )
+
+    with pytest.raises(ValueError, match="duplicate recipient/device"):
+        service.issue_manifest(
+            _manifest(
+                _item("Alice", "Phone"),
+                _item(" alice ", " phone "),
+            )
+        )
+
+    assert peer_applier.applied == []
+    assert conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM admin_config_issuance_requests"
+    ).fetchone()[0] == 0
+
+
 def test_same_request_item_returns_completed_receipt_without_second_peer(tmp_path):
     conn, repo = _repo(tmp_path)
     peer_applier = FakePeerApplier()

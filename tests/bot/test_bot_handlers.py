@@ -985,6 +985,7 @@ def test_handle_admin_issue_config_sends_one_secretless_conf_to_invoking_admin()
     asyncio.run(handle_admin_issue_config(message, workflow=workflow))
 
     assert workflow.admin_config_issues == [(9001, "recipient", "phone", "android")]
+    assert workflow.admin_config_request_ids == ["telegram-9001-77"]
     assert len(message.bot.sent_documents) == 1
     sent = message.bot.sent_documents[0]
     assert sent["chat_id"] == 9001
@@ -1055,7 +1056,15 @@ def test_handle_admin_resend_issued_config_returns_safe_unavailable_response():
 
 
 class FakeMessage:
-    def __init__(self, *, user_id, username=None, first_name=None, last_name=None):
+    def __init__(
+        self,
+        *,
+        user_id,
+        username=None,
+        first_name=None,
+        last_name=None,
+        message_id=77,
+    ):
         self.from_user = SimpleNamespace(
             id=user_id,
             username=username,
@@ -1063,6 +1072,8 @@ class FakeMessage:
             last_name=last_name,
         )
         self.answers = []
+        self.message_id = message_id
+        self.chat = SimpleNamespace(id=user_id)
         self.photos = []
         self.text = ""
         self.bot = FakeBot()
@@ -1132,6 +1143,7 @@ class FakeWorkflow:
         self.integration_status_reads = []
         self.admin_traffic_reads = []
         self.admin_config_issues = []
+        self.admin_config_request_ids = []
         self.admin_config_deliveries = []
         self.admin_config_resends = []
 
@@ -1147,10 +1159,12 @@ class FakeWorkflow:
         self,
         *,
         admin_telegram_id,
+        request_id,
         recipient_label,
         device_label,
         platform,
     ):
+        self.admin_config_request_ids.append(request_id)
         self.admin_config_issues.append(
             (admin_telegram_id, recipient_label, device_label, platform)
         )
