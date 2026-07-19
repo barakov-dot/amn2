@@ -142,7 +142,7 @@ def test_changed_item_replay_is_rejected_without_second_peer(tmp_path):
     )
     service.issue_manifest(_manifest(_item("Alice", "Pixel 8")))
 
-    with pytest.raises(ValueError, match="does not match existing receipt"):
+    with pytest.raises(ValueError, match="does not match existing request"):
         service.issue_manifest(_manifest(_item("Alice", "Different Device")))
 
     assert len(peer_applier.applied) == 1
@@ -163,7 +163,7 @@ def test_reordered_item_replay_is_rejected_without_new_peers(tmp_path):
         _manifest(_item("Alice", "Pixel 8"), _item("Bob", "iPhone"))
     )
 
-    with pytest.raises(ValueError, match="does not match existing receipt"):
+    with pytest.raises(ValueError, match="does not match existing request"):
         service.issue_manifest(
             _manifest(_item("Bob", "iPhone"), _item("Alice", "Pixel 8"))
         )
@@ -200,9 +200,94 @@ def test_changed_server_replay_is_rejected_without_new_peer(tmp_path):
     changed_server = _manifest(_item("Alice", "Pixel 8"))
     changed_server["server"] = "Other-Server"
 
-    with pytest.raises(ValueError, match="does not match existing receipt"):
+    with pytest.raises(ValueError, match="does not match existing request"):
         service.issue_manifest(changed_server)
 
+    assert len(peer_applier.applied) == 1
+    assert conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0] == 1
+    conn.close()
+
+
+def test_appended_item_replay_is_rejected_before_new_recipient_or_peer(tmp_path):
+    conn, repo = _repo(tmp_path)
+    peer_applier = FakePeerApplier()
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=_access(repo, peer_applier),
+        admin_telegram_id=7001,
+        attachment_builder=lambda filename, content: None,
+    )
+    service.issue_manifest(_manifest(_item("Alice", "Pixel 8")))
+
+    with pytest.raises(ValueError, match="does not match existing request"):
+        service.issue_manifest(
+            _manifest(_item("Alice", "Pixel 8"), _item("Bob", "iPhone"))
+        )
+
+    assert repo.get_user_by_operator_label("Bob") is None
+    assert len(peer_applier.applied) == 1
+    assert conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0] == 1
+    conn.close()
+
+
+def test_truncated_item_replay_is_rejected_before_receipt_processing(tmp_path):
+    conn, repo = _repo(tmp_path)
+    peer_applier = FakePeerApplier()
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=_access(repo, peer_applier),
+        admin_telegram_id=7001,
+        attachment_builder=lambda filename, content: None,
+    )
+    service.issue_manifest(
+        _manifest(_item("Alice", "Pixel 8"), _item("Bob", "iPhone"))
+    )
+
+    with pytest.raises(ValueError, match="does not match existing request"):
+        service.issue_manifest(_manifest(_item("Alice", "Pixel 8")))
+
+    assert len(peer_applier.applied) == 2
+    assert conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0] == 2
+    conn.close()
+
+
+def test_receipt_completion_failure_rolls_back_completed_audit_and_is_replay_safe(
+    tmp_path, monkeypatch
+):
+    conn, repo = _repo(tmp_path)
+    peer_applier = FakePeerApplier()
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=_access(repo, peer_applier),
+        admin_telegram_id=7001,
+        attachment_builder=lambda filename, content: None,
+    )
+    real_complete = repo.complete_admin_config_issuance_receipt
+
+    def fail_completion(**kwargs):
+        raise RuntimeError("receipt completion backend failed")
+
+    monkeypatch.setattr(
+        repo,
+        "complete_admin_config_issuance_receipt",
+        fail_completion,
+    )
+    manifest = _manifest(_item("Alice", "Pixel 8"))
+
+    first = service.issue_manifest(manifest)
+    monkeypatch.setattr(
+        repo,
+        "complete_admin_config_issuance_receipt",
+        real_complete,
+    )
+    replay = service.issue_manifest(manifest)
+
+    assert first.receipts[0].status == "partial_failure"
+    assert replay.receipts == first.receipts
+    assert conn.execute(
+        "SELECT COUNT(*) FROM admin_actions WHERE action = ?",
+        ("admin_config.issue_manifest",),
+    ).fetchone()[0] == 0
     assert len(peer_applier.applied) == 1
     assert conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0] == 1
     conn.close()

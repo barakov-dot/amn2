@@ -1741,6 +1741,43 @@ class Repository:
         self._commit()
         return int(cursor.lastrowid)
 
+    def get_admin_config_issuance_request(
+        self,
+        *,
+        request_id: str,
+    ) -> sqlite3.Row | None:
+        return self._conn.execute(
+            """
+            SELECT *
+            FROM admin_config_issuance_requests
+            WHERE request_id = ?
+            """,
+            (request_id,),
+        ).fetchone()
+
+    def create_admin_config_issuance_request(
+        self,
+        *,
+        request_id: str,
+        request_fingerprint: str,
+        item_count: int,
+    ) -> sqlite3.Row:
+        self._conn.execute(
+            """
+            INSERT INTO admin_config_issuance_requests (
+                request_id,
+                request_fingerprint,
+                item_count
+            )
+            VALUES (?, ?, ?)
+            """,
+            (request_id, request_fingerprint, item_count),
+        )
+        self._commit()
+        request = self.get_admin_config_issuance_request(request_id=request_id)
+        assert request is not None
+        return request
+
     def get_admin_config_issuance_receipt(
         self,
         *,

@@ -218,6 +218,15 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (target_device_id) REFERENCES devices(id)
         );
 
+        CREATE TABLE IF NOT EXISTS admin_config_issuance_requests (
+            request_id TEXT PRIMARY KEY CHECK (length(trim(request_id)) > 0),
+            request_fingerprint TEXT NOT NULL
+                CHECK (length(request_fingerprint) = 71),
+            item_count INTEGER NOT NULL CHECK (item_count BETWEEN 1 AND 100),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
         CREATE TABLE IF NOT EXISTS admin_config_issuance_receipts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             request_id TEXT NOT NULL CHECK (length(trim(request_id)) > 0),
@@ -234,6 +243,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (request_id, item_index),
+            FOREIGN KEY (request_id)
+                REFERENCES admin_config_issuance_requests(request_id),
             FOREIGN KEY (recipient_user_id) REFERENCES users(id),
             FOREIGN KEY (device_id) REFERENCES devices(id),
             FOREIGN KEY (passport_device_id) REFERENCES device_passports(device_id),

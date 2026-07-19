@@ -110,6 +110,21 @@ class AdminConfigIssuanceService:
     ) -> AdminConfigIssuanceResult:
         validated = validate_admin_config_issuance_manifest(manifest)
         server = self._repo.get_server_by_name(validated.server)
+        request_fingerprint = _request_fingerprint(validated)
+        existing_request = self._repo.get_admin_config_issuance_request(
+            request_id=validated.request_id
+        )
+        if existing_request is None:
+            self._repo.create_admin_config_issuance_request(
+                request_id=validated.request_id,
+                request_fingerprint=request_fingerprint,
+                item_count=len(validated.items),
+            )
+        elif (
+            str(existing_request["request_fingerprint"]) != request_fingerprint
+            or int(existing_request["item_count"]) != len(validated.items)
+        ):
+            raise ValueError("manifest does not match existing request")
         receipts: list[AdminConfigIssuanceReceipt] = []
 
         for item_index, item in enumerate(validated.items):
@@ -163,27 +178,28 @@ class AdminConfigIssuanceService:
                     raise RuntimeError("device passport was not created")
                 passport_device_id = str(passport["device_id"])
                 self._attachment_builder(config_filename, str(created.config_text))
-                self._repo.record_admin_action(
-                    admin_telegram_id=self._admin_telegram_id,
-                    action="admin_config.issue_manifest",
-                    target_user_id=recipient_user_id,
-                    target_device_id=device_id,
-                    metadata={
-                        "request_id": validated.request_id,
-                        "item_index": item_index,
-                        "receipt_id": int(started_row["id"]),
-                        "passport_device_id": passport_device_id,
-                        "status": "completed",
-                        "config_filename": config_filename,
-                    },
-                )
-                row = self._repo.complete_admin_config_issuance_receipt(
-                    request_id=validated.request_id,
-                    item_index=item_index,
-                    device_id=device_id,
-                    passport_device_id=passport_device_id,
-                    config_filename=config_filename,
-                )
+                with self._repo.transaction():
+                    self._repo.record_admin_action(
+                        admin_telegram_id=self._admin_telegram_id,
+                        action="admin_config.issue_manifest",
+                        target_user_id=recipient_user_id,
+                        target_device_id=device_id,
+                        metadata={
+                            "request_id": validated.request_id,
+                            "item_index": item_index,
+                            "receipt_id": int(started_row["id"]),
+                            "passport_device_id": passport_device_id,
+                            "status": "completed",
+                            "config_filename": config_filename,
+                        },
+                    )
+                    row = self._repo.complete_admin_config_issuance_receipt(
+                        request_id=validated.request_id,
+                        item_index=item_index,
+                        device_id=device_id,
+                        passport_device_id=passport_device_id,
+                        config_filename=config_filename,
+                    )
             except Exception as exc:
                 row = self._repo.fail_admin_config_issuance_receipt(
                     request_id=validated.request_id,
@@ -278,6 +294,27 @@ def _item_fingerprint(server: str, item: IssuanceManifestItem) -> str:
             "recipient_label": item.recipient_label,
             "device_label": item.device_label,
             "platform": item.platform,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+
+
+def _request_fingerprint(manifest: ValidatedIssuanceManifest) -> str:
+    canonical = json.dumps(
+        {
+            "server": manifest.server,
+            "item_count": len(manifest.items),
+            "items": [
+                {
+                    "recipient_label": item.recipient_label,
+                    "device_label": item.device_label,
+                    "platform": item.platform,
+                }
+                for item in manifest.items
+            ],
         },
         ensure_ascii=False,
         sort_keys=True,
