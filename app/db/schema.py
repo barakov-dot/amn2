@@ -218,6 +218,35 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (target_device_id) REFERENCES devices(id)
         );
 
+        CREATE TABLE IF NOT EXISTS admin_config_issuance_receipts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_id TEXT NOT NULL CHECK (length(trim(request_id)) > 0),
+            item_index INTEGER NOT NULL CHECK (item_index >= 0),
+            item_fingerprint TEXT NOT NULL
+                CHECK (length(item_fingerprint) = 71),
+            recipient_user_id INTEGER,
+            device_id INTEGER,
+            passport_device_id TEXT,
+            status TEXT NOT NULL
+                CHECK (status IN ('started', 'completed', 'partial_failure')),
+            config_filename TEXT,
+            error_code TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (request_id, item_index),
+            FOREIGN KEY (recipient_user_id) REFERENCES users(id),
+            FOREIGN KEY (device_id) REFERENCES devices(id),
+            FOREIGN KEY (passport_device_id) REFERENCES device_passports(device_id),
+            CHECK (
+                (status = 'completed' AND device_id IS NOT NULL
+                    AND passport_device_id IS NOT NULL
+                    AND length(trim(config_filename)) > 0
+                    AND error_code IS NULL)
+                OR status = 'started'
+                OR (status = 'partial_failure' AND length(trim(error_code)) > 0)
+            )
+        );
+
         CREATE TABLE IF NOT EXISTS device_traffic_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             device_id INTEGER NOT NULL,
@@ -304,6 +333,10 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             WHERE status IN ('pending', 'active', 'disabled');
         CREATE INDEX IF NOT EXISTS idx_device_traffic_device_collected
             ON device_traffic_snapshots(device_id, collected_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_admin_config_issuance_recipient
+            ON admin_config_issuance_receipts(
+                recipient_user_id, created_at DESC, id DESC
+            );
         CREATE INDEX IF NOT EXISTS idx_device_traffic_server_collected
             ON device_traffic_snapshots(server_id, collected_at DESC);
         CREATE INDEX IF NOT EXISTS idx_email_recovery_tokens_user

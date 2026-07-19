@@ -1,0 +1,11 @@
+{
+  "request_id": "example-spain-issuance-001",
+  "server": "Spain-Madrid",
+  "items": [
+    {
+      "recipient_label": "Example Recipient",
+      "device_label": "Example Android Device",
+      "platform": "android"
+    }
+  ]
+}

@@ -44,6 +44,10 @@ from app.services.access import (
     OperatorOwnerNotActive,
     OperatorOwnerNotFound,
 )
+from app.services.admin_config_issuance import (
+    AdminConfigIssuanceService,
+    validate_admin_config_issuance_manifest,
+)
 from app.services.api_tokens import create_route_api_token
 from app.services.api_tokens import revoke_api_token
 from app.services.api_smoke import validate_api_smoke_responses
@@ -184,6 +188,20 @@ def build_parser() -> argparse.ArgumentParser:
     create_operator_mode.add_argument("--dry-run", action="store_true")
     create_operator_mode.add_argument("--apply", action="store_true")
     create_operator.add_argument("--pretty", action="store_true")
+
+    admin_config = sub.add_parser("admin-config")
+    admin_config_sub = admin_config.add_subparsers(
+        dest="admin_config_command", required=True
+    )
+    issue_manifest = admin_config_sub.add_parser("issue-manifest")
+    issue_manifest.add_argument("--manifest", required=True)
+    issue_manifest.add_argument("--server", required=True)
+    issue_manifest.add_argument("--db", default="data/amneziya.sqlite3")
+    issue_manifest.add_argument("--config", default="servers.yml")
+    issue_manifest.add_argument("--admin-telegram-id", type=int, default=None)
+    issue_manifest.add_argument("--duration-days", type=int, default=30)
+    issue_manifest.add_argument("--apply", action="store_true")
+    issue_manifest.add_argument("--pretty", action="store_true")
 
     server = sub.add_parser("server")
     server_sub = server.add_subparsers(dest="server_command", required=True)
@@ -399,6 +417,48 @@ def main() -> None:
                     client_config_template_dir=settings.client_config_template_dir,
                     client_config_defaults=settings.client_config_defaults,
                     execution_target=args.execution_target,
+                    pretty=args.pretty,
+                )
+            )
+    elif (
+        args.command == "admin-config"
+        and args.admin_config_command == "issue-manifest"
+    ):
+        if not args.apply:
+            print(
+                build_admin_config_issuance_plan(
+                    manifest_path=Path(args.manifest),
+                    server_name=args.server,
+                    pretty=args.pretty,
+                )
+            )
+        else:
+            require_vps_apply_enabled_for_cli_apply()
+            if args.admin_telegram_id is None:
+                raise SystemExit(
+                    "--admin-telegram-id is required with --apply"
+                )
+            settings = Settings()
+            if args.admin_telegram_id not in settings.admin_ids:
+                raise SystemExit(
+                    "--admin-telegram-id must be an explicitly configured admin ID"
+                )
+            server_config = select_server(
+                load_server_config(Path(args.config)), args.server
+            )
+            print(
+                run_admin_config_issue_manifest(
+                    db_path=Path(args.db),
+                    manifest_path=Path(args.manifest),
+                    server=server_config,
+                    admin_telegram_id=args.admin_telegram_id,
+                    authorized_admin_telegram_ids=set(settings.admin_ids),
+                    app_secret_key=settings.app_secret_key,
+                    max_devices_per_user=settings.max_devices_per_user,
+                    duration_days=args.duration_days,
+                    vps_ssh_password=settings.vps_ssh_password,
+                    client_config_template_dir=settings.client_config_template_dir,
+                    client_config_defaults=settings.client_config_defaults,
                     pretty=args.pretty,
                 )
             )
@@ -655,6 +715,113 @@ def run_device_import_external(
         return _json_dumps(payload, pretty=pretty)
     finally:
         conn.close()
+
+
+def build_admin_config_issuance_plan(
+    *,
+    manifest_path: Path,
+    server_name: str,
+    pretty: bool = False,
+) -> str:
+    manifest = _load_admin_config_issuance_manifest(manifest_path)
+    validated = validate_admin_config_issuance_manifest(manifest)
+    if validated.server != server_name:
+        raise ValueError("manifest server does not match --server")
+    return _json_dumps(
+        {
+            "action": "admin_config.issue_manifest",
+            "mode": "dry-run",
+            "request_id": validated.request_id,
+            "server": validated.server,
+            "item_count": len(validated.items),
+            "remote_mutation": False,
+            "database_mutation": False,
+        },
+        pretty=pretty,
+    )
+
+
+def run_admin_config_issue_manifest(
+    *,
+    db_path: Path,
+    manifest_path: Path,
+    server: ServerConfig,
+    admin_telegram_id: int,
+    authorized_admin_telegram_ids: set[int],
+    app_secret_key: str,
+    max_devices_per_user: int,
+    duration_days: int,
+    vps_ssh_password: str = "",
+    client_config_template_dir: str | Path | None = None,
+    client_config_defaults=None,
+    command_client: SshClient | None = None,
+    attachment_builder: Callable[[str, str], object] | None = None,
+    pretty: bool = False,
+) -> str:
+    manifest = _load_admin_config_issuance_manifest(manifest_path)
+    validated = validate_admin_config_issuance_manifest(manifest)
+    if validated.server != server.name:
+        raise ValueError("manifest server does not match --server")
+    _validate_operator_server_for_apply(server)
+    if admin_telegram_id <= 0:
+        raise ValueError("admin_telegram_id must be positive")
+    if admin_telegram_id not in authorized_admin_telegram_ids:
+        raise PermissionError("admin_telegram_id is not a configured admin")
+
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = connect(db_path)
+    try:
+        initialize_schema(conn)
+        repo = Repository(conn)
+        server_id = _sync_server_row(repo, server)
+        actual_command_client = command_client or SystemSshClient(
+            server,
+            password=vps_ssh_password,
+        )
+        access_service = AccessService(
+            repo=repo,
+            secret_box=SecretBox.from_app_secret(app_secret_key),
+            max_devices_per_user=max_devices_per_user,
+            duration_days=duration_days,
+            peer_applier=ServerConfigPeerApplier(
+                server,
+                ssh_client=actual_command_client,
+            ),
+            client_config_template_dir=client_config_template_dir,
+            client_config_defaults=client_config_defaults,
+        )
+
+        if attachment_builder is None:
+            def attachment_builder(filename: str, config_text: str) -> object:
+                output_path = manifest_path.parent / filename
+                return write_private_config_artifact(output_path, config_text)
+
+        result = AdminConfigIssuanceService(
+            repo=repo,
+            access_service=access_service,
+            admin_telegram_id=admin_telegram_id,
+            attachment_builder=attachment_builder,
+            duration_days=duration_days,
+        ).issue_manifest(manifest)
+        payload = result.to_safe_dict()
+        payload.update(
+            {
+                "action": "admin_config.issue_manifest",
+                "mode": "apply",
+                "server_id": server_id,
+                "config_payload_output": False,
+            }
+        )
+        return _json_dumps(payload, pretty=pretty)
+    finally:
+        conn.close()
+
+
+def _load_admin_config_issuance_manifest(path: Path) -> dict[str, object]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("manifest must contain a JSON object")
+    return payload
 
 
 def build_operator_device_create_plan(

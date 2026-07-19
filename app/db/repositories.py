@@ -1640,6 +1640,9 @@ class Repository:
     def get_server(self, server_id: int) -> sqlite3.Row:
         return self._fetch_one("SELECT * FROM servers WHERE id = ?", (server_id,))
 
+    def get_server_by_name(self, name: str) -> sqlite3.Row:
+        return self._fetch_one("SELECT * FROM servers WHERE name = ?", (name,))
+
     def record_server_health(
         self,
         *,
@@ -1737,6 +1740,124 @@ class Repository:
         )
         self._commit()
         return int(cursor.lastrowid)
+
+    def get_admin_config_issuance_receipt(
+        self,
+        *,
+        request_id: str,
+        item_index: int,
+    ) -> sqlite3.Row | None:
+        return self._conn.execute(
+            """
+            SELECT *
+            FROM admin_config_issuance_receipts
+            WHERE request_id = ? AND item_index = ?
+            """,
+            (request_id, item_index),
+        ).fetchone()
+
+    def create_admin_config_issuance_receipt(
+        self,
+        *,
+        request_id: str,
+        item_index: int,
+        item_fingerprint: str,
+        recipient_user_id: int,
+    ) -> sqlite3.Row:
+        self._conn.execute(
+            """
+            INSERT INTO admin_config_issuance_receipts (
+                request_id,
+                item_index,
+                item_fingerprint,
+                recipient_user_id,
+                status
+            )
+            VALUES (?, ?, ?, ?, 'started')
+            """,
+            (request_id, item_index, item_fingerprint, recipient_user_id),
+        )
+        self._commit()
+        receipt = self.get_admin_config_issuance_receipt(
+            request_id=request_id,
+            item_index=item_index,
+        )
+        assert receipt is not None
+        return receipt
+
+    def complete_admin_config_issuance_receipt(
+        self,
+        *,
+        request_id: str,
+        item_index: int,
+        device_id: int,
+        passport_device_id: str,
+        config_filename: str,
+    ) -> sqlite3.Row:
+        self._conn.execute(
+            """
+            UPDATE admin_config_issuance_receipts
+            SET device_id = ?,
+                passport_device_id = ?,
+                status = 'completed',
+                config_filename = ?,
+                error_code = NULL,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE request_id = ? AND item_index = ? AND status = 'started'
+            """,
+            (
+                device_id,
+                passport_device_id,
+                config_filename,
+                request_id,
+                item_index,
+            ),
+        )
+        self._commit()
+        receipt = self.get_admin_config_issuance_receipt(
+            request_id=request_id,
+            item_index=item_index,
+        )
+        assert receipt is not None
+        return receipt
+
+    def fail_admin_config_issuance_receipt(
+        self,
+        *,
+        request_id: str,
+        item_index: int,
+        error_code: str,
+        device_id: int | None = None,
+        passport_device_id: str | None = None,
+        config_filename: str | None = None,
+    ) -> sqlite3.Row:
+        self._conn.execute(
+            """
+            UPDATE admin_config_issuance_receipts
+            SET device_id = ?,
+                passport_device_id = ?,
+                status = 'partial_failure',
+                config_filename = ?,
+                error_code = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE request_id = ? AND item_index = ? AND status = 'started'
+            """,
+            (
+                device_id,
+                passport_device_id,
+                config_filename,
+                error_code,
+                request_id,
+                item_index,
+            ),
+        )
+        self._commit()
+        receipt = self.get_admin_config_issuance_receipt(
+            request_id=request_id,
+            item_index=item_index,
+        )
+        assert receipt is not None
+        return receipt
 
     def list_admin_actions_for_target_user(self, target_user_id: int):
         return self._conn.execute(
