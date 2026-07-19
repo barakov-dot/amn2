@@ -770,12 +770,22 @@ def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
 ):
     remove_calls: list[tuple[str, str]] = []
     apply_calls: list[tuple[str, str, str, str]] = []
+    callback_states: list[tuple[str, str, str]] = []
+    rendered_responses: list[str] = []
 
     class FakePeerApplier:
         def __init__(self, server, *, password=None):
             self._server = server
 
         def remove_peer(self, *, server, peer_public_key: str) -> None:
+            with _repo(Path(settings.database_path)) as callback_repo:
+                target_status = str(callback_repo.get_device(device_id)["status"])
+                unrelated_status = str(
+                    callback_repo.get_device(unrelated_device_id)["status"]
+                )
+            assert target_status == "active"
+            assert unrelated_status == "pending"
+            callback_states.append(("remove", target_status, unrelated_status))
             remove_calls.append((server.name, peer_public_key))
 
         def apply_peer(
@@ -786,6 +796,14 @@ def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
             preshared_key: str,
             vpn_ip: str,
         ) -> None:
+            with _repo(Path(settings.database_path)) as callback_repo:
+                target_status = str(callback_repo.get_device(device_id)["status"])
+                unrelated_status = str(
+                    callback_repo.get_device(unrelated_device_id)["status"]
+                )
+            assert target_status == "disabled"
+            assert unrelated_status == "pending"
+            callback_states.append(("apply", target_status, unrelated_status))
             apply_calls.append(
                 (server.name, peer_public_key, preshared_key, vpn_ip)
             )
@@ -816,6 +834,25 @@ def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
             preshared_key_encrypted=secret_box.encrypt_text("operator-psk"),
             config_version="amneziawg_v2",
         )
+        unrelated_user_id = repo.create_operator_recipient(
+            operator_label="Unrelated recipient"
+        )
+        unrelated_device_id = repo.create_device(
+            user_id=unrelated_user_id,
+            server_id=server_id,
+            name="NEOBYATNAYA.NET — Unrelated recipient — Tablet",
+            duration_days=365,
+            vpn_ip="10.8.0.45",
+            peer_public_key="unrelated-public",
+            peer_private_key_encrypted=secret_box.encrypt_text("unrelated-private"),
+            preshared_key_encrypted=secret_box.encrypt_text("unrelated-psk"),
+            config_version="amneziawg_v2",
+        )
+        repo._conn.execute(
+            "UPDATE devices SET status = 'pending' WHERE id = ?",
+            (unrelated_device_id,),
+        )
+        repo._conn.commit()
         issue = issue_device_enrollment_ticket(
             repo,
             user_id=user_id,
@@ -843,6 +880,7 @@ def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
     client = _authenticated_client(settings)
 
     detail = client.get(f"/users/{user_id}")
+    rendered_responses.append(detail.text)
     disabled = client.post(
         f"/users/{user_id}/disable-vpn",
         data={"csrf_token": _csrf_token(detail.text)},
@@ -850,8 +888,12 @@ def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
     )
     assert disabled.status_code == 303
     assert remove_calls == [("local", "operator-public")]
+    assert callback_states == [("remove", "active", "pending")]
+    with _repo(Path(settings.database_path)) as repo:
+        assert repo.get_device(unrelated_device_id)["status"] == "pending"
 
     detail = client.get(f"/users/{user_id}")
+    rendered_responses.append(detail.text)
     enabled = client.post(
         f"/users/{user_id}/enable-vpn",
         data={"csrf_token": _csrf_token(detail.text)},
@@ -861,8 +903,15 @@ def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
     assert apply_calls == [
         ("local", "operator-public", "operator-psk", "10.8.0.44")
     ]
+    assert callback_states == [
+        ("remove", "active", "pending"),
+        ("apply", "disabled", "pending"),
+    ]
+    with _repo(Path(settings.database_path)) as repo:
+        assert repo.get_device(unrelated_device_id)["status"] == "pending"
 
     detail = client.get(f"/users/{user_id}")
+    rendered_responses.append(detail.text)
     revoked = client.post(
         f"/users/{user_id}/devices/{device_id}/delete",
         data={"csrf_token": _csrf_token(detail.text)},
@@ -873,8 +922,14 @@ def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
         ("local", "operator-public"),
         ("local", "operator-public"),
     ]
+    assert callback_states == [
+        ("remove", "active", "pending"),
+        ("apply", "disabled", "pending"),
+        ("remove", "active", "pending"),
+    ]
     with _repo(Path(settings.database_path)) as repo:
         assert repo.get_device(device_id)["status"] == "revoked"
+        assert repo.get_device(unrelated_device_id)["status"] == "pending"
         actions = repo.list_admin_actions_for_target_user(user_id)
         metadata = [json.loads(action["metadata_json"]) for action in actions]
         assert {item["user_label"] for item in metadata} == {"Alice — Pixel 8"}
@@ -887,6 +942,7 @@ def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
         assert "operator-public" not in audit_text
 
     passport = client.get(f"/device-passports/{claim.passport.device_id}")
+    rendered_responses.append(passport.text)
     assert passport.status_code == 200
     assert "Alice — Pixel 8" in passport.text
     assert canonical_name in passport.text
@@ -894,6 +950,13 @@ def test_operator_recipient_disable_enable_and_revoke_are_remote_first_and_safe(
     assert ">None<" not in passport.text
     assert "operator-private" not in passport.text
     assert "operator-psk" not in passport.text
+    for rendered in rendered_responses:
+        assert "operator-public" not in rendered
+        assert "operator-private" not in rendered
+        assert "operator-psk" not in rendered
+        assert "unrelated-public" not in rendered
+        assert "unrelated-private" not in rendered
+        assert "unrelated-psk" not in rendered
 
 
 def test_delete_single_user_device_revokes_only_selected_peer_and_cleans_links(
