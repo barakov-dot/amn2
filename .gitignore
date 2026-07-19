@@ -13,4 +13,5 @@ __pycache__/
 .pytest_cache/
 .venv/
 .codex_deps/
+.superpowers/
 *.egg-info/
