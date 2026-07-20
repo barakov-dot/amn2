@@ -2102,6 +2102,7 @@ class Repository:
                 devices.name,
                 devices.status,
                 devices.expires_at,
+                devices.expiry_policy,
                 devices.vpn_ip,
                 devices.config_material_status,
                 devices.assignment_mode,

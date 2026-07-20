@@ -312,6 +312,38 @@ def test_user_detail_shows_device_expiration_contract(tmp_path: Path):
     assert "active-device" in response.text
 
 
+def test_user_detail_projects_unassigned_indefinite_slot_without_fake_passport(tmp_path: Path):
+    settings = _settings(tmp_path)
+    with _repo(Path(settings.database_path)) as repo:
+        user_id = repo.create_operator_recipient(operator_label="Иван")
+        server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+        device_id = repo.create_device(
+            user_id=user_id,
+            server_id=server_id,
+            name="NEOBYATNAYA.NET — Иван — 01",
+            duration_days=None,
+            expires_at=None,
+            expiry_policy="indefinite",
+            vpn_ip="10.8.0.55",
+            peer_public_key="unassigned-public",
+            peer_private_key_encrypted="v1:private",
+            preshared_key_encrypted="v1:psk",
+            config_version="amneziawg_v2",
+            assignment_mode="recipient_unassigned",
+            config_fingerprint="sha256:" + "a" * 64,
+        )
+    client = _authenticated_client(settings)
+
+    response = client.get(f"/users/{user_id}")
+
+    assert response.status_code == 200
+    assert "не назначено" in response.text
+    assert "бессрочно" in response.text
+    assert "v1:private" not in response.text
+    with _repo(Path(settings.database_path)) as repo:
+        assert repo.get_device_passport_by_local_device_id(device_id) is None
+
+
 def test_user_detail_marks_external_only_device_without_config_actions(tmp_path: Path):
     settings = _settings(tmp_path)
     user_id = _seed_user(

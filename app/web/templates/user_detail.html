@@ -211,9 +211,21 @@
                   <td>#{{ device.id }}</td>
                   <td>{{ device.name }}</td>
                   <td>{{ device.server_name }}</td>
-                  <td>{{ device.assignment_mode }}</td>
+                  <td>
+                    {% if device.assignment_mode == "recipient_unassigned" %}
+                      не назначено
+                    {% else %}
+                      {{ device.assignment_mode }}
+                    {% endif %}
+                  </td>
                   <td><span class="status status-{{ device.status }}">{{ device.status }}</span></td>
-                  <td>{{ device.expires_at or "-" }}</td>
+                  <td>
+                    {% if device.expiry_policy == "indefinite" %}
+                      бессрочно
+                    {% else %}
+                      {{ device.expires_at or "-" }}
+                    {% endif %}
+                  </td>
                   <td>{{ device.vpn_ip }}</td>
                   <td>
                     {% if device.config_material_status == "external_only" %}
