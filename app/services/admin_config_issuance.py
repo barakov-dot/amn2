@@ -14,6 +14,10 @@ from app.config_assignment import DEDICATED_DEVICE, RECIPIENT_UNASSIGNED
 from app.db.repositories import Repository
 from app.services.access import OperatorDeviceContext
 from app.services.device_passports import validate_device_passport_context
+from app.services.config_identity import (
+    build_config_identity,
+    build_unassigned_slot_identity,
+)
 
 
 MAX_MANIFEST_ITEMS = 100
@@ -273,6 +277,27 @@ class AdminConfigIssuanceService:
             active = 0 if recipient is None else self._repo.count_active_devices(int(recipient["id"]))
             if active + count > self._max_devices_per_recipient:
                 raise ValueError("full-batch quota exceeded for recipient")
+            if recipient is not None:
+                existing_names = set(
+                    self._repo.list_completed_admin_config_filenames_for_recipient(
+                        int(recipient["id"])
+                    )
+                )
+                proposed_names = {
+                    (
+                        build_unassigned_slot_identity(
+                            slot.recipient_label, slot.slot_sequence
+                        ).filename
+                        if slot.assignment_mode == RECIPIENT_UNASSIGNED
+                        else build_config_identity(
+                            slot.recipient_label, slot.device_label
+                        ).filename
+                    )
+                    for slot in slots
+                    if _duplicate_label_key(slot.recipient_label) == key
+                }
+                if existing_names & proposed_names:
+                    raise ValueError("full-batch filename collision for recipient")
 
 
 def validate_admin_config_issuance_manifest(

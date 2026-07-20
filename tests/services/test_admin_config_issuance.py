@@ -168,6 +168,30 @@ def test_full_batch_quota_rejects_before_recipient_or_peer_mutation(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM admin_config_issuance_requests").fetchone()[0] == 0
 
 
+def test_new_request_filename_collision_is_rejected_before_second_peer(tmp_path):
+    conn, repo = _repo(tmp_path)
+    peer_applier = FakePeerApplier()
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=_access(repo, peer_applier),
+        admin_telegram_id=7001,
+        attachment_builder=lambda _filename, _content: None,
+        max_devices_per_recipient=4,
+    )
+    service.issue_manifest(_manifest(_unassigned_item("Иван", 1)))
+    second = _manifest(_unassigned_item("Иван", 1))
+    second["request_id"] = "spain-second-002"
+
+    with pytest.raises(ValueError, match="filename collision"):
+        service.issue_manifest(second)
+
+    assert len(peer_applier.applied) == 1
+    assert conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM admin_config_issuance_requests"
+    ).fetchone()[0] == 1
+
+
 def test_manifest_rejects_normalized_duplicate_recipient_device_before_mutation(
     tmp_path,
 ):

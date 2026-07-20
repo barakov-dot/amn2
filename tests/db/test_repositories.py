@@ -1411,3 +1411,90 @@ def _insert_device(
     )
     conn.commit()
     return int(cursor.lastrowid)
+def test_access_contract_hardening_preserves_indefinite_slot_and_fingerprint(tmp_path):
+    conn = connect(tmp_path / "weak-fingerprint.sqlite3")
+    conn.executescript(
+        """
+        CREATE TABLE users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id INTEGER UNIQUE,
+            operator_label TEXT,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            locale TEXT NOT NULL DEFAULT 'ru',
+            is_admin INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            email TEXT,
+            email_verified_at TEXT
+        );
+        INSERT INTO users (id, telegram_id) VALUES (1, 1001);
+        CREATE TABLE servers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            host TEXT,
+            ssh_port INTEGER,
+            endpoint_host TEXT,
+            vpn_port INTEGER,
+            vpn_network_cidr TEXT NOT NULL,
+            server_address TEXT,
+            server_public_key TEXT,
+            runtime TEXT,
+            firewall TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            max_devices INTEGER,
+            current_devices INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO servers (id, name, vpn_network_cidr) VALUES (1, 'local', '10.8.0.0/24');
+        CREATE TABLE devices (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            server_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            activated_at TEXT,
+            expires_at TEXT,
+            duration_days INTEGER,
+            expiry_policy TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('pending','active','disabled','expired','revoked','failed')),
+            vpn_ip TEXT NOT NULL,
+            peer_public_key TEXT NOT NULL,
+            peer_private_key_encrypted TEXT NOT NULL,
+            preshared_key_encrypted TEXT NOT NULL,
+            config_version TEXT NOT NULL,
+            config_material_status TEXT NOT NULL DEFAULT 'available',
+            assignment_mode TEXT NOT NULL CHECK (assignment_mode IN ('dedicated_device','owner_shared','recipient_unassigned')),
+            config_fingerprint TEXT CHECK (config_fingerprint IS NULL OR (length(config_fingerprint)=71 AND config_fingerprint GLOB 'sha256:[0-9a-f]*')),
+            last_config_sent_at TEXT,
+            first_connected_at TEXT,
+            last_connected_at TEXT,
+            revoked_at TEXT,
+            revoke_reason TEXT
+        );
+        INSERT INTO devices (
+            user_id, server_id, name, expires_at, duration_days, expiry_policy,
+            status, vpn_ip, peer_public_key, peer_private_key_encrypted,
+            preshared_key_encrypted, config_version, assignment_mode,
+            config_fingerprint
+        ) VALUES (
+            1, 1, 'slot-01', NULL, NULL, 'indefinite', 'active', '10.8.0.2',
+            'public', 'v1:private', 'v1:psk', 'amneziawg_v2',
+            'recipient_unassigned', 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+        );
+        """
+    )
+    conn.commit()
+
+    initialize_schema(conn)
+
+    row = conn.execute("SELECT * FROM devices WHERE id = 1").fetchone()
+    assert row["expiry_policy"] == "indefinite"
+    assert row["duration_days"] is None
+    assert row["expires_at"] is None
+    assert row["assignment_mode"] == "recipient_unassigned"
+    assert row["config_fingerprint"] == "sha256:" + "a" * 64
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []

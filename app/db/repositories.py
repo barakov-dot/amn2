@@ -1846,6 +1846,23 @@ class Repository:
             return None
         return rows[0]
 
+    def list_completed_admin_config_filenames_for_recipient(
+        self, recipient_user_id: int
+    ) -> list[str]:
+        return [
+            str(row["config_filename"])
+            for row in self._conn.execute(
+                """
+                SELECT config_filename
+                FROM admin_config_issuance_receipts
+                WHERE recipient_user_id = ?
+                  AND status = 'completed'
+                  AND length(trim(config_filename)) > 0
+                """,
+                (recipient_user_id,),
+            ).fetchall()
+        ]
+
     def create_admin_config_issuance_receipt(
         self,
         *,

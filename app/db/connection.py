@@ -11,3 +11,12 @@ def connect(path: str | Path) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
+
+
+def connect_read_only(path: str | Path) -> sqlite3.Connection:
+    database_path = Path(path).resolve()
+    conn = sqlite3.connect(f"{database_path.as_uri()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA query_only = ON")
+    return conn

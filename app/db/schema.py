@@ -95,8 +95,9 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             config_fingerprint TEXT
                 CHECK (
                     config_fingerprint IS NULL OR
-                    (length(config_fingerprint) = 71 AND
-                     config_fingerprint GLOB 'sha256:[0-9a-f]*')
+                    (length(config_fingerprint) = 71
+                     AND substr(config_fingerprint, 1, 7) = 'sha256:'
+                     AND substr(config_fingerprint, 8) NOT GLOB '*[^0-9a-f]*')
                 ),
             last_config_sent_at TEXT,
             first_connected_at TEXT,
@@ -538,7 +539,7 @@ def _migrate_access_slot_contract(conn: sqlite3.Connection) -> None:
     if {
         "expiry_policy",
         "config_fingerprint",
-    }.issubset(columns) and "recipient_unassigned" in table_sql:
+    }.issubset(columns) and "recipient_unassigned" in table_sql and "NOT GLOB '*[^0-9a-f]*'" in table_sql:
         return
 
     def source(name: str, fallback: str) -> str:
@@ -551,6 +552,14 @@ def _migrate_access_slot_contract(conn: sqlite3.Connection) -> None:
         f"COALESCE({existing_expires_at}, "
         f"datetime({created_at}, '+' || {duration_days} || ' days'))"
     )
+    expiry_policy_value = source("expiry_policy", "'duration'")
+    migrated_duration_days = (
+        duration_days if "expiry_policy" in columns else duration_days
+    )
+    migrated_expiry_value = (
+        existing_expires_at if "expiry_policy" in columns else migrated_expires_at
+    )
+    config_fingerprint_value = source("config_fingerprint", "NULL")
     server_foreign_key = (
         ", FOREIGN KEY (server_id) REFERENCES servers(id)"
         if "REFERENCES servers" in table_sql
@@ -563,10 +572,10 @@ def _migrate_access_slot_contract(conn: sqlite3.Connection) -> None:
         conn.commit()
     try:
         conn.execute("PRAGMA foreign_keys = OFF")
-        conn.executescript(
+        conn.execute("BEGIN")
+        conn.execute("DROP INDEX IF EXISTS idx_devices_reserved_ip_unique")
+        conn.execute(
             f"""
-            BEGIN;
-            DROP INDEX IF EXISTS idx_devices_reserved_ip_unique;
             CREATE TABLE devices_new (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -592,8 +601,9 @@ def _migrate_access_slot_contract(conn: sqlite3.Connection) -> None:
                 config_fingerprint TEXT
                     CHECK (
                         config_fingerprint IS NULL OR
-                        (length(config_fingerprint) = 71 AND
-                         config_fingerprint GLOB 'sha256:[0-9a-f]*')
+                        (length(config_fingerprint) = 71
+                         AND substr(config_fingerprint, 1, 7) = 'sha256:'
+                         AND substr(config_fingerprint, 8) NOT GLOB '*[^0-9a-f]*')
                     ),
                 last_config_sent_at TEXT,
                 first_connected_at TEXT,
@@ -608,12 +618,9 @@ def _migrate_access_slot_contract(conn: sqlite3.Connection) -> None:
                     OR (expiry_policy = 'absolute' AND duration_days IS NULL AND expires_at IS NOT NULL)
                     OR (expiry_policy = 'indefinite' AND duration_days IS NULL AND expires_at IS NULL)
                 )
-            );
-
-            COMMIT;
+            )
             """
         )
-        conn.execute("BEGIN")
         conn.execute(
             f"""
             INSERT INTO devices_new (
@@ -626,12 +633,12 @@ def _migrate_access_slot_contract(conn: sqlite3.Connection) -> None:
             )
             SELECT
                 id, user_id, server_id, name, {created_at},
-                {source('activated_at', 'NULL')}, {migrated_expires_at},
-                {duration_days}, 'duration', status, vpn_ip,
+                {source('activated_at', 'NULL')}, {migrated_expiry_value},
+                {migrated_duration_days}, {expiry_policy_value}, status, vpn_ip,
                 peer_public_key, peer_private_key_encrypted,
                 preshared_key_encrypted, config_version,
                 {source('config_material_status', "'available'")},
-                {source('assignment_mode', "'dedicated_device'")}, NULL,
+                {source('assignment_mode', "'dedicated_device'")}, {config_fingerprint_value},
                 {source('last_config_sent_at', 'NULL')},
                 {source('first_connected_at', 'NULL')},
                 {source('last_connected_at', 'NULL')},
@@ -649,12 +656,12 @@ def _migrate_access_slot_contract(conn: sqlite3.Connection) -> None:
                 WHERE status IN ('pending', 'active', 'disabled')
             """
         )
-        conn.commit()
         violations = conn.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
             raise sqlite3.IntegrityError(
                 f"foreign key violations after access slot migration: {violations!r}"
             )
+        conn.commit()
     except Exception:
         if conn.in_transaction:
             conn.rollback()

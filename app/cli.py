@@ -21,7 +21,7 @@ from app.backup.service import BackupService
 from app.bot.controlled_smoke import ControlledSmokeError
 from app.bot.controlled_smoke import run_controlled_start_smoke_from_settings
 from app.config import Settings
-from app.db.connection import connect
+from app.db.connection import connect, connect_read_only
 from app.db.repositories import Repository
 from app.db.repositories import DEVICE_STATUSES
 from app.db.schema import initialize_schema
@@ -976,9 +976,8 @@ def build_admin_config_slot_lifecycle_plan(
     action: str,
     pretty: bool = False,
 ) -> str:
-    conn = connect(db_path)
+    conn = connect_read_only(db_path)
     try:
-        initialize_schema(conn)
         repo = Repository(conn)
         if action == "disable":
             plan = build_access_slot_disable_plan(repo, local_device_id=local_device_id)
@@ -1022,8 +1021,23 @@ def run_admin_config_slot_lifecycle(
         repo = Repository(conn)
         device = repo.get_device(local_device_id)
         stored_server = repo.get_server(int(device["server_id"]))
-        if str(stored_server["name"]) != server.name:
-            raise ValueError("access slot server does not match --server")
+        _validate_operator_server_for_apply(server)
+        expected_target = (
+            server.name,
+            server.ssh.host,
+            int(server.ssh.port),
+            server.vpn.endpoint_host,
+            int(server.vpn.port),
+        )
+        stored_target = (
+            str(stored_server["name"]),
+            str(stored_server["host"] or ""),
+            stored_server["ssh_port"],
+            str(stored_server["endpoint_host"] or ""),
+            stored_server["vpn_port"],
+        )
+        if stored_target != expected_target:
+            raise ValueError("access slot server target does not match --server")
         actual_client = command_client or SystemSshClient(server, password=vps_ssh_password)
         remover = ServerConfigPeerApplier(server, ssh_client=actual_client)
         kwargs = {
