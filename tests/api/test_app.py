@@ -469,16 +469,17 @@ def _insert_device(
         INSERT INTO devices (
             user_id,
             server_id,
-            name,
-            duration_days,
-            status,
+                name,
+                duration_days,
+                expires_at,
+                status,
             vpn_ip,
             peer_public_key,
             peer_private_key_encrypted,
             preshared_key_encrypted,
             config_version
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, datetime('now', '+7 days'), ?, ?, ?, ?, ?, ?)
         """,
         (
             user_id,
