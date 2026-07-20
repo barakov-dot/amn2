@@ -63,11 +63,59 @@ def test_admin_config_issue_manifest_is_dry_run_by_default(tmp_path):
         "action": "admin_config.issue_manifest",
         "database_mutation": False,
         "item_count": 1,
+        "expanded_slot_count": 1,
         "mode": "dry-run",
         "remote_mutation": False,
         "request_id": "spain-first-real-001",
         "server": "Spain-Madrid",
+        "slots": [
+            {
+                "assignment_mode": "dedicated_device",
+                "expiry_policy": "indefinite",
+                "filename": "NEOBYATNAYA.NET-Example-Recipient-Example-Device.conf",
+                "quota_delta": 1,
+                "recipient_label": "Example Recipient",
+                "slot_sequence": 1,
+            }
+        ],
     }
+
+
+def test_dry_run_expands_unassigned_slots_without_settings_or_mutation(tmp_path):
+    manifest = tmp_path / "unassigned.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "request_id": "spain-four-001",
+                "server": "Spain-Madrid",
+                "items": [
+                    {
+                        "mode": "recipient_unassigned",
+                        "recipient_label": "Иван",
+                        "quantity": 4,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    plan = json.loads(
+        build_admin_config_issuance_plan(
+            manifest_path=manifest,
+            server_name="Spain-Madrid",
+        )
+    )
+
+    assert plan["expanded_slot_count"] == 4
+    assert [slot["filename"] for slot in plan["slots"]] == [
+        "NEOBYATNAYA.NET-Ivan-01.conf",
+        "NEOBYATNAYA.NET-Ivan-02.conf",
+        "NEOBYATNAYA.NET-Ivan-03.conf",
+        "NEOBYATNAYA.NET-Ivan-04.conf",
+    ]
+    assert all(slot["expiry_policy"] == "indefinite" for slot in plan["slots"])
+    assert all(slot["quota_delta"] == 1 for slot in plan["slots"])
 
 
 def test_admin_config_apply_requires_explicit_admin_id(tmp_path):

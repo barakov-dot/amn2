@@ -48,6 +48,10 @@ from app.services.admin_config_issuance import (
     AdminConfigIssuanceService,
     validate_admin_config_issuance_manifest,
 )
+from app.services.config_identity import (
+    build_config_identity,
+    build_unassigned_slot_identity,
+)
 from app.services.api_tokens import create_route_api_token
 from app.services.api_tokens import revoke_api_token
 from app.services.api_smoke import validate_api_smoke_responses
@@ -199,7 +203,6 @@ def build_parser() -> argparse.ArgumentParser:
     issue_manifest.add_argument("--db", default="data/amneziya.sqlite3")
     issue_manifest.add_argument("--config", default="servers.yml")
     issue_manifest.add_argument("--admin-telegram-id", type=int, default=None)
-    issue_manifest.add_argument("--duration-days", type=int, default=30)
     issue_manifest.add_argument("--apply", action="store_true")
     issue_manifest.add_argument("--pretty", action="store_true")
 
@@ -384,7 +387,6 @@ def main() -> None:
                     owner_user_id=args.owner_user_id,
                     server_name=args.server,
                     device_name=args.name,
-                    duration_days=args.duration_days,
                     config_version=args.config_version,
                     assignment_mode=args.assignment_mode,
                     output_path=Path(args.output),
@@ -727,6 +729,26 @@ def build_admin_config_issuance_plan(
     validated = validate_admin_config_issuance_manifest(manifest)
     if validated.server != server_name:
         raise ValueError("manifest server does not match --server")
+    slots = []
+    for slot in validated.expanded_slots:
+        identity = (
+            build_unassigned_slot_identity(
+                slot.recipient_label,
+                slot.slot_sequence,
+            )
+            if slot.assignment_mode == "recipient_unassigned"
+            else build_config_identity(slot.recipient_label, slot.device_label)
+        )
+        slots.append(
+            {
+                "recipient_label": slot.recipient_label,
+                "assignment_mode": slot.assignment_mode,
+                "slot_sequence": slot.slot_sequence,
+                "filename": identity.filename,
+                "expiry_policy": slot.expiry.policy,
+                "quota_delta": 1,
+            }
+        )
     return _json_dumps(
         {
             "action": "admin_config.issue_manifest",
@@ -734,6 +756,8 @@ def build_admin_config_issuance_plan(
             "request_id": validated.request_id,
             "server": validated.server,
             "item_count": len(validated.items),
+            "expanded_slot_count": len(validated.expanded_slots),
+            "slots": slots,
             "remote_mutation": False,
             "database_mutation": False,
         },
@@ -750,7 +774,7 @@ def run_admin_config_issue_manifest(
     authorized_admin_telegram_ids: set[int],
     app_secret_key: str,
     max_devices_per_user: int,
-    duration_days: int,
+    duration_days: int | None = None,
     vps_ssh_password: str = "",
     client_config_template_dir: str | Path | None = None,
     client_config_defaults=None,
@@ -801,7 +825,7 @@ def run_admin_config_issue_manifest(
             access_service=access_service,
             admin_telegram_id=admin_telegram_id,
             attachment_builder=attachment_builder,
-            duration_days=duration_days,
+            max_devices_per_recipient=max_devices_per_user,
         ).issue_manifest(manifest)
         payload = result.to_safe_dict()
         payload.update(
