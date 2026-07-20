@@ -708,7 +708,9 @@ class Repository:
         user_id: int,
         server_id: int,
         name: str,
-        duration_days: int,
+        duration_days: int | None,
+        expires_at: str | None = None,
+        expiry_policy: str = "duration",
         vpn_ip: str,
         peer_public_key: str,
         peer_private_key_encrypted: str,
@@ -716,8 +718,25 @@ class Repository:
         config_version: str,
         config_material_status: str = "available",
         assignment_mode: str = DEDICATED_DEVICE,
+        config_fingerprint: str | None = None,
     ) -> int:
         assignment_mode = validate_config_assignment_mode(assignment_mode)
+        if expiry_policy == "duration":
+            if (
+                isinstance(duration_days, bool)
+                or not isinstance(duration_days, int)
+                or duration_days <= 0
+                or expires_at is not None
+            ):
+                raise ValueError("duration expiry requires positive duration_days")
+        elif expiry_policy == "absolute":
+            if duration_days is not None or not expires_at:
+                raise ValueError("absolute expiry requires expires_at")
+        elif expiry_policy == "indefinite":
+            if duration_days is not None or expires_at is not None:
+                raise ValueError("indefinite expiry cannot contain a deadline")
+        else:
+            raise ValueError("unsupported access expiry policy")
         cursor = self._conn.execute(
             """
             INSERT INTO devices (
@@ -727,20 +746,27 @@ class Repository:
                 activated_at,
                 expires_at,
                 duration_days,
+                expiry_policy,
                 vpn_ip,
                 peer_public_key,
                 peer_private_key_encrypted,
                 preshared_key_encrypted,
                 config_version,
                 config_material_status,
-                assignment_mode
+                assignment_mode,
+                config_fingerprint
             )
             VALUES (
                 ?,
                 ?,
                 ?,
                 CURRENT_TIMESTAMP,
-                datetime(CURRENT_TIMESTAMP, ?),
+                CASE
+                    WHEN ? = 'duration' THEN datetime(CURRENT_TIMESTAMP, ?)
+                    ELSE ?
+                END,
+                ?,
+                ?,
                 ?,
                 ?,
                 ?,
@@ -755,8 +781,11 @@ class Repository:
                 user_id,
                 server_id,
                 name,
-                f"+{duration_days} days",
+                expiry_policy,
+                f"+{duration_days} days" if duration_days is not None else None,
+                expires_at,
                 duration_days,
+                expiry_policy,
                 vpn_ip,
                 peer_public_key,
                 peer_private_key_encrypted,
@@ -764,6 +793,7 @@ class Repository:
                 config_version,
                 config_material_status,
                 assignment_mode,
+                config_fingerprint,
             ),
         )
         self._commit()

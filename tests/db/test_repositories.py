@@ -1318,6 +1318,47 @@ def test_completed_admin_issuance_provenance_lookup_rejects_ambiguity(tmp_path):
     )
 
 
+def test_repository_creates_indefinite_access_record_with_fingerprint():
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    initialize_schema(conn)
+    repo = Repository(conn)
+    user_id = repo.upsert_user(
+        telegram_id=99001,
+        username="indefinite-user",
+        first_name="Indefinite",
+        last_name="User",
+    )
+    server_id = repo.ensure_default_server(
+        name="indefinite-server",
+        network_cidr="10.99.0.0/24",
+    )
+
+    device_id = repo.create_device(
+        user_id=user_id,
+        server_id=server_id,
+        name="NEOBYATNAYA.NET — Recipient — 01",
+        duration_days=None,
+        expires_at=None,
+        expiry_policy="indefinite",
+        vpn_ip="10.99.0.2",
+        peer_public_key="public-indefinite",
+        peer_private_key_encrypted="encrypted-private",
+        preshared_key_encrypted="encrypted-psk",
+        config_version="amneziawg_v2",
+        config_fingerprint="sha256:" + "a" * 64,
+        assignment_mode="dedicated_device",
+    )
+
+    row = repo.get_device(device_id)
+    assert row["expiry_policy"] == "indefinite"
+    assert row["duration_days"] is None
+    assert row["expires_at"] is None
+    assert row["config_fingerprint"] == "sha256:" + "a" * 64
+    assert row["assignment_mode"] == "dedicated_device"
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+
+
 def _create_user_and_server(repo: Repository) -> tuple[int, int]:
     user_id = repo.upsert_user(
         telegram_id=2001,
@@ -1344,6 +1385,7 @@ def _insert_device(
             user_id,
             server_id,
             name,
+            expires_at,
             duration_days,
             status,
             vpn_ip,
@@ -1352,7 +1394,7 @@ def _insert_device(
             preshared_key_encrypted,
             config_version
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, datetime(CURRENT_TIMESTAMP, '+7 days'), ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             user_id,

@@ -78,7 +78,9 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             activated_at TEXT,
             expires_at TEXT,
-            duration_days INTEGER NOT NULL CHECK (duration_days > 0),
+            duration_days INTEGER,
+            expiry_policy TEXT NOT NULL DEFAULT 'duration'
+                CHECK (expiry_policy IN ('duration', 'absolute', 'indefinite')),
             status TEXT NOT NULL DEFAULT 'active'
                 CHECK (status IN ('pending', 'active', 'disabled', 'expired', 'revoked', 'failed')),
             vpn_ip TEXT NOT NULL,
@@ -89,7 +91,13 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             config_material_status TEXT NOT NULL DEFAULT 'available'
                 CHECK (config_material_status IN ('available', 'external_only')),
             assignment_mode TEXT NOT NULL DEFAULT 'dedicated_device'
-                CHECK (assignment_mode IN ('dedicated_device', 'owner_shared')),
+                CHECK (assignment_mode IN ('dedicated_device', 'owner_shared', 'recipient_unassigned')),
+            config_fingerprint TEXT
+                CHECK (
+                    config_fingerprint IS NULL OR
+                    (length(config_fingerprint) = 71 AND
+                     config_fingerprint GLOB 'sha256:[0-9a-f]*')
+                ),
             last_config_sent_at TEXT,
             first_connected_at TEXT,
             last_connected_at TEXT,
@@ -97,7 +105,12 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             revoke_reason TEXT,
             FOREIGN KEY (user_id) REFERENCES users(id),
             FOREIGN KEY (server_id) REFERENCES servers(id),
-            UNIQUE (server_id, peer_public_key)
+            UNIQUE (server_id, peer_public_key),
+            CHECK (
+                (expiry_policy = 'duration' AND duration_days > 0 AND expires_at IS NOT NULL)
+                OR (expiry_policy = 'absolute' AND duration_days IS NULL AND expires_at IS NOT NULL)
+                OR (expiry_policy = 'indefinite' AND duration_days IS NULL AND expires_at IS NULL)
+            )
         );
 
         CREATE TABLE IF NOT EXISTS device_passports (
@@ -410,9 +423,147 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         "assignment_mode",
         "TEXT NOT NULL DEFAULT 'dedicated_device' CHECK (assignment_mode IN ('dedicated_device', 'owner_shared'))",
     )
+    _migrate_access_slot_contract(conn)
     _ensure_column(conn, "device_passports", "revoked_at", "TEXT")
     _ensure_column(conn, "device_passports", "revoke_reason", "TEXT")
     conn.commit()
+
+
+def _migrate_access_slot_contract(conn: sqlite3.Connection) -> None:
+    columns = {
+        row["name"] if isinstance(row, sqlite3.Row) else row[1]
+        for row in conn.execute("PRAGMA table_info(devices)")
+    }
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'devices'"
+    ).fetchone()
+    table_sql = str(row["sql"] if isinstance(row, sqlite3.Row) else row[0])
+    if {
+        "expiry_policy",
+        "config_fingerprint",
+    }.issubset(columns) and "recipient_unassigned" in table_sql:
+        return
+
+    def source(name: str, fallback: str) -> str:
+        return name if name in columns else fallback
+
+    created_at = source("created_at", "CURRENT_TIMESTAMP")
+    duration_days = source("duration_days", "30")
+    existing_expires_at = source("expires_at", "NULL")
+    migrated_expires_at = (
+        f"COALESCE({existing_expires_at}, "
+        f"datetime({created_at}, '+' || {duration_days} || ' days'))"
+    )
+    server_foreign_key = (
+        ", FOREIGN KEY (server_id) REFERENCES servers(id)"
+        if "REFERENCES servers" in table_sql
+        else ""
+    )
+
+    foreign_keys_row = conn.execute("PRAGMA foreign_keys").fetchone()
+    foreign_keys_enabled = int(foreign_keys_row[0])
+    if conn.in_transaction:
+        conn.commit()
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.executescript(
+            f"""
+            BEGIN;
+            DROP INDEX IF EXISTS idx_devices_reserved_ip_unique;
+            CREATE TABLE devices_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                server_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                activated_at TEXT,
+                expires_at TEXT,
+                duration_days INTEGER,
+                expiry_policy TEXT NOT NULL DEFAULT 'duration'
+                    CHECK (expiry_policy IN ('duration', 'absolute', 'indefinite')),
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('pending', 'active', 'disabled', 'expired', 'revoked', 'failed')),
+                vpn_ip TEXT NOT NULL,
+                peer_public_key TEXT NOT NULL,
+                peer_private_key_encrypted TEXT NOT NULL,
+                preshared_key_encrypted TEXT NOT NULL,
+                config_version TEXT NOT NULL,
+                config_material_status TEXT NOT NULL DEFAULT 'available'
+                    CHECK (config_material_status IN ('available', 'external_only')),
+                assignment_mode TEXT NOT NULL DEFAULT 'dedicated_device'
+                    CHECK (assignment_mode IN ('dedicated_device', 'owner_shared', 'recipient_unassigned')),
+                config_fingerprint TEXT
+                    CHECK (
+                        config_fingerprint IS NULL OR
+                        (length(config_fingerprint) = 71 AND
+                         config_fingerprint GLOB 'sha256:[0-9a-f]*')
+                    ),
+                last_config_sent_at TEXT,
+                first_connected_at TEXT,
+                last_connected_at TEXT,
+                revoked_at TEXT,
+                revoke_reason TEXT,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+                {server_foreign_key},
+                UNIQUE (server_id, peer_public_key),
+                CHECK (
+                    (expiry_policy = 'duration' AND duration_days > 0 AND expires_at IS NOT NULL)
+                    OR (expiry_policy = 'absolute' AND duration_days IS NULL AND expires_at IS NOT NULL)
+                    OR (expiry_policy = 'indefinite' AND duration_days IS NULL AND expires_at IS NULL)
+                )
+            );
+
+            COMMIT;
+            """
+        )
+        conn.execute("BEGIN")
+        conn.execute(
+            f"""
+            INSERT INTO devices_new (
+                id, user_id, server_id, name, created_at, activated_at,
+                expires_at, duration_days, expiry_policy, status, vpn_ip,
+                peer_public_key, peer_private_key_encrypted,
+                preshared_key_encrypted, config_version, config_material_status,
+                assignment_mode, config_fingerprint, last_config_sent_at,
+                first_connected_at, last_connected_at, revoked_at, revoke_reason
+            )
+            SELECT
+                id, user_id, server_id, name, {created_at},
+                {source('activated_at', 'NULL')}, {migrated_expires_at},
+                {duration_days}, 'duration', status, vpn_ip,
+                peer_public_key, peer_private_key_encrypted,
+                preshared_key_encrypted, config_version,
+                {source('config_material_status', "'available'")},
+                {source('assignment_mode', "'dedicated_device'")}, NULL,
+                {source('last_config_sent_at', 'NULL')},
+                {source('first_connected_at', 'NULL')},
+                {source('last_connected_at', 'NULL')},
+                {source('revoked_at', 'NULL')},
+                {source('revoke_reason', 'NULL')}
+            FROM devices
+            """
+        )
+        conn.execute("DROP TABLE devices")
+        conn.execute("ALTER TABLE devices_new RENAME TO devices")
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX idx_devices_reserved_ip_unique
+                ON devices(server_id, vpn_ip)
+                WHERE status IN ('pending', 'active', 'disabled')
+            """
+        )
+        conn.commit()
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise sqlite3.IntegrityError(
+                f"foreign key violations after access slot migration: {violations!r}"
+            )
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        conn.execute(f"PRAGMA foreign_keys = {foreign_keys_enabled}")
 
 
 def _ensure_column(
