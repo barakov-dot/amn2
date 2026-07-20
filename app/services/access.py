@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
+from app.access_expiry import AccessExpiry, DURATION, INDEFINITE
 from app.db.repositories import Repository
 from app.server.operations import (
     RemoteMutationResult,
@@ -87,6 +88,8 @@ class OperatorDeviceCreateResult:
     config_text: str
     config_artifact_path: str | None
     config_filename: str
+    config_fingerprint: str
+    passport_device_id: str | None
     assignment_mode: str = DEDICATED_DEVICE
 
 
@@ -195,8 +198,9 @@ class AccessService:
         owner_user_id: int,
         server_id: int,
         device_name: str,
-        duration_days: int,
+        duration_days: int | None,
         admin_telegram_id: int,
+        expiry: AccessExpiry | None = None,
         config_version: str = "amneziawg_v2",
         assignment_mode: str = DEDICATED_DEVICE,
         config_artifact_writer: Callable[[str], str | Path] | None = None,
@@ -217,6 +221,7 @@ class AccessService:
                     server_id=server_id,
                     device_name=device_name,
                     duration_days=duration_days,
+                    expiry=expiry,
                     admin_telegram_id=admin_telegram_id,
                     config_version=config_version,
                     assignment_mode=assignment_mode,
@@ -241,7 +246,8 @@ class AccessService:
         owner_user_id: int,
         server_id: int,
         device_name: str,
-        duration_days: int,
+        duration_days: int | None,
+        expiry: AccessExpiry | None,
         admin_telegram_id: int,
         config_version: str,
         assignment_mode: str,
@@ -254,18 +260,18 @@ class AccessService:
             raise ValueError("admin_telegram_id must be positive")
         if not normalized_device_display_name:
             raise ValueError("device_name must be non-blank")
-        if duration_days <= 0:
-            raise ValueError("duration_days must be positive")
+        expiry = _resolve_operator_expiry(duration_days=duration_days, expiry=expiry)
         config_version = validate_config_version(config_version)
         assignment_mode = validate_config_assignment_mode(assignment_mode)
         assignment_policy = config_assignment_policy(assignment_mode)
-        validate_device_passport_context(
-            platform=device_context.platform,
-            official_client_type=device_context.official_client_type,
-            client_version=device_context.client_version,
-            import_method=device_context.import_method,
-            config_schema_version=config_version,
-        )
+        if assignment_policy.passport_required:
+            validate_device_passport_context(
+                platform=device_context.platform,
+                official_client_type=device_context.official_client_type,
+                client_version=device_context.client_version,
+                import_method=device_context.import_method,
+                config_schema_version=config_version,
+            )
 
         try:
             owner = self._repo.get_user(owner_user_id)
@@ -299,12 +305,12 @@ class AccessService:
         server = self._repo.get_server(server_id)
         keypair = generate_keypair()
         preshared_key = generate_key()
-        device_id, config_text = self._create_device_with_allocated_ip(
+        device_id, config_text, config_fingerprint = self._create_device_with_allocated_ip(
             user_id=owner_user_id,
             server_id=server_id,
             device_name=config_identity.display_name,
             server=server,
-            duration_days=duration_days,
+            expiry=expiry,
             private_key=keypair.private_key,
             public_key=keypair.public_key,
             preshared_key=preshared_key,
@@ -328,7 +334,9 @@ class AccessService:
             target_device_id=device_id,
             metadata={
                 "server_id": server_id,
-                "duration_days": duration_days,
+                "expiry_policy": expiry.policy,
+                "duration_days": expiry.duration_days,
+                "expires_at": expiry.expires_at,
                 "config_version": config_version,
                 "assignment_mode": assignment_mode,
                 "physical_device_count_enforceable": (
@@ -340,32 +348,34 @@ class AccessService:
         artifact_path = None
         if config_artifact_writer is not None:
             artifact_path = str(config_artifact_writer(config_text))
-        passport_device_id = generate_device_passport_id()
-        create_device_passport(
-            self._repo,
-            device_id=passport_device_id,
-            owner_user_id=owner_user_id,
-            local_device_id=device_id,
-            platform=device_context.platform,
-            official_client_type=device_context.official_client_type,
-            client_version=device_context.client_version,
-            import_method=device_context.import_method,
-            config_schema_version=config_version,
-            config_fingerprint=fingerprint_config(config_text),
-        )
-        config_ready_at = datetime.now(timezone.utc)
-        record_device_lifecycle_stage(
-            self._repo,
-            passport_device_id=passport_device_id,
-            stage="config_ready",
-            status="completed",
-            started_at=config_ready_at,
-            occurred_at=config_ready_at,
-            evidence=LifecycleEvidence(
-                source="operator_config_renderer",
-                reference=f"schema:{config_version}",
-            ),
-        )
+        passport_device_id = None
+        if assignment_policy.passport_required:
+            passport_device_id = generate_device_passport_id()
+            create_device_passport(
+                self._repo,
+                device_id=passport_device_id,
+                owner_user_id=owner_user_id,
+                local_device_id=device_id,
+                platform=device_context.platform,
+                official_client_type=device_context.official_client_type,
+                client_version=device_context.client_version,
+                import_method=device_context.import_method,
+                config_schema_version=config_version,
+                config_fingerprint=config_fingerprint,
+            )
+            config_ready_at = datetime.now(timezone.utc)
+            record_device_lifecycle_stage(
+                self._repo,
+                passport_device_id=passport_device_id,
+                stage="config_ready",
+                status="completed",
+                started_at=config_ready_at,
+                occurred_at=config_ready_at,
+                evidence=LifecycleEvidence(
+                    source="operator_config_renderer",
+                    reference=f"schema:{config_version}",
+                ),
+            )
         config_identity = build_config_identity(
             user_label=user_label,
             device_label=normalized_device_display_name,
@@ -376,6 +386,8 @@ class AccessService:
             config_text=config_text,
             config_artifact_path=artifact_path,
             config_filename=config_identity.filename,
+            config_fingerprint=config_fingerprint,
+            passport_device_id=passport_device_id,
             assignment_mode=assignment_mode,
         )
 
@@ -416,12 +428,12 @@ class AccessService:
         keypair = generate_keypair()
         preshared_key = generate_key()
 
-        device_id, config_text = self._create_device_with_allocated_ip(
+        device_id, config_text, _config_fingerprint = self._create_device_with_allocated_ip(
             user_id=user_id,
             server_id=server_id,
             device_name=device_name,
             server=server,
-            duration_days=duration_days,
+            expiry=AccessExpiry(DURATION, duration_days, None),
             private_key=keypair.private_key,
             public_key=keypair.public_key,
             preshared_key=preshared_key,
@@ -462,7 +474,7 @@ class AccessService:
         server_id: int,
         device_name: str,
         server,
-        duration_days: int,
+        expiry: AccessExpiry,
         private_key: str,
         public_key: str,
         preshared_key: str,
@@ -517,13 +529,17 @@ class AccessService:
                 config_version,
                 template_dir=self._client_config_template_dir,
             )
+            config_fingerprint = fingerprint_config(config_text)
 
             try:
                 device_id = self._repo.create_device(
                     user_id=user_id,
                     server_id=server_id,
                     name=device_name,
-                    duration_days=duration_days,
+                    duration_days=expiry.duration_days,
+                    expires_at=expiry.expires_at,
+                    expiry_policy=expiry.policy,
+                    config_fingerprint=config_fingerprint,
                     vpn_ip=vpn_ip,
                     peer_public_key=public_key,
                     peer_private_key_encrypted=self._secret_box.encrypt_text(private_key),
@@ -550,7 +566,7 @@ class AccessService:
                                 recovery_note=remote_recovery_note(device_id),
                             )
                         )
-                return device_id, config_text
+                return device_id, config_text, config_fingerprint
 
         raise IpAllocationConflict("Could not allocate a unique VPN IP address") from last_error
 
@@ -588,6 +604,18 @@ def _allocate_vpn_ip(
             return str(ip_address)
 
     raise RuntimeError("No available VPN IP addresses")
+
+
+def _resolve_operator_expiry(
+    *, duration_days: int | None, expiry: AccessExpiry | None
+) -> AccessExpiry:
+    if expiry is not None:
+        if duration_days is not None:
+            raise ValueError("duration_days conflicts with explicit expiry")
+        return expiry
+    if duration_days is None:
+        return AccessExpiry(INDEFINITE, None, None)
+    return AccessExpiry(DURATION, duration_days, None)
 
 
 def _list_remote_allocated_ips(peer_applier: PeerApplier | None, *, server) -> list[str]:

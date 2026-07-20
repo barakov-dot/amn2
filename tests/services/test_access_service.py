@@ -27,6 +27,7 @@ from app.services.device_lifecycle import list_device_lifecycle_events
 from app.services.device_passports import fingerprint_config, get_device_passport
 from app.server.peer_apply import PeerApplyError
 import app.vpn.amneziawg_v2.config as awg_config
+from app.access_expiry import AccessExpiry, INDEFINITE
 
 
 def test_approve_order_creates_active_device_with_encrypted_secrets(tmp_path):
@@ -628,6 +629,43 @@ def test_create_operator_device_records_passport_and_config_ready_evidence(tmp_p
     assert result.config_text not in database_dump
     assert "PrivateKey =" not in lifecycle[0].evidence.reference
     assert all(event.stage != "delivered" for event in lifecycle)
+
+
+def test_create_operator_unassigned_indefinite_slot_has_no_fake_passport(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    owner_user_id = repo.create_operator_recipient(operator_label="Recipient")
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=RecordingPeerApplier(),
+        max_devices_per_user=4,
+    )
+
+    result = service.create_operator_device(
+        owner_user_id=owner_user_id,
+        server_id=server_id,
+        device_name="NEOBYATNAYA.NET-Recipient-01",
+        duration_days=None,
+        expiry=AccessExpiry(INDEFINITE, None, None),
+        admin_telegram_id=999,
+        assignment_mode="recipient_unassigned",
+    )
+
+    device = repo.get_device(result.device_id)
+    assert device["assignment_mode"] == "recipient_unassigned"
+    assert device["expiry_policy"] == "indefinite"
+    assert device["duration_days"] is None
+    assert device["expires_at"] is None
+    assert device["config_fingerprint"] == fingerprint_config(result.config_text)
+    assert result.passport_device_id is None
+    assert result.config_fingerprint == device["config_fingerprint"]
+    assert repo.get_device_passport_by_local_device_id(result.device_id) is None
+    assert conn.execute("SELECT COUNT(*) FROM device_lifecycle_events").fetchone()[0] == 0
 
 
 def test_create_operator_device_stores_precomputed_canonical_display_name(tmp_path):
