@@ -278,6 +278,16 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             )
         );
 
+        CREATE TABLE IF NOT EXISTS access_slot_assignment_requests (
+            request_id TEXT PRIMARY KEY CHECK (length(trim(request_id)) > 0),
+            request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) = 71),
+            local_device_id INTEGER NOT NULL UNIQUE,
+            passport_device_id TEXT NOT NULL UNIQUE,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (local_device_id) REFERENCES devices(id),
+            FOREIGN KEY (passport_device_id) REFERENCES device_passports(device_id)
+        );
+
         CREATE TABLE IF NOT EXISTS device_traffic_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             device_id INTEGER NOT NULL,

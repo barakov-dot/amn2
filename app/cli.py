@@ -41,6 +41,7 @@ from app.server_config.loader import load_server_config, select_server
 from app.server_config.models import ServerConfig
 from app.services.access import (
     AccessService,
+    OperatorDeviceContext,
     OperatorOwnerNotActive,
     OperatorOwnerNotFound,
 )
@@ -52,6 +53,13 @@ from app.services.config_identity import (
     build_config_identity,
     build_unassigned_slot_identity,
 )
+from app.services.access_slot_assignment import assign_access_slot
+from app.services.access_slot_lifecycle import (
+    build_access_slot_disable_plan,
+    disable_access_slot,
+    revoke_access_slot,
+)
+from app.services.device_revoke import build_physical_device_revoke_plan
 from app.services.api_tokens import create_route_api_token
 from app.services.api_tokens import revoke_api_token
 from app.services.api_smoke import validate_api_smoke_responses
@@ -205,6 +213,27 @@ def build_parser() -> argparse.ArgumentParser:
     issue_manifest.add_argument("--admin-telegram-id", type=int, default=None)
     issue_manifest.add_argument("--apply", action="store_true")
     issue_manifest.add_argument("--pretty", action="store_true")
+
+    assign_slot = admin_config_sub.add_parser("assign-slot")
+    assign_slot.add_argument("--db", default="data/amneziya.sqlite3")
+    assign_slot.add_argument("--request-id", required=True)
+    assign_slot.add_argument("--device-id", type=int, required=True)
+    assign_slot.add_argument("--device-label", required=True)
+    assign_slot.add_argument("--platform", required=True)
+    assign_slot.add_argument("--admin-telegram-id", type=int)
+    assign_slot.add_argument("--apply", action="store_true")
+    assign_slot.add_argument("--pretty", action="store_true")
+
+    for command_name in ("disable-slot", "revoke-slot"):
+        lifecycle = admin_config_sub.add_parser(command_name)
+        lifecycle.add_argument("--db", default="data/amneziya.sqlite3")
+        lifecycle.add_argument("--config", default="servers.yml")
+        lifecycle.add_argument("--server", required=True)
+        lifecycle.add_argument("--device-id", type=int, required=True)
+        lifecycle.add_argument("--reason", required=True)
+        lifecycle.add_argument("--admin-telegram-id", type=int)
+        lifecycle.add_argument("--apply", action="store_true")
+        lifecycle.add_argument("--pretty", action="store_true")
 
     server = sub.add_parser("server")
     server_sub = server.add_subparsers(dest="server_command", required=True)
@@ -412,8 +441,8 @@ def main() -> None:
                     assignment_mode=args.assignment_mode,
                     output_path=Path(args.output),
                     admin_telegram_id=args.admin_telegram_id,
-                    app_secret_key=settings.app_secret_key,
                     authorized_admin_telegram_ids=set(settings.admin_ids),
+                    app_secret_key=settings.app_secret_key,
                     max_devices_per_user=settings.max_devices_per_user,
                     vps_ssh_password=settings.vps_ssh_password,
                     client_config_template_dir=settings.client_config_template_dir,
@@ -437,17 +466,11 @@ def main() -> None:
         else:
             require_vps_apply_enabled_for_cli_apply()
             if args.admin_telegram_id is None:
-                raise SystemExit(
-                    "--admin-telegram-id is required with --apply"
-                )
+                raise SystemExit("--admin-telegram-id is required with --apply")
             settings = Settings()
             if args.admin_telegram_id not in settings.admin_ids:
-                raise SystemExit(
-                    "--admin-telegram-id must be an explicitly configured admin ID"
-                )
-            server_config = select_server(
-                load_server_config(Path(args.config)), args.server
-            )
+                raise SystemExit("--admin-telegram-id must be an explicitly configured admin ID")
+            server_config = select_server(load_server_config(Path(args.config)), args.server)
             print(
                 run_admin_config_issue_manifest(
                     db_path=Path(args.db),
@@ -457,10 +480,76 @@ def main() -> None:
                     authorized_admin_telegram_ids=set(settings.admin_ids),
                     app_secret_key=settings.app_secret_key,
                     max_devices_per_user=settings.max_devices_per_user,
-                    duration_days=args.duration_days,
                     vps_ssh_password=settings.vps_ssh_password,
                     client_config_template_dir=settings.client_config_template_dir,
                     client_config_defaults=settings.client_config_defaults,
+                    pretty=args.pretty,
+                )
+            )
+    elif args.command == "admin-config" and args.admin_config_command == "assign-slot":
+        if not args.apply:
+            print(
+                _json_dumps(
+                    {
+                        "action": "access_slot.assign",
+                        "mode": "dry-run",
+                        "local_device_id": args.device_id,
+                        "request_id": args.request_id,
+                        "device_label": args.device_label,
+                        "platform": args.platform,
+                        "database_mutation": False,
+                        "remote_mutation": False,
+                    },
+                    pretty=args.pretty,
+                )
+            )
+        else:
+            require_vps_apply_enabled_for_cli_apply()
+            if args.admin_telegram_id is None:
+                raise SystemExit("--admin-telegram-id is required with --apply")
+            settings = Settings()
+            if args.admin_telegram_id not in settings.admin_ids:
+                raise SystemExit("--admin-telegram-id must be an explicitly configured admin ID")
+            print(
+                run_admin_config_assign_slot(
+                    db_path=Path(args.db),
+                    request_id=args.request_id,
+                    local_device_id=args.device_id,
+                    device_label=args.device_label,
+                    platform=args.platform,
+                    admin_telegram_id=args.admin_telegram_id,
+                    authorized_admin_telegram_ids=set(settings.admin_ids),
+                    pretty=args.pretty,
+                )
+            )
+    elif args.command == "admin-config" and args.admin_config_command in {"disable-slot", "revoke-slot"}:
+        if not args.apply:
+            print(
+                build_admin_config_slot_lifecycle_plan(
+                    db_path=Path(args.db),
+                    local_device_id=args.device_id,
+                    action=args.admin_config_command.removesuffix("-slot"),
+                    pretty=args.pretty,
+                )
+            )
+        else:
+            require_vps_apply_enabled_for_cli_apply()
+            if args.admin_telegram_id is None:
+                raise SystemExit("--admin-telegram-id is required with --apply")
+            settings = Settings()
+            if args.admin_telegram_id not in settings.admin_ids:
+                raise SystemExit("--admin-telegram-id must be an explicitly configured admin ID")
+            server_config = select_server(load_server_config(Path(args.config)), args.server)
+            print(
+                run_admin_config_slot_lifecycle(
+                    db_path=Path(args.db),
+                    server=server_config,
+                    local_device_id=args.device_id,
+                    action=args.admin_config_command.removesuffix("-slot"),
+                    reason=args.reason,
+                    admin_telegram_id=args.admin_telegram_id,
+                    authorized_admin_telegram_ids=set(settings.admin_ids),
+                    vps_ssh_password=settings.vps_ssh_password,
                     pretty=args.pretty,
                 )
             )
@@ -836,6 +925,123 @@ def run_admin_config_issue_manifest(
                 "config_payload_output": False,
             }
         )
+        return _json_dumps(payload, pretty=pretty)
+    finally:
+        conn.close()
+
+
+def run_admin_config_assign_slot(
+    *,
+    db_path: Path,
+    request_id: str,
+    local_device_id: int,
+    device_label: str,
+    platform: str,
+    admin_telegram_id: int,
+    authorized_admin_telegram_ids: set[int],
+    pretty: bool = False,
+) -> str:
+    if admin_telegram_id not in authorized_admin_telegram_ids:
+        raise PermissionError("admin_telegram_id is not a configured admin")
+    conn = connect(db_path)
+    try:
+        initialize_schema(conn)
+        passport = assign_access_slot(
+            Repository(conn),
+            request_id=request_id,
+            local_device_id=local_device_id,
+            device_label=device_label,
+            context=OperatorDeviceContext(platform=platform),
+            admin_telegram_id=admin_telegram_id,
+        )
+        return _json_dumps(
+            {
+                "action": "access_slot.assign",
+                "mode": "apply",
+                "local_device_id": local_device_id,
+                "passport_device_id": passport.device_id,
+                "assignment_mode": "dedicated_device",
+                "remote_mutation": False,
+            },
+            pretty=pretty,
+        )
+    finally:
+        conn.close()
+
+
+def build_admin_config_slot_lifecycle_plan(
+    *,
+    db_path: Path,
+    local_device_id: int,
+    action: str,
+    pretty: bool = False,
+) -> str:
+    conn = connect(db_path)
+    try:
+        initialize_schema(conn)
+        repo = Repository(conn)
+        if action == "disable":
+            plan = build_access_slot_disable_plan(repo, local_device_id=local_device_id)
+        elif action == "revoke":
+            plan = build_physical_device_revoke_plan(repo, local_device_id=local_device_id)
+        else:
+            raise ValueError("unsupported access slot lifecycle action")
+        return _json_dumps(
+            {
+                "action": f"access_slot.{action}",
+                "mode": "dry-run",
+                "local_device_id": local_device_id,
+                "database_mutation": False,
+                "remote_mutation": False,
+                "operation_plan": plan.to_safe_metadata(),
+            },
+            pretty=pretty,
+        )
+    finally:
+        conn.close()
+
+
+def run_admin_config_slot_lifecycle(
+    *,
+    db_path: Path,
+    server: ServerConfig,
+    local_device_id: int,
+    action: str,
+    reason: str,
+    admin_telegram_id: int,
+    authorized_admin_telegram_ids: set[int],
+    vps_ssh_password: str = "",
+    command_client: SshClient | None = None,
+    pretty: bool = False,
+) -> str:
+    if admin_telegram_id not in authorized_admin_telegram_ids:
+        raise PermissionError("admin_telegram_id is not a configured admin")
+    conn = connect(db_path)
+    try:
+        initialize_schema(conn)
+        repo = Repository(conn)
+        device = repo.get_device(local_device_id)
+        stored_server = repo.get_server(int(device["server_id"]))
+        if str(stored_server["name"]) != server.name:
+            raise ValueError("access slot server does not match --server")
+        actual_client = command_client or SystemSshClient(server, password=vps_ssh_password)
+        remover = ServerConfigPeerApplier(server, ssh_client=actual_client)
+        kwargs = {
+            "local_device_id": local_device_id,
+            "reason": reason,
+            "changed_at": datetime.now(timezone.utc),
+            "peer_remover": remover,
+            "apply_remote": True,
+            "admin_telegram_id": admin_telegram_id,
+        }
+        if action == "disable":
+            result = disable_access_slot(repo, **kwargs)
+        elif action == "revoke":
+            result = revoke_access_slot(repo, **kwargs)
+        else:
+            raise ValueError("unsupported access slot lifecycle action")
+        payload = result.safe_metadata()
+        payload.update({"action": f"access_slot.{action}", "mode": "apply"})
         return _json_dumps(payload, pretty=pretty)
     finally:
         conn.close()

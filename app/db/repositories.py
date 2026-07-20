@@ -1974,6 +1974,67 @@ class Repository:
             (target_user_id,),
         ).fetchall()
 
+    def get_access_slot_assignment_request(self, request_id: str):
+        return self._conn.execute(
+            "SELECT * FROM access_slot_assignment_requests WHERE request_id = ?",
+            (request_id,),
+        ).fetchone()
+
+    def get_access_slot_assignment_by_device(self, local_device_id: int):
+        return self._conn.execute(
+            "SELECT * FROM access_slot_assignment_requests WHERE local_device_id = ?",
+            (local_device_id,),
+        ).fetchone()
+
+    def complete_access_slot_assignment(
+        self,
+        *,
+        request_id: str,
+        request_fingerprint: str,
+        local_device_id: int,
+        passport_device_id: str,
+        display_name: str,
+    ) -> None:
+        cursor = self._conn.execute(
+            """
+            UPDATE devices
+            SET assignment_mode = 'dedicated_device', name = ?
+            WHERE id = ?
+              AND assignment_mode = 'recipient_unassigned'
+              AND status != 'revoked'
+            """,
+            (display_name, local_device_id),
+        )
+        if cursor.rowcount != 1:
+            raise ValueError("access slot is already assigned or revoked")
+        self._conn.execute(
+            """
+            INSERT INTO access_slot_assignment_requests (
+                request_id, request_fingerprint, local_device_id, passport_device_id
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (request_id, request_fingerprint, local_device_id, passport_device_id),
+        )
+        self._commit()
+
+    def disable_device(
+        self,
+        device_id: int,
+        *,
+        reason: str,
+        disabled_at: str,
+    ) -> bool:
+        cursor = self._conn.execute(
+            """
+            UPDATE devices
+            SET status = 'disabled', revoked_at = ?, revoke_reason = ?
+            WHERE id = ? AND status IN ('pending', 'active')
+            """,
+            (disabled_at, reason, device_id),
+        )
+        self._commit()
+        return cursor.rowcount > 0
+
     def list_admin_actions_for_server(
         self,
         server_id: int,
