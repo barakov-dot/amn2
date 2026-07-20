@@ -136,6 +136,19 @@ def build_config_identity(
     )
 
 
+def build_unassigned_slot_identity(
+    recipient_label: str,
+    slot_sequence: int,
+) -> ConfigIdentity:
+    if (
+        isinstance(slot_sequence, bool)
+        or not isinstance(slot_sequence, int)
+        or not 1 <= slot_sequence <= 100
+    ):
+        raise ValueError("slot_sequence must be between 1 and 100")
+    return build_config_identity(recipient_label, f"{slot_sequence:02d}")
+
+
 def _display_label(value: str, *, name: str) -> str:
     normalized = value.strip()
     if not normalized:

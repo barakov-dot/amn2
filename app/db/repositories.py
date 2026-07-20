@@ -1836,7 +1836,6 @@ class Repository:
                 ON request.request_id = receipt.request_id
             WHERE receipt.device_id = ?
               AND receipt.status = 'completed'
-              AND receipt.passport_device_id IS NOT NULL
               AND length(trim(receipt.config_filename)) > 0
             ORDER BY receipt.id DESC
             LIMIT 2
@@ -1854,6 +1853,9 @@ class Repository:
         item_index: int,
         item_fingerprint: str,
         recipient_user_id: int,
+        assignment_mode: str = "dedicated_device",
+        slot_sequence: int = 1,
+        expiry_policy: str = "duration",
     ) -> sqlite3.Row:
         self._conn.execute(
             """
@@ -1862,11 +1864,22 @@ class Repository:
                 item_index,
                 item_fingerprint,
                 recipient_user_id,
+                assignment_mode,
+                slot_sequence,
+                expiry_policy,
                 status
             )
-            VALUES (?, ?, ?, ?, 'started')
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'started')
             """,
-            (request_id, item_index, item_fingerprint, recipient_user_id),
+            (
+                request_id,
+                item_index,
+                item_fingerprint,
+                recipient_user_id,
+                assignment_mode,
+                slot_sequence,
+                expiry_policy,
+            ),
         )
         self._commit()
         receipt = self.get_admin_config_issuance_receipt(
@@ -1882,7 +1895,7 @@ class Repository:
         request_id: str,
         item_index: int,
         device_id: int,
-        passport_device_id: str,
+        passport_device_id: str | None,
         config_filename: str,
     ) -> sqlite3.Row:
         self._conn.execute(

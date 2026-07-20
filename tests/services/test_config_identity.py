@@ -2,7 +2,7 @@ import re
 
 import pytest
 
-from app.services.config_identity import build_config_identity
+from app.services.config_identity import build_config_identity, build_unassigned_slot_identity
 
 
 def test_build_config_identity_uses_exact_display_and_transliterated_filename():
@@ -94,3 +94,10 @@ def test_collision_device_id_rejects_suffix_that_cannot_fit_canonical_filename()
             device_label="Phone",
             collision_device_id=10**80,
         )
+
+
+def test_unassigned_slot_identity_uses_stable_two_digit_sequence():
+    identity = build_unassigned_slot_identity("Иван", 4)
+
+    assert identity.display_name == "NEOBYATNAYA.NET — Иван — 04"
+    assert identity.filename == "NEOBYATNAYA.NET-Ivan-04.conf"

@@ -25,6 +25,7 @@ from app.services.device_passports import (
 from app.config_assignment import (
     DEDICATED_DEVICE,
     OWNER_SHARED,
+    RECIPIENT_UNASSIGNED,
     config_assignment_policy,
     validate_config_assignment_mode,
 )
@@ -376,11 +377,12 @@ class AccessService:
                     reference=f"schema:{config_version}",
                 ),
             )
-        config_identity = build_config_identity(
-            user_label=user_label,
-            device_label=normalized_device_display_name,
-            collision_device_id=device_id,
-        )
+        if assignment_mode != RECIPIENT_UNASSIGNED:
+            config_identity = build_config_identity(
+                user_label=user_label,
+                device_label=normalized_device_display_name,
+                collision_device_id=device_id,
+            )
         return OperatorDeviceCreateResult(
             device_id=device_id,
             config_text=config_text,

@@ -7,7 +7,10 @@ from app.db.repositories import Repository
 from app.db.schema import initialize_schema
 from app.security.crypto import SecretBox
 from app.services.access import AccessService
-from app.services.admin_config_issuance import AdminConfigIssuanceService
+from app.services.admin_config_issuance import (
+    AdminConfigIssuanceService,
+    validate_admin_config_issuance_manifest,
+)
 
 
 APP_SECRET = "test-secret-for-admin-issuance-1234567890"
@@ -79,6 +82,90 @@ def _item(recipient, device, platform="android"):
         "device_label": device,
         "platform": platform,
     }
+
+
+def _unassigned_item(recipient, quantity):
+    return {
+        "mode": "recipient_unassigned",
+        "recipient_label": recipient,
+        "quantity": quantity,
+    }
+
+
+def test_unassigned_quantity_expands_deterministically_and_defaults_indefinite():
+    validated = validate_admin_config_issuance_manifest(
+        _manifest(_unassigned_item("Иван", 4))
+    )
+
+    assert len(validated.expanded_slots) == 4
+    assert [slot.slot_sequence for slot in validated.expanded_slots] == [1, 2, 3, 4]
+    assert [slot.device_label for slot in validated.expanded_slots] == ["01", "02", "03", "04"]
+    assert all(slot.assignment_mode == "recipient_unassigned" for slot in validated.expanded_slots)
+    assert all(slot.expiry.policy == "indefinite" for slot in validated.expanded_slots)
+
+
+@pytest.mark.parametrize("quantity", [0, 101, True])
+def test_unassigned_quantity_rejects_out_of_range_values(quantity):
+    with pytest.raises(ValueError, match="quantity"):
+        validate_admin_config_issuance_manifest(
+            _manifest(_unassigned_item("Иван", quantity))
+        )
+
+
+def test_unassigned_quantity_four_issues_four_safe_idempotent_slots(tmp_path):
+    conn, repo = _repo(tmp_path)
+    peer_applier = FakePeerApplier()
+    attachments = []
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=_access(repo, peer_applier),
+        admin_telegram_id=7001,
+        attachment_builder=lambda filename, content: attachments.append((filename, content)),
+        max_devices_per_recipient=4,
+    )
+    manifest = _manifest(_unassigned_item("Иван", 4))
+
+    first = service.issue_manifest(manifest)
+    replay = service.issue_manifest(manifest)
+
+    assert first == replay
+    assert len(first.receipts) == 4
+    assert [r.slot_sequence for r in first.receipts] == [1, 2, 3, 4]
+    assert [r.config_filename for r in first.receipts] == [
+        "NEOBYATNAYA.NET-Ivan-01.conf",
+        "NEOBYATNAYA.NET-Ivan-02.conf",
+        "NEOBYATNAYA.NET-Ivan-03.conf",
+        "NEOBYATNAYA.NET-Ivan-04.conf",
+    ]
+    assert all(r.assignment_mode == "recipient_unassigned" for r in first.receipts)
+    assert all(r.passport_device_id is None for r in first.receipts)
+    assert all(r.expiry_policy == "indefinite" for r in first.receipts)
+    assert len(peer_applier.applied) == 4
+    assert len(attachments) == 4
+    assert conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0] == 4
+    assert conn.execute("SELECT COUNT(*) FROM device_passports").fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM devices WHERE duration_days IS NULL AND expires_at IS NULL"
+    ).fetchone()[0] == 4
+
+
+def test_full_batch_quota_rejects_before_recipient_or_peer_mutation(tmp_path):
+    conn, repo = _repo(tmp_path)
+    peer_applier = FakePeerApplier()
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=_access(repo, peer_applier),
+        admin_telegram_id=7001,
+        attachment_builder=lambda _filename, _content: None,
+        max_devices_per_recipient=4,
+    )
+
+    with pytest.raises(ValueError, match="full-batch quota"):
+        service.issue_manifest(_manifest(_unassigned_item("Иван", 5)))
+
+    assert repo.get_user_by_operator_label("Иван") is None
+    assert peer_applier.applied == []
+    assert conn.execute("SELECT COUNT(*) FROM admin_config_issuance_requests").fetchone()[0] == 0
 
 
 def test_manifest_rejects_normalized_duplicate_recipient_device_before_mutation(

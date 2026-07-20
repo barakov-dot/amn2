@@ -249,6 +249,11 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             recipient_user_id INTEGER,
             device_id INTEGER,
             passport_device_id TEXT,
+            assignment_mode TEXT NOT NULL DEFAULT 'dedicated_device'
+                CHECK (assignment_mode IN ('dedicated_device', 'recipient_unassigned')),
+            slot_sequence INTEGER CHECK (slot_sequence IS NULL OR slot_sequence BETWEEN 1 AND 100),
+            expiry_policy TEXT NOT NULL DEFAULT 'duration'
+                CHECK (expiry_policy IN ('duration', 'absolute', 'indefinite')),
             status TEXT NOT NULL
                 CHECK (status IN ('started', 'completed', 'partial_failure')),
             config_filename TEXT,
@@ -263,8 +268,10 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (passport_device_id) REFERENCES device_passports(device_id),
             CHECK (
                 (status = 'completed' AND device_id IS NOT NULL
-                    AND passport_device_id IS NOT NULL
                     AND length(trim(config_filename)) > 0
+                    AND slot_sequence IS NOT NULL
+                    AND ((assignment_mode = 'dedicated_device' AND passport_device_id IS NOT NULL)
+                         OR (assignment_mode = 'recipient_unassigned' AND passport_device_id IS NULL))
                     AND error_code IS NULL)
                 OR status = 'started'
                 OR (status = 'partial_failure' AND length(trim(error_code)) > 0)
@@ -424,9 +431,89 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
         "TEXT NOT NULL DEFAULT 'dedicated_device' CHECK (assignment_mode IN ('dedicated_device', 'owner_shared'))",
     )
     _migrate_access_slot_contract(conn)
+    _migrate_admin_config_issuance_receipts(conn)
     _ensure_column(conn, "device_passports", "revoked_at", "TEXT")
     _ensure_column(conn, "device_passports", "revoke_reason", "TEXT")
     conn.commit()
+
+
+def _migrate_admin_config_issuance_receipts(conn: sqlite3.Connection) -> None:
+    columns = {
+        row["name"] if isinstance(row, sqlite3.Row) else row[1]
+        for row in conn.execute("PRAGMA table_info(admin_config_issuance_receipts)")
+    }
+    if {"assignment_mode", "slot_sequence", "expiry_policy"}.issubset(columns):
+        return
+    foreign_keys_enabled = int(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+    if conn.in_transaction:
+        conn.commit()
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.executescript(
+            """
+            BEGIN;
+            DROP INDEX IF EXISTS idx_admin_config_issuance_recipient;
+            ALTER TABLE admin_config_issuance_receipts RENAME TO admin_config_issuance_receipts_old;
+            CREATE TABLE admin_config_issuance_receipts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL CHECK (length(trim(request_id)) > 0),
+                item_index INTEGER NOT NULL CHECK (item_index >= 0),
+                item_fingerprint TEXT NOT NULL CHECK (length(item_fingerprint) = 71),
+                recipient_user_id INTEGER,
+                device_id INTEGER,
+                passport_device_id TEXT,
+                assignment_mode TEXT NOT NULL DEFAULT 'dedicated_device'
+                    CHECK (assignment_mode IN ('dedicated_device', 'recipient_unassigned')),
+                slot_sequence INTEGER CHECK (slot_sequence IS NULL OR slot_sequence BETWEEN 1 AND 100),
+                expiry_policy TEXT NOT NULL DEFAULT 'duration'
+                    CHECK (expiry_policy IN ('duration', 'absolute', 'indefinite')),
+                status TEXT NOT NULL CHECK (status IN ('started', 'completed', 'partial_failure')),
+                config_filename TEXT,
+                error_code TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (request_id, item_index),
+                FOREIGN KEY (request_id) REFERENCES admin_config_issuance_requests(request_id),
+                FOREIGN KEY (recipient_user_id) REFERENCES users(id),
+                FOREIGN KEY (device_id) REFERENCES devices(id),
+                FOREIGN KEY (passport_device_id) REFERENCES device_passports(device_id),
+                CHECK (
+                    (status = 'completed' AND device_id IS NOT NULL
+                        AND length(trim(config_filename)) > 0
+                        AND slot_sequence IS NOT NULL
+                        AND ((assignment_mode = 'dedicated_device' AND passport_device_id IS NOT NULL)
+                             OR (assignment_mode = 'recipient_unassigned' AND passport_device_id IS NULL))
+                        AND error_code IS NULL)
+                    OR status = 'started'
+                    OR (status = 'partial_failure' AND length(trim(error_code)) > 0)
+                )
+            );
+            INSERT INTO admin_config_issuance_receipts (
+                id, request_id, item_index, item_fingerprint, recipient_user_id,
+                device_id, passport_device_id, assignment_mode, slot_sequence,
+                expiry_policy, status, config_filename, error_code, created_at, updated_at
+            )
+            SELECT id, request_id, item_index, item_fingerprint, recipient_user_id,
+                   device_id, passport_device_id, 'dedicated_device', item_index + 1,
+                   'duration', status, config_filename, error_code, created_at, updated_at
+            FROM admin_config_issuance_receipts_old;
+            DROP TABLE admin_config_issuance_receipts_old;
+            CREATE INDEX idx_admin_config_issuance_recipient
+                ON admin_config_issuance_receipts(recipient_user_id, created_at DESC, id DESC);
+            COMMIT;
+            """
+        )
+        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise sqlite3.IntegrityError(
+                f"foreign key violations after issuance receipt migration: {violations!r}"
+            )
+    except Exception:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        conn.execute(f"PRAGMA foreign_keys = {foreign_keys_enabled}")
 
 
 def _migrate_access_slot_contract(conn: sqlite3.Connection) -> None:
