@@ -5,6 +5,14 @@ class IpPoolExhausted(RuntimeError):
     pass
 
 
+def networks_overlap(first_cidr: str, second_cidr: str) -> bool:
+    first = ip_network(first_cidr, strict=False)
+    second = ip_network(second_cidr, strict=False)
+    if first.version != second.version:
+        return False
+    return first.overlaps(second)
+
+
 def allocate_ip(cidr: str, server_address: str, used_ips: set[str]) -> str:
     network = ip_network(cidr, strict=False)
     server_ip = ip_address(server_address.split("/", 1)[0])

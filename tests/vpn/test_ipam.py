@@ -1,6 +1,6 @@
 import pytest
 
-from app.vpn.ipam import IpPoolExhausted, allocate_ip
+from app.vpn.ipam import IpPoolExhausted, allocate_ip, networks_overlap
 
 
 def test_allocate_ip_skips_network_server_broadcast_and_used_addresses():
@@ -58,3 +58,16 @@ def test_allocate_ip_rejects_used_ip_outside_cidr_or_family_mismatch(used_ip):
             server_address="10.8.0.1",
             used_ips={used_ip},
         )
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "expected"),
+    [
+        ("10.212.12.0/24", "10.212.12.128/25", True),
+        ("10.212.12.0/24", "10.212.13.0/24", False),
+        ("10.212.12.7/24", "10.212.12.0/25", True),
+        ("10.212.12.0/24", "fd00::/64", False),
+    ],
+)
+def test_networks_overlap_is_deterministic(first, second, expected):
+    assert networks_overlap(first, second) is expected
