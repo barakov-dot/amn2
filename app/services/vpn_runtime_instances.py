@@ -9,7 +9,9 @@ from app.vpn.ipam import networks_overlap
 from app.vpn.protocol_versions import ProtocolVersion, normalize_protocol_version
 
 
-RuntimeLifecycleState = Literal["planned", "staged", "accepted", "retired"]
+RuntimeLifecycleState = Literal[
+    "planned", "candidate", "accepted", "rollback_pending", "retired"
+]
 RuntimeConflictKind = Literal[
     "runtime_identity",
     "interface_name",
@@ -64,7 +66,13 @@ class RuntimeInstanceSpec:
         if self.service_name is not None:
             _bounded_one_line(self.service_name, "service_name")
         _bounded_one_line(self.config_path, "config_path", maximum=1024)
-        if self.lifecycle_state not in ("planned", "staged", "accepted", "retired"):
+        if self.lifecycle_state not in (
+            "planned",
+            "candidate",
+            "accepted",
+            "rollback_pending",
+            "retired",
+        ):
             raise ValueError("lifecycle_state")
         if self.acceptance_receipt is not None and not _RECEIPT_RE.fullmatch(
             self.acceptance_receipt
