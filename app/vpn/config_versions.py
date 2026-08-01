@@ -7,7 +7,8 @@ from app.vpn.config_templates import (
 )
 
 
-SUPPORTED_CONFIG_VERSIONS = SUPPORTED_CLIENT_CONFIG_VERSIONS
+SUPPORTED_CONFIG_VERSIONS = SUPPORTED_CLIENT_CONFIG_VERSIONS + ("amneziawg_v3",)
+NEW_ISSUANCE_CONFIG_VERSIONS = ("amneziawg_v2", "amneziawg_v3")
 
 
 class ConfigVersionError(ValueError):

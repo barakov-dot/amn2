@@ -2,6 +2,7 @@ import pytest
 
 from app.vpn.amneziawg_v2.config import ClientConfigInput
 from app.vpn.config_versions import (
+    NEW_ISSUANCE_CONFIG_VERSIONS,
     SUPPORTED_CONFIG_VERSIONS,
     ConfigVersionError,
     render_client_config_for_version,
@@ -32,7 +33,15 @@ def _input() -> ClientConfigInput:
 
 
 def test_supported_config_versions_are_explicit():
-    assert SUPPORTED_CONFIG_VERSIONS == ("amneziawg_v1_5", "amneziawg_v2")
+    assert SUPPORTED_CONFIG_VERSIONS == (
+        "amneziawg_v1_5",
+        "amneziawg_v2",
+        "amneziawg_v3",
+    )
+
+
+def test_new_issuance_excludes_legacy_config_versions():
+    assert NEW_ISSUANCE_CONFIG_VERSIONS == ("amneziawg_v2", "amneziawg_v3")
 
 
 def test_validate_config_version_rejects_unknown_value():
