@@ -11,7 +11,7 @@ from app.services.device_passports import DEVICE_PLATFORMS
 from app.services.operator_credential_status import OperatorCredentialStatusView
 from app.services.operator_server_status import OperatorServerStatusView
 from app.services.traffic import DeviceTrafficView
-from app.vpn.config_versions import SUPPORTED_CONFIG_VERSIONS
+from app.vpn.config_templates import SUPPORTED_CLIENT_CONFIG_VERSIONS
 
 
 REQUEST_CONFIG_PREFIX = "user:request_config"
@@ -800,7 +800,7 @@ def _format_requested_config_version(row: Mapping[str, object]) -> str:
 
 
 def _ordered_config_versions(preferred: str | None) -> tuple[str, ...]:
-    versions = list(SUPPORTED_CONFIG_VERSIONS)
+    versions = list(SUPPORTED_CLIENT_CONFIG_VERSIONS)
     if preferred in versions:
         versions.remove(preferred)
         versions.insert(0, preferred)

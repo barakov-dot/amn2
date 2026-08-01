@@ -78,6 +78,7 @@ from app.vpn.amneziawg_v2.config import ClientConfigInput
 from app.vpn.config_templates import (
     AVAILABLE_CLIENT_CONFIG_PLACEHOLDERS,
     ConfigTemplateError,
+    SUPPORTED_CLIENT_CONFIG_VERSIONS,
     build_vpn_import_link,
     client_config_template_source,
     load_client_config_template,
@@ -85,7 +86,6 @@ from app.vpn.config_templates import (
     reset_client_config_template_override,
     save_client_config_template_override,
 )
-from app.vpn.config_versions import SUPPORTED_CONFIG_VERSIONS
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -2446,7 +2446,7 @@ def _load_client_config_template_views(settings: Settings) -> list[dict[str, str
     sample = _sample_client_config_input(settings)
     template_dir = settings.client_config_template_dir
     views: list[dict[str, str]] = []
-    for config_version in SUPPORTED_CONFIG_VERSIONS:
+    for config_version in SUPPORTED_CLIENT_CONFIG_VERSIONS:
         template_text = ""
         try:
             template_text = load_client_config_template(config_version, template_dir)
@@ -2601,7 +2601,7 @@ def _operator_device_form_context(
         "admin_actor_available": admin_actor_available,
         "owner_active": owner_active,
         "servers": servers,
-        "config_versions": SUPPORTED_CONFIG_VERSIONS,
+        "config_versions": SUPPORTED_CLIENT_CONFIG_VERSIONS,
         "assignment_modes": CONFIG_ASSIGNMENT_MODES,
         "default_server": default_server,
         "default_device_name": default_device_name,
