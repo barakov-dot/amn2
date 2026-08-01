@@ -1,5 +1,6 @@
 import io
 import json
+import re
 import sqlite3
 import tarfile
 import tempfile
@@ -33,10 +34,51 @@ REQUIRED_TABLES = {
     "admin_actions",
     "device_traffic_snapshots",
     "message_templates",
+    "vpn_runtime_instances",
+    "client_compatibility_evidence",
+    "device_passports",
+    "admin_config_issuance_receipts",
 }
 REQUIRED_COLUMNS = {
     "orders": {"requested_config_version"},
     "devices": {"first_connected_at", "last_connected_at"},
+}
+PHASE13_PROTOCOL_VERSIONS = {"awg2", "awg3"}
+PHASE13_SAFE_TABLE_FIELDS = {
+    "vpn_runtime_instances": {
+        "runtime_instance_id",
+        "server_id",
+        "protocol_version",
+        "runtime_version",
+        "interface_name",
+        "udp_port",
+        "vpn_cidr",
+        "container_name",
+        "service_name",
+        "config_path",
+        "lifecycle_state",
+        "acceptance_receipt",
+    },
+    "client_compatibility_evidence": {
+        "evidence_id",
+        "application",
+        "platform",
+        "client_version",
+        "protocol_version",
+        "source_kind",
+        "status",
+        "observed_at",
+        "safe_reference",
+        "scope",
+    },
+}
+PHASE13_REFERENCE_COLUMNS = {
+    "devices": ("runtime_instance_id", "compatibility_evidence_id"),
+    "device_passports": ("runtime_instance_id", "compatibility_evidence_id"),
+    "admin_config_issuance_receipts": (
+        "runtime_instance_id",
+        "compatibility_evidence_id",
+    ),
 }
 
 
@@ -179,6 +221,7 @@ class BackupService:
                 self._validate_order_rows(conn)
                 self._validate_active_device_rows(conn)
                 self._validate_device_secrets(conn)
+                self._validate_phase13_state(conn)
             finally:
                 conn.close()
         except sqlite3.DatabaseError as exc:
@@ -263,6 +306,78 @@ class BackupService:
                         f"Backup database device {row['id']} {column} could not be "
                         "decrypted with current APP_SECRET_KEY"
                     ) from exc
+
+    def _validate_phase13_state(self, conn: sqlite3.Connection) -> None:
+        for table_name, safe_fields in PHASE13_SAFE_TABLE_FIELDS.items():
+            columns = {
+                str(row["name"])
+                for row in conn.execute(f"PRAGMA table_info({table_name})")
+            }
+            missing_fields = safe_fields - columns
+            if missing_fields:
+                missing = ", ".join(
+                    f"{table_name}.{field}" for field in sorted(missing_fields)
+                )
+                raise ValueError(
+                    f"Backup database is missing Phase 13 fields: {missing}"
+                )
+
+        runtime_rows = conn.execute(
+            """
+            SELECT runtime_instance_id, protocol_version, lifecycle_state,
+                   acceptance_receipt
+            FROM vpn_runtime_instances
+            """
+        ).fetchall()
+        for row in runtime_rows:
+            receipt = row["acceptance_receipt"]
+            if row["protocol_version"] not in PHASE13_PROTOCOL_VERSIONS or (
+                row["lifecycle_state"] == "accepted"
+                and (
+                    receipt is None
+                    or re.fullmatch(r"sha256:[0-9a-f]{64}", str(receipt)) is None
+                )
+            ):
+                raise ValueError(
+                    "Backup database vpn_runtime_instances contains invalid protocol "
+                    "or accepted-runtime receipt"
+                )
+
+        evidence_rows = conn.execute(
+            "SELECT evidence_id, protocol_version FROM client_compatibility_evidence"
+        ).fetchall()
+        if any(
+            row["protocol_version"] not in PHASE13_PROTOCOL_VERSIONS
+            for row in evidence_rows
+        ):
+            raise ValueError(
+                "Backup database client_compatibility_evidence contains invalid "
+                "protocol_version"
+            )
+
+        for table_name, reference_columns in PHASE13_REFERENCE_COLUMNS.items():
+            for column_name in reference_columns:
+                target_table, target_column = (
+                    ("vpn_runtime_instances", "runtime_instance_id")
+                    if column_name == "runtime_instance_id"
+                    else ("client_compatibility_evidence", "evidence_id")
+                )
+                dangling = conn.execute(
+                    f"""
+                    SELECT source.{column_name}
+                    FROM {table_name} AS source
+                    LEFT JOIN {target_table} AS target
+                      ON target.{target_column} = source.{column_name}
+                    WHERE source.{column_name} IS NOT NULL
+                      AND target.{target_column} IS NULL
+                    LIMIT 1
+                    """
+                ).fetchone()
+                if dangling is not None:
+                    raise ValueError(
+                        f"Backup database {table_name}.{column_name} has a "
+                        "dangling Phase 13 identity"
+                    )
 
     def _timestamp(self) -> str:
         return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

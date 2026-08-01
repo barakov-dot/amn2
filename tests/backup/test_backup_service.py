@@ -45,6 +45,46 @@ def _create_database_with_encrypted_device(path, app_secret=STRONG_SECRET):
     conn.close()
 
 
+def _seed_phase13_database(path):
+    _create_database_with_encrypted_device(path)
+    conn = connect(path)
+    repo = Repository(conn)
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    for protocol, port, interface in (
+        ("awg2", 30001, "awg0"),
+        ("awg3", 30002, "awg3"),
+    ):
+        repo.create_vpn_runtime_instance(
+            runtime_instance_id=f"rt-local-{protocol}",
+            server_id=server_id,
+            protocol_version=protocol,
+            runtime_version="test-runtime",
+            interface_name=interface,
+            udp_port=port,
+            vpn_cidr=f"10.212.{12 if protocol == 'awg2' else 13}.0/24",
+            container_name=f"amn2-{protocol}",
+            service_name=None,
+            config_path=f"/opt/amn2/{protocol}/wg0.conf",
+            lifecycle_state="accepted",
+            acceptance_receipt="sha256:" + protocol[-1] * 64,
+        )
+    for index in range(3):
+        repo.create_client_compatibility_evidence(
+            evidence_id=f"compat-test-{index}",
+            application="amnezia_vpn",
+            platform="windows",
+            client_version=f"5.0.0.{5 + index}",
+            protocol_version="awg3",
+            source_kind="full_data",
+            status="passed",
+            observed_at="2026-08-01T00:00:00Z",
+            safe_reference=f"receipt:test-{index}",
+            scope="test exact build",
+        )
+    conn.close()
+    return path
+
+
 def _drop_table(path, table_name):
     conn = connect(path)
     conn.execute(f"DROP TABLE {table_name}")
@@ -288,6 +328,70 @@ def test_restore_accepts_database_with_encrypted_peer_secrets_for_current_secret
     device = conn.execute("SELECT * FROM devices").fetchone()
     assert SecretBox.from_app_secret(STRONG_SECRET).decrypt_text(device["peer_private_key_encrypted"]) == "peer-private-key"
     conn.close()
+
+
+def test_backup_accepts_phase13_runtime_and_compatibility_rows(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
+    source = _seed_phase13_database(tmp_path / "source.db")
+    service = BackupService(app_version="0.1.0")
+
+    backup = service.create(source, tmp_path / "backups")
+    restored = service.restore(backup, tmp_path / "restored.db")
+
+    conn = connect(restored)
+    assert conn.execute("SELECT count(*) FROM vpn_runtime_instances").fetchone()[0] == 2
+    assert (
+        conn.execute("SELECT count(*) FROM client_compatibility_evidence").fetchone()[0]
+        == 3
+    )
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    ("column", "missing_value"),
+    (
+        ("runtime_instance_id", "missing-runtime"),
+        ("compatibility_evidence_id", "missing-evidence"),
+    ),
+)
+def test_backup_rejects_dangling_phase13_device_reference(
+    tmp_path,
+    monkeypatch,
+    column,
+    missing_value,
+):
+    monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
+    source = _seed_phase13_database(tmp_path / "source.db")
+    conn = connect(source)
+    conn.execute(f"UPDATE devices SET {column} = ?", (missing_value,))
+    conn.commit()
+    conn.close()
+    service = BackupService(app_version="0.1.0")
+    backup = service.create(source, tmp_path / "backups")
+
+    with pytest.raises(ValueError, match=column):
+        service.restore(backup, tmp_path / "restored.db")
+
+
+def test_backup_manifest_contains_no_raw_awg3_secret(tmp_path, monkeypatch):
+    monkeypatch.setenv("APP_SECRET_KEY", STRONG_SECRET)
+    source = _seed_phase13_database(tmp_path / "source.db")
+    raw_secret = "never-log-header-protection-key"
+    conn = connect(source)
+    encrypted_secret = SecretBox.from_app_secret(STRONG_SECRET).encrypt_text(raw_secret)
+    conn.execute(
+        "UPDATE devices SET peer_private_key_encrypted = ?",
+        (encrypted_secret,),
+    )
+    conn.commit()
+    conn.close()
+    service = BackupService(app_version="0.1.0")
+
+    backup = service.create(source, tmp_path / "backups")
+    manifest = service.verify(backup)
+
+    assert raw_secret not in json.dumps(manifest)
+    assert raw_secret.encode() not in backup.read_bytes()
 
 
 def test_restore_preserves_device_traffic_snapshots(tmp_path, monkeypatch):
