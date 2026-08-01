@@ -911,6 +911,10 @@ class Repository:
         config_material_status: str = "available",
         assignment_mode: str = DEDICATED_DEVICE,
         config_fingerprint: str | None = None,
+        protocol_version: str | None = None,
+        runtime_instance_id: str | None = None,
+        compatibility_evidence_id: str | None = None,
+        client_identity_evidence_status: str | None = None,
     ) -> int:
         assignment_mode = validate_config_assignment_mode(assignment_mode)
         if expiry_policy == "duration":
@@ -946,7 +950,11 @@ class Repository:
                 config_version,
                 config_material_status,
                 assignment_mode,
-                config_fingerprint
+                config_fingerprint,
+                protocol_version,
+                runtime_instance_id,
+                compatibility_evidence_id,
+                client_identity_evidence_status
             )
             VALUES (
                 ?,
@@ -957,6 +965,10 @@ class Repository:
                     WHEN ? = 'duration' THEN datetime(CURRENT_TIMESTAMP, ?)
                     ELSE ?
                 END,
+                ?,
+                ?,
+                ?,
+                ?,
                 ?,
                 ?,
                 ?,
@@ -986,6 +998,10 @@ class Repository:
                 config_material_status,
                 assignment_mode,
                 config_fingerprint,
+                protocol_version,
+                runtime_instance_id,
+                compatibility_evidence_id,
+                client_identity_evidence_status,
             ),
         )
         self._commit()
@@ -1154,6 +1170,10 @@ class Repository:
         config_fingerprint: str,
         last_seen_at: str | None,
         acceptance_evidence: dict[str, Any] | None,
+        protocol_version: str | None = None,
+        runtime_instance_id: str | None = None,
+        client_identity_evidence_status: str | None = None,
+        compatibility_evidence_id: str | None = None,
     ) -> None:
         if not device_id.strip():
             raise ValueError("device_id is required")
@@ -1178,9 +1198,13 @@ class Repository:
                 config_schema_version,
                 config_fingerprint,
                 last_seen_at,
-                acceptance_evidence_json
+                acceptance_evidence_json,
+                protocol_version,
+                runtime_instance_id,
+                client_identity_evidence_status,
+                compatibility_evidence_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 device_id,
@@ -1198,6 +1222,10 @@ class Repository:
                     if acceptance_evidence is not None
                     else None
                 ),
+                protocol_version,
+                runtime_instance_id,
+                client_identity_evidence_status,
+                compatibility_evidence_id,
             ),
         )
         self._commit()
@@ -1217,6 +1245,10 @@ class Repository:
                 config_fingerprint,
                 last_seen_at,
                 acceptance_evidence_json,
+                protocol_version,
+                runtime_instance_id,
+                client_identity_evidence_status,
+                compatibility_evidence_id,
                 revoked_at,
                 revoke_reason,
                 created_at,
@@ -1260,6 +1292,10 @@ class Repository:
                 config_fingerprint,
                 last_seen_at,
                 acceptance_evidence_json,
+                protocol_version,
+                runtime_instance_id,
+                client_identity_evidence_status,
+                compatibility_evidence_id,
                 revoked_at,
                 revoke_reason,
                 created_at,
@@ -1293,6 +1329,10 @@ class Repository:
                 config_fingerprint,
                 last_seen_at,
                 acceptance_evidence_json,
+                protocol_version,
+                runtime_instance_id,
+                client_identity_evidence_status,
+                compatibility_evidence_id,
                 revoked_at,
                 revoke_reason,
                 created_at,
@@ -2959,6 +2999,11 @@ class Repository:
                 devices.peer_public_key,
                 devices.status,
                 devices.assignment_mode,
+                devices.protocol_version,
+                devices.runtime_instance_id,
+                devices.compatibility_evidence_id,
+                devices.client_identity_evidence_status,
+                vpn_runtime_instances.lifecycle_state AS runtime_state,
                 users.telegram_id,
                 users.operator_label,
                 users.username,
@@ -2966,7 +3011,9 @@ class Repository:
                 users.last_name
             FROM devices
             JOIN users ON users.id = devices.user_id
-            WHERE server_id = ?
+            LEFT JOIN vpn_runtime_instances
+                ON vpn_runtime_instances.runtime_instance_id = devices.runtime_instance_id
+            WHERE devices.server_id = ?
               AND devices.status = 'active'
             ORDER BY devices.id ASC
             LIMIT ?

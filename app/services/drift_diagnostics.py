@@ -38,6 +38,11 @@ class DesiredPeerState:
     peer_public_key: str | None
     allowed_ips: tuple[str, ...]
     device_status: str | None
+    protocol_version: str | None = None
+    runtime_instance_id: str | None = None
+    compatibility_evidence_id: str | None = None
+    compatibility_status: str | None = None
+    runtime_state: str | None = None
 
     def safe_metadata(self) -> dict[str, object]:
         return {
@@ -45,6 +50,11 @@ class DesiredPeerState:
             "peer_public_key_fingerprint": _fingerprint(self.peer_public_key),
             "allowed_ips": list(self.allowed_ips),
             "device_status": self.device_status,
+            "protocol_version": self.protocol_version,
+            "runtime_instance_id": self.runtime_instance_id,
+            "compatibility_evidence_id": self.compatibility_evidence_id,
+            "compatibility_status": self.compatibility_status,
+            "runtime_state": self.runtime_state,
         }
 
 
@@ -54,6 +64,8 @@ class ObservedPeerState:
     peer_public_key: str | None
     allowed_ips: tuple[str, ...]
     observation_succeeded: bool
+    protocol_version: str | None = None
+    runtime_instance_id: str | None = None
 
     def safe_metadata(self) -> dict[str, object]:
         return {
@@ -61,6 +73,8 @@ class ObservedPeerState:
             "peer_public_key_fingerprint": _fingerprint(self.peer_public_key),
             "allowed_ips": list(self.allowed_ips),
             "observation_succeeded": self.observation_succeeded,
+            "protocol_version": self.protocol_version,
+            "runtime_instance_id": self.runtime_instance_id,
         }
 
 
@@ -268,6 +282,38 @@ def classify_reconciliation(
         drift_state = "stale_observation"
         reason = "remote_observation_is_older_than_policy"
         action = "collect_fresh_observation"
+    elif (
+        desired.protocol_version is not None
+        and observed.protocol_version is not None
+        and desired.protocol_version != observed.protocol_version
+    ):
+        drift_state = "unknown"
+        reason = "protocol_version_mismatch"
+        action = "manual_review"
+    elif (
+        desired.runtime_instance_id is not None
+        and observed.runtime_instance_id is not None
+        and desired.runtime_instance_id != observed.runtime_instance_id
+    ):
+        drift_state = "unknown"
+        reason = "runtime_instance_mismatch"
+        action = "manual_review"
+    elif desired.peer_expected and desired.compatibility_status == "stale":
+        drift_state = "unknown"
+        reason = "compatibility_evidence_stale"
+        action = "manual_review"
+    elif (
+        desired.peer_expected
+        and desired.protocol_version is not None
+        and desired.compatibility_evidence_id is None
+    ):
+        drift_state = "unknown"
+        reason = "compatibility_evidence_missing"
+        action = "manual_review"
+    elif desired.peer_expected and desired.runtime_state not in {None, "accepted"}:
+        drift_state = "unknown"
+        reason = "runtime_not_accepted"
+        action = "manual_review"
     elif desired.peer_expected is None or observed.peer_present is None:
         drift_state = "unknown"
         reason = "desired_or_observed_state_is_incomplete"
@@ -310,6 +356,15 @@ def _desired_from_row(row) -> DesiredPeerState:
         peer_public_key=str(row["peer_public_key"]),
         allowed_ips=(f"{row['vpn_ip']}/32",),
         device_status=str(row["status"]),
+        protocol_version=_optional_row_text(row, "protocol_version"),
+        runtime_instance_id=_optional_row_text(row, "runtime_instance_id"),
+        compatibility_evidence_id=_optional_row_text(
+            row, "compatibility_evidence_id"
+        ),
+        compatibility_status=_optional_row_text(
+            row, "client_identity_evidence_status"
+        ),
+        runtime_state=_optional_row_text(row, "runtime_state"),
     )
 
 
@@ -365,6 +420,11 @@ def _fingerprint(value: str | None) -> str | None:
     if value is None:
         return None
     return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _optional_row_text(row, key: str) -> str | None:
+    value = row[key] if key in row.keys() else None
+    return str(value) if value is not None else None
 
 
 def _format_datetime(value: datetime) -> str:

@@ -177,6 +177,76 @@ def test_unknown_remote_peer_is_reported_without_mutation(tmp_path):
     assert before == "\n".join(conn.iterdump())
 
 
+@pytest.mark.parametrize(
+    ("desired_extra", "observed_extra", "reason"),
+    [
+        (
+            {"protocol_version": "awg3"},
+            {"protocol_version": "awg2"},
+            "protocol_version_mismatch",
+        ),
+        (
+            {"runtime_instance_id": "rt-a"},
+            {"runtime_instance_id": "rt-b"},
+            "runtime_instance_mismatch",
+        ),
+        (
+            {"compatibility_evidence_id": None},
+            {},
+            "compatibility_evidence_missing",
+        ),
+        (
+            {"compatibility_status": "stale"},
+            {},
+            "compatibility_evidence_stale",
+        ),
+        (
+            {"runtime_state": "candidate"},
+            {},
+            "runtime_not_accepted",
+        ),
+    ],
+)
+def test_protocol_drift_reasons_are_explainable_and_read_only(
+    desired_extra, observed_extra, reason
+):
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    initialize_schema(conn)
+    before = conn.total_changes
+    desired_values = {
+        "peer_expected": True,
+        "peer_public_key": "peer",
+        "allowed_ips": ("10.212.12.8/32",),
+        "device_status": "active",
+        "protocol_version": "awg3",
+        "runtime_instance_id": "rt-a",
+        "compatibility_evidence_id": "compat-a",
+        "compatibility_status": "passed",
+        "runtime_state": "accepted",
+    }
+    desired_values.update(desired_extra)
+    observed_values = {
+        "peer_present": True,
+        "peer_public_key": "peer",
+        "allowed_ips": ("10.212.12.8/32",),
+        "observation_succeeded": True,
+        "protocol_version": "awg3",
+        "runtime_instance_id": "rt-a",
+    }
+    observed_values.update(observed_extra)
+    snapshot = classify_reconciliation(
+        subject_id="device:7",
+        desired=DesiredPeerState(**desired_values),
+        observed=ObservedPeerState(**observed_values),
+        observed_at=NOW,
+        now=NOW,
+        stale_after=timedelta(minutes=5),
+    )
+    assert snapshot.drift_reason == reason
+    assert conn.total_changes == before
+
+
 class StaticCollector:
     def __init__(self, peers: list[RemotePeer]) -> None:
         self._peers = peers

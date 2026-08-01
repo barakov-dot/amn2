@@ -100,6 +100,10 @@ class OperatorDeviceContext:
     official_client_type: str = "amnezia_vpn"
     client_version: str | None = None
     import_method: str = "conf_file"
+    protocol_version: str | None = None
+    runtime_instance_id: str | None = None
+    client_identity_evidence_status: str | None = None
+    compatibility_evidence_id: str | None = None
 
 
 class PeerApplier(Protocol):
@@ -326,6 +330,12 @@ class AccessService:
                 "artifact path because a completed file may still exist."
             ),
             remote_mutation_observer=remote_mutation_observer,
+            protocol_version=device_context.protocol_version,
+            runtime_instance_id=device_context.runtime_instance_id,
+            compatibility_evidence_id=device_context.compatibility_evidence_id,
+            client_identity_evidence_status=(
+                device_context.client_identity_evidence_status
+            ),
         )
 
         self._repo.record_admin_action(
@@ -363,6 +373,12 @@ class AccessService:
                 import_method=device_context.import_method,
                 config_schema_version=config_version,
                 config_fingerprint=config_fingerprint,
+                protocol_version=device_context.protocol_version,
+                runtime_instance_id=device_context.runtime_instance_id,
+                client_identity_evidence_status=(
+                    device_context.client_identity_evidence_status
+                ),
+                compatibility_evidence_id=device_context.compatibility_evidence_id,
             )
             config_ready_at = datetime.now(timezone.utc)
             record_device_lifecycle_stage(
@@ -485,6 +501,10 @@ class AccessService:
         remote_operation_id: str,
         remote_recovery_note: Callable[[int], str],
         remote_mutation_observer: Callable[[RemoteMutationResult], None] | None,
+        protocol_version: str | None = None,
+        runtime_instance_id: str | None = None,
+        compatibility_evidence_id: str | None = None,
+        client_identity_evidence_status: str | None = None,
     ) -> tuple[int, str]:
         last_error: sqlite3.IntegrityError | None = None
 
@@ -548,6 +568,10 @@ class AccessService:
                     preshared_key_encrypted=self._secret_box.encrypt_text(preshared_key),
                     config_version=config_version,
                     assignment_mode=assignment_mode,
+                    protocol_version=protocol_version,
+                    runtime_instance_id=runtime_instance_id,
+                    compatibility_evidence_id=compatibility_evidence_id,
+                    client_identity_evidence_status=client_identity_evidence_status,
                 )
             except sqlite3.IntegrityError as exc:
                 if not _is_duplicate_ip_integrity_error(exc):

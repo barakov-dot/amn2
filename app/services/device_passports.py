@@ -16,13 +16,23 @@ from app.services.drift_diagnostics import (
     ReconciliationSnapshot,
 )
 from app.vpn.config_versions import SUPPORTED_CONFIG_VERSIONS
+from app.vpn.protocol_versions import (
+    config_version_for_protocol,
+    normalize_protocol_version,
+)
 
 
 DEVICE_PLATFORMS = frozenset(
     {"android", "android_tv", "ios", "linux", "macos", "windows", "unknown"}
 )
 OFFICIAL_CLIENT_TYPES = frozenset(
-    {"amnezia_vpn", "amneziawg", "defaultvpn", "unknown_official"}
+    {
+        "amnezia_vpn",
+        "amneziawg",
+        "default_vpn",
+        "defaultvpn",
+        "unknown_official",
+    }
 )
 DEVICE_IMPORT_METHODS = frozenset(
     {
@@ -42,6 +52,9 @@ AcceptanceSource = Literal[
     "ticket_claim",
     "traffic_observation",
     "unknown",
+]
+ClientIdentityEvidenceStatus = Literal[
+    "unknown", "claimed", "verified", "failed", "stale"
 ]
 
 
@@ -73,6 +86,10 @@ class DevicePassport:
     import_method: str
     config_schema_version: str
     config_fingerprint: str
+    protocol_version: str | None
+    runtime_instance_id: str | None
+    client_identity_evidence_status: ClientIdentityEvidenceStatus
+    compatibility_evidence_id: str | None
     last_seen_at: datetime | None
     acceptance_evidence: DeviceAcceptanceEvidence | None
     revoked_at: datetime | None
@@ -94,6 +111,10 @@ class DevicePassport:
             "import_method": self.import_method,
             "config_schema_version": self.config_schema_version,
             "config_fingerprint": self.config_fingerprint,
+            "protocol_version": self.protocol_version,
+            "runtime_instance_id": self.runtime_instance_id,
+            "client_identity_evidence_status": self.client_identity_evidence_status,
+            "compatibility_evidence_id": self.compatibility_evidence_id,
             "last_seen_at": _format_optional_datetime(self.last_seen_at),
             "acceptance_evidence": (
                 self.acceptance_evidence.safe_metadata()
@@ -169,6 +190,10 @@ def create_device_passport(
     acceptance_evidence: DeviceAcceptanceEvidence | None = None,
     device_id: str | None = None,
     reconciliation: ReconciliationSnapshot | None = None,
+    protocol_version: str | None = None,
+    runtime_instance_id: str | None = None,
+    client_identity_evidence_status: ClientIdentityEvidenceStatus | None = None,
+    compatibility_evidence_id: str | None = None,
 ) -> DevicePassport:
     normalized = _validate_passport_fields(
         platform=platform,
@@ -185,6 +210,19 @@ def create_device_passport(
     if not re.fullmatch(r"dev_[0-9a-f]{32}", actual_device_id):
         raise ValueError("device_id must use the generated dev_<uuid> format")
     _validate_acceptance_evidence(acceptance_evidence)
+    (
+        normalized_protocol,
+        normalized_runtime,
+        normalized_identity_status,
+        normalized_compatibility_evidence,
+    ) = _validate_phase13_passport_fields(
+        protocol_version=protocol_version,
+        runtime_instance_id=runtime_instance_id,
+        client_identity_evidence_status=client_identity_evidence_status,
+        compatibility_evidence_id=compatibility_evidence_id,
+        client_version=normalized[4],
+        config_schema_version=normalized[3],
+    )
 
     repo.create_device_passport(
         device_id=actual_device_id,
@@ -202,6 +240,10 @@ def create_device_passport(
             if acceptance_evidence is not None
             else None
         ),
+        protocol_version=normalized_protocol,
+        runtime_instance_id=normalized_runtime,
+        client_identity_evidence_status=normalized_identity_status,
+        compatibility_evidence_id=normalized_compatibility_evidence,
     )
     return get_device_passport(
         repo,
@@ -364,6 +406,14 @@ def _passport_from_row(
         import_method=str(row["import_method"]),
         config_schema_version=str(row["config_schema_version"]),
         config_fingerprint=str(row["config_fingerprint"]),
+        protocol_version=_optional_row_text(row, "protocol_version"),
+        runtime_instance_id=_optional_row_text(row, "runtime_instance_id"),
+        client_identity_evidence_status=(
+            _optional_row_text(row, "client_identity_evidence_status") or "unknown"
+        ),
+        compatibility_evidence_id=_optional_row_text(
+            row, "compatibility_evidence_id"
+        ),
         last_seen_at=_parse_optional_datetime(row["last_seen_at"]),
         acceptance_evidence=evidence,
         revoked_at=_parse_optional_datetime(row["revoked_at"]),
@@ -392,6 +442,22 @@ def _unknown_snapshot(repo: Repository, row) -> ReconciliationSnapshot:
             peer_public_key=str(device["peer_public_key"]),
             allowed_ips=(f"{device['vpn_ip']}/32",),
             device_status=str(device["status"]),
+            protocol_version=(
+                _optional_row_text(row, "protocol_version")
+                or _optional_row_text(device, "protocol_version")
+            ),
+            runtime_instance_id=(
+                _optional_row_text(row, "runtime_instance_id")
+                or _optional_row_text(device, "runtime_instance_id")
+            ),
+            compatibility_evidence_id=(
+                _optional_row_text(row, "compatibility_evidence_id")
+                or _optional_row_text(device, "compatibility_evidence_id")
+            ),
+            compatibility_status=(
+                _optional_row_text(row, "client_identity_evidence_status")
+                or _optional_row_text(device, "client_identity_evidence_status")
+            ),
         )
     created_at = _parse_datetime(str(row["created_at"]))
     return ReconciliationSnapshot(
@@ -465,6 +531,50 @@ def _resolve_config_fingerprint(
     if CONFIG_FINGERPRINT_PATTERN.fullmatch(actual_fingerprint) is None:
         raise ValueError("invalid config fingerprint")
     return actual_fingerprint
+
+
+def _validate_phase13_passport_fields(
+    *,
+    protocol_version: str | None,
+    runtime_instance_id: str | None,
+    client_identity_evidence_status: str | None,
+    compatibility_evidence_id: str | None,
+    client_version: str | None,
+    config_schema_version: str,
+) -> tuple[str | None, str | None, ClientIdentityEvidenceStatus, str | None]:
+    normalized_protocol = None
+    if protocol_version is not None:
+        protocol = normalize_protocol_version(protocol_version)
+        normalized_protocol = protocol.value
+        if config_version_for_protocol(protocol) != config_schema_version:
+            raise ValueError("protocol_version does not match config_schema_version")
+    normalized_runtime = _optional_safe_identifier(
+        runtime_instance_id, "runtime_instance_id"
+    )
+    normalized_compatibility = _optional_safe_identifier(
+        compatibility_evidence_id, "compatibility_evidence_id"
+    )
+    status = client_identity_evidence_status or "unknown"
+    if status not in {"unknown", "claimed", "verified", "failed", "stale"}:
+        raise ValueError("unsupported client_identity_evidence_status")
+    if status == "verified" and (client_version is None or normalized_compatibility is None):
+        raise ValueError("verified client identity requires exact version and evidence")
+    return normalized_protocol, normalized_runtime, status, normalized_compatibility
+
+
+def _optional_safe_identifier(value: str | None, field: str) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(field)
+    if len(value) > 255 or any(ord(char) < 32 for char in value):
+        raise ValueError(field)
+    return value
+
+
+def _optional_row_text(row, key: str) -> str | None:
+    value = row[key] if key in row.keys() else None
+    return str(value) if value is not None else None
 
 
 def _validate_acceptance_evidence(

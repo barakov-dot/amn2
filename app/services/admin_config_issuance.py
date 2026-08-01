@@ -264,6 +264,10 @@ class AdminConfigIssuanceService:
                         platform=slot.client_platform,
                         official_client_type=slot.client_application,
                         client_version=slot.client_version,
+                        protocol_version=slot.protocol_version.value,
+                        runtime_instance_id=admission.runtime_instance_id,
+                        client_identity_evidence_status="verified",
+                        compatibility_evidence_id=admission.compatibility_evidence_id,
                     )
                 created = self._access_service.create_operator_device(**kwargs)
                 device_id = int(created.device_id)

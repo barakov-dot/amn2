@@ -244,6 +244,48 @@ def test_global_passport_list_rejects_out_of_range_limit(limit: int):
         list_all_device_passports(repo, limit=limit)
 
 
+def test_passport_exposes_safe_protocol_runtime_and_compatibility_facts():
+    _, repo, user_id, local_device_id = _repo()
+    passport = create_device_passport(
+        repo,
+        owner_user_id=user_id,
+        local_device_id=local_device_id,
+        platform="windows",
+        official_client_type="amnezia_vpn",
+        client_version="5.0.0.5",
+        import_method="conf_file",
+        config_schema_version="amneziawg_v3",
+        config_text=RAW_CONFIG,
+        protocol_version="awg3",
+        runtime_instance_id="rt-spain-awg3",
+        client_identity_evidence_status="verified",
+        compatibility_evidence_id="compat-win-5005-awg3-data",
+    )
+    safe = passport.safe_metadata()
+    assert safe["protocol_version"] == "awg3"
+    assert safe["runtime_instance_id"] == "rt-spain-awg3"
+    assert safe["client_identity_evidence_status"] == "verified"
+    assert safe["compatibility_evidence_id"] == "compat-win-5005-awg3-data"
+    assert "HeaderProtectionKey" not in json.dumps(safe)
+
+
+def test_existing_passport_without_exact_client_version_stays_unknown():
+    _, repo, user_id, local_device_id = _repo()
+    passport = create_device_passport(
+        repo,
+        owner_user_id=user_id,
+        local_device_id=local_device_id,
+        platform="android_tv",
+        official_client_type="amnezia_vpn",
+        client_version=None,
+        import_method="conf_file",
+        config_schema_version="amneziawg_v2",
+        config_text=RAW_CONFIG,
+    )
+    assert passport.client_identity_evidence_status == "unknown"
+    assert passport.compatibility_evidence_id is None
+
+
 def _repo() -> tuple[sqlite3.Connection, Repository, int, int]:
     conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row

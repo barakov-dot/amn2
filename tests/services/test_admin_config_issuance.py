@@ -275,7 +275,7 @@ def test_same_request_item_returns_completed_receipt_without_second_peer(tmp_pat
     replay = service.issue_manifest(manifest)
 
     assert first.receipts == replay.receipts
-    assert first.receipts[0].status == "completed"
+    assert first.receipts[0].status == "completed", first.receipts[0].error_code
     assert first.receipts[0].config_filename.endswith(".conf")
     assert first.receipts[0].passport_device_id
     assert len(peer_applier.applied) == 1
@@ -284,6 +284,11 @@ def test_same_request_item_returns_completed_receipt_without_second_peer(tmp_pat
     assert conn.execute(
         "SELECT COUNT(*) FROM admin_config_issuance_receipts"
     ).fetchone()[0] == 1
+    device = repo.get_device(first.receipts[0].device_id)
+    assert device["protocol_version"] == "awg2"
+    assert device["runtime_instance_id"] == "rt-spain-awg2"
+    assert device["compatibility_evidence_id"] == "compat-exact"
+    assert device["client_identity_evidence_status"] == "verified"
 
     safe_receipt = json.dumps(first.receipts[0].to_safe_dict(), sort_keys=True)
     stored = dict(
