@@ -18,6 +18,17 @@ from app.services.config_identity import (
     build_config_identity,
     build_unassigned_slot_identity,
 )
+from app.services.client_compatibility import ClientIdentity
+from app.services.protocol_admission import (
+    AdmissionRequest,
+    AdmissionResult,
+    ProtocolAdmissionService,
+)
+from app.vpn.protocol_versions import (
+    ProtocolVersion,
+    config_version_for_protocol,
+    normalize_protocol_version,
+)
 
 
 MAX_MANIFEST_ITEMS = 100
@@ -25,7 +36,17 @@ MAX_EXPANDED_SLOTS = 100
 MAX_LABEL_LENGTH = 120
 _ROOT_FIELDS = frozenset({"request_id", "server", "expiry", "items"})
 _ITEM_FIELDS = frozenset(
-    {"mode", "recipient_label", "quantity", "device_label", "platform", "expiry"}
+    {
+        "mode",
+        "quantity",
+        "recipient_label",
+        "device_label",
+        "client_application",
+        "client_platform",
+        "client_version",
+        "protocol_version",
+        "expiry",
+    }
 )
 
 
@@ -38,8 +59,11 @@ class IssuanceManifestItem:
     assignment_mode: str
     recipient_label: str
     quantity: int
-    device_label: str | None
-    platform: str | None
+    device_label: str
+    client_application: str
+    client_platform: str
+    client_version: str
+    protocol_version: ProtocolVersion
     expiry: AccessExpiry
 
 
@@ -50,7 +74,10 @@ class ExpandedIssuanceSlot:
     assignment_mode: str
     slot_sequence: int
     device_label: str
-    platform: str | None
+    client_application: str
+    client_platform: str
+    client_version: str
+    protocol_version: ProtocolVersion
     expiry: AccessExpiry
 
 
@@ -77,6 +104,13 @@ class AdminConfigIssuanceReceipt:
     status: str
     config_filename: str | None
     error_code: str | None
+    config_version: str | None
+    protocol_version: str | None
+    runtime_instance_id: str | None
+    compatibility_evidence_id: str | None
+    client_application: str | None
+    client_platform: str | None
+    client_version: str | None
     created_at: str
     updated_at: str
 
@@ -94,6 +128,13 @@ class AdminConfigIssuanceReceipt:
             "status": self.status,
             "config_filename": self.config_filename,
             "error_code": self.error_code,
+            "config_version": self.config_version,
+            "protocol_version": self.protocol_version,
+            "runtime_instance_id": self.runtime_instance_id,
+            "compatibility_evidence_id": self.compatibility_evidence_id,
+            "client_application": self.client_application,
+            "client_platform": self.client_platform,
+            "client_version": self.client_version,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -121,6 +162,7 @@ class AdminConfigIssuanceService:
         *,
         repo: Repository,
         access_service: OperatorAccessService,
+        admission_service: ProtocolAdmissionService,
         admin_telegram_id: int,
         attachment_builder: Callable[[str, str], object],
         duration_days: int | None = None,
@@ -135,6 +177,7 @@ class AdminConfigIssuanceService:
             raise ValueError("max_devices_per_recipient must be positive")
         self._repo = repo
         self._access_service = access_service
+        self._admission = admission_service
         self._admin_telegram_id = admin_telegram_id
         self._attachment_builder = attachment_builder
         self._config_version = config_version
@@ -143,7 +186,8 @@ class AdminConfigIssuanceService:
     def issue_manifest(self, manifest: Mapping[str, object]) -> AdminConfigIssuanceResult:
         validated = validate_admin_config_issuance_manifest(manifest)
         server = self._repo.get_server_by_name(validated.server)
-        request_fingerprint = _request_fingerprint(validated)
+        admissions = self._admit_protocol_batch(validated.expanded_slots)
+        request_fingerprint = _request_fingerprint(validated, admissions)
         existing_request = self._repo.get_admin_config_issuance_request(
             request_id=validated.request_id
         )
@@ -162,8 +206,10 @@ class AdminConfigIssuanceService:
             )
 
         receipts: list[AdminConfigIssuanceReceipt] = []
-        for receipt_index, slot in enumerate(validated.expanded_slots):
-            item_fingerprint = _slot_fingerprint(validated.server, slot)
+        for receipt_index, (slot, admission) in enumerate(
+            zip(validated.expanded_slots, admissions, strict=True)
+        ):
+            item_fingerprint = _slot_fingerprint(validated.server, slot, admission)
             existing = self._repo.get_admin_config_issuance_receipt(
                 request_id=validated.request_id,
                 item_index=receipt_index,
@@ -191,6 +237,13 @@ class AdminConfigIssuanceService:
                 assignment_mode=slot.assignment_mode,
                 slot_sequence=slot.slot_sequence,
                 expiry_policy=slot.expiry.policy,
+                config_version=config_version_for_protocol(slot.protocol_version),
+                protocol_version=slot.protocol_version.value,
+                runtime_instance_id=admission.runtime_instance_id,
+                compatibility_evidence_id=admission.compatibility_evidence_id,
+                client_application=slot.client_application,
+                client_platform=slot.client_platform,
+                client_version=slot.client_version,
             )
             device_id = None
             passport_device_id = None
@@ -203,12 +256,14 @@ class AdminConfigIssuanceService:
                     "duration_days": None,
                     "expiry": slot.expiry,
                     "admin_telegram_id": self._admin_telegram_id,
-                    "config_version": self._config_version,
+                    "config_version": config_version_for_protocol(slot.protocol_version),
                     "assignment_mode": slot.assignment_mode,
                 }
                 if slot.assignment_mode == DEDICATED_DEVICE:
                     kwargs["device_context"] = OperatorDeviceContext(
-                        platform=str(slot.platform)
+                        platform=slot.client_platform,
+                        official_client_type=slot.client_application,
+                        client_version=slot.client_version,
                     )
                 created = self._access_service.create_operator_device(**kwargs)
                 device_id = int(created.device_id)
@@ -235,6 +290,15 @@ class AdminConfigIssuanceService:
                             "passport_device_id": passport_device_id,
                             "status": "completed",
                             "config_filename": config_filename,
+                            "config_version": config_version_for_protocol(
+                                slot.protocol_version
+                            ),
+                            "protocol_version": slot.protocol_version.value,
+                            "runtime_instance_id": admission.runtime_instance_id,
+                            "compatibility_evidence_id": admission.compatibility_evidence_id,
+                            "client_application": slot.client_application,
+                            "client_platform": slot.client_platform,
+                            "client_version": slot.client_version,
                         },
                     )
                     row = self._repo.complete_admin_config_issuance_receipt(
@@ -267,6 +331,43 @@ class AdminConfigIssuanceService:
             receipts=tuple(receipts),
         )
 
+    def replay_existing_request(self, request_id: str) -> AdminConfigIssuanceResult:
+        request = self._repo.get_admin_config_issuance_request(request_id=request_id)
+        if request is None:
+            raise ValueError("issuance request was not found")
+        rows = self._repo.list_admin_config_issuance_receipts(request_id)
+        if len(rows) != int(request["item_count"]):
+            raise ValueError("issuance request receipt set is incomplete")
+        receipts = tuple(_receipt_from_row(row) for row in rows)
+        status = "completed" if all(item.status == "completed" for item in receipts) else "partial_failure"
+        return AdminConfigIssuanceResult(
+            request_id=request_id,
+            server="legacy_read_only",
+            status=status,
+            receipts=receipts,
+        )
+
+    def _admit_protocol_batch(
+        self, slots: tuple[ExpandedIssuanceSlot, ...]
+    ) -> tuple[AdmissionResult, ...]:
+        admissions = tuple(
+            self._admission.decide(
+                AdmissionRequest(
+                    client=ClientIdentity(
+                        slot.client_application,
+                        slot.client_platform,
+                        slot.client_version,
+                    ),
+                    protocol_version=slot.protocol_version,
+                )
+            )
+            for slot in slots
+        )
+        blocked = next((item for item in admissions if not item.admitted), None)
+        if blocked is not None:
+            raise ValueError(blocked.decision)
+        return admissions
+
     def _admit_full_batch(self, slots: tuple[ExpandedIssuanceSlot, ...]) -> None:
         requested = Counter(_duplicate_label_key(slot.recipient_label) for slot in slots)
         labels = {
@@ -278,6 +379,12 @@ class AdminConfigIssuanceService:
             if active + count > self._max_devices_per_recipient:
                 raise ValueError("full-batch quota exceeded for recipient")
             if recipient is not None:
+                existing_device_names = {
+                    str(row["name"])
+                    for row in self._repo.list_user_devices_for_admin(
+                        int(recipient["id"]), limit=100
+                    )
+                }
                 existing_names = set(
                     self._repo.list_completed_admin_config_filenames_for_recipient(
                         int(recipient["id"])
@@ -296,7 +403,14 @@ class AdminConfigIssuanceService:
                     for slot in slots
                     if _duplicate_label_key(slot.recipient_label) == key
                 }
-                if existing_names & proposed_names:
+                proposed_device_names = {
+                    build_config_identity(
+                        slot.recipient_label, slot.device_label
+                    ).display_name
+                    for slot in slots
+                    if _duplicate_label_key(slot.recipient_label) == key
+                }
+                if existing_names & proposed_names or existing_device_names & proposed_device_names:
                     raise ValueError("full-batch filename collision for recipient")
 
 
@@ -339,31 +453,25 @@ def validate_admin_config_issuance_manifest(
             else root_expiry
         )
         if mode == RECIPIENT_UNASSIGNED:
-            forbidden = {"device_label", "platform"} & set(raw_item)
-            if forbidden:
-                raise ValueError("recipient_unassigned cannot include device fields")
-            quantity = raw_item.get("quantity")
-            if isinstance(quantity, bool) or not isinstance(quantity, int) or not 1 <= quantity <= 100:
-                raise ValueError("quantity must be an integer between 1 and 100")
-            device_label = None
-            platform = None
-            duplicate_key = (_duplicate_label_key(recipient_label), mode)
-        else:
-            if "quantity" in raw_item:
-                raise ValueError("dedicated_device cannot include quantity")
-            quantity = 1
-            device_label = _required_bounded_text(raw_item, "device_label")
-            platform = _required_bounded_text(raw_item, "platform").lower()
-            validate_device_passport_context(
-                platform=platform,
-                official_client_type="amnezia_vpn",
-                import_method="conf_file",
-                config_schema_version="amneziawg_v2",
-            )
-            duplicate_key = (
-                _duplicate_label_key(recipient_label),
-                _duplicate_label_key(device_label),
-            )
+            raise ValueError("recipient_unassigned requires a separate reservation workflow")
+        quantity = 1
+        device_label = _required_bounded_text(raw_item, "device_label")
+        client = ClientIdentity(
+            _required_bounded_text(raw_item, "client_application"),
+            _required_bounded_text(raw_item, "client_platform"),
+            _required_bounded_text(raw_item, "client_version"),
+        )
+        protocol_version = normalize_protocol_version(raw_item.get("protocol_version"))
+        validate_device_passport_context(
+            platform=client.platform,
+            official_client_type=client.application,
+            import_method="conf_file",
+            config_schema_version=config_version_for_protocol(protocol_version),
+        )
+        duplicate_key = (
+            _duplicate_label_key(recipient_label),
+            _duplicate_label_key(device_label),
+        )
         if duplicate_key in seen:
             raise ValueError("manifest contains duplicate recipient/device labels")
         seen.add(duplicate_key)
@@ -372,7 +480,10 @@ def validate_admin_config_issuance_manifest(
             recipient_label=recipient_label,
             quantity=quantity,
             device_label=device_label,
-            platform=platform,
+            client_application=client.application,
+            client_platform=client.platform,
+            client_version=client.version,
+            protocol_version=protocol_version,
             expiry=expiry,
         )
         items.append(item)
@@ -383,8 +494,11 @@ def validate_admin_config_issuance_manifest(
                     recipient_label=recipient_label,
                     assignment_mode=mode,
                     slot_sequence=ordinal,
-                    device_label=(f"{ordinal:02d}" if mode == RECIPIENT_UNASSIGNED else str(device_label)),
-                    platform=platform,
+                    device_label=str(device_label),
+                    client_application=client.application,
+                    client_platform=client.platform,
+                    client_version=client.version,
+                    protocol_version=protocol_version,
                     expiry=expiry,
                 )
             )
@@ -425,21 +539,32 @@ def _expiry_dict(expiry: AccessExpiry) -> dict[str, object]:
     }
 
 
-def _slot_dict(slot: ExpandedIssuanceSlot) -> dict[str, object]:
+def _slot_dict(
+    slot: ExpandedIssuanceSlot, admission: AdmissionResult | None = None
+) -> dict[str, object]:
     return {
         "source_item_index": slot.item_index,
         "recipient_label": slot.recipient_label,
         "assignment_mode": slot.assignment_mode,
         "slot_sequence": slot.slot_sequence,
         "device_label": slot.device_label,
-        "platform": slot.platform,
+        "client_application": slot.client_application,
+        "client_platform": slot.client_platform,
+        "client_version": slot.client_version,
+        "protocol_version": slot.protocol_version.value,
+        "runtime_instance_id": admission.runtime_instance_id if admission else None,
+        "compatibility_evidence_id": (
+            admission.compatibility_evidence_id if admission else None
+        ),
         "expiry": _expiry_dict(slot.expiry),
     }
 
 
-def _slot_fingerprint(server: str, slot: ExpandedIssuanceSlot) -> str:
+def _slot_fingerprint(
+    server: str, slot: ExpandedIssuanceSlot, admission: AdmissionResult
+) -> str:
     canonical = json.dumps(
-        {"server": server, **_slot_dict(slot)},
+        {"server": server, **_slot_dict(slot, admission)},
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
@@ -447,12 +572,20 @@ def _slot_fingerprint(server: str, slot: ExpandedIssuanceSlot) -> str:
     return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
 
 
-def _request_fingerprint(manifest: ValidatedIssuanceManifest) -> str:
+def _request_fingerprint(
+    manifest: ValidatedIssuanceManifest,
+    admissions: tuple[AdmissionResult, ...] | None = None,
+) -> str:
+    if admissions is not None and len(admissions) != len(manifest.expanded_slots):
+        raise ValueError("admission count does not match expanded slots")
     canonical = json.dumps(
         {
             "server": manifest.server,
             "expanded_slot_count": len(manifest.expanded_slots),
-            "slots": [_slot_dict(slot) for slot in manifest.expanded_slots],
+            "slots": [
+                _slot_dict(slot, admissions[index] if admissions else None)
+                for index, slot in enumerate(manifest.expanded_slots)
+            ],
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -475,6 +608,20 @@ def _receipt_from_row(row) -> AdminConfigIssuanceReceipt:
         status=str(row["status"]),
         config_filename=(str(row["config_filename"]) if row["config_filename"] is not None else None),
         error_code=str(row["error_code"]) if row["error_code"] is not None else None,
+        config_version=_optional_row_text(row, "config_version"),
+        protocol_version=_optional_row_text(row, "protocol_version"),
+        runtime_instance_id=_optional_row_text(row, "runtime_instance_id"),
+        compatibility_evidence_id=_optional_row_text(
+            row, "compatibility_evidence_id"
+        ),
+        client_application=_optional_row_text(row, "client_application"),
+        client_platform=_optional_row_text(row, "client_platform"),
+        client_version=_optional_row_text(row, "client_version"),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )
+
+
+def _optional_row_text(row, key: str) -> str | None:
+    value = row[key] if key in row.keys() else None
+    return str(value) if value is not None else None

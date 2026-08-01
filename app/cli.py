@@ -49,6 +49,14 @@ from app.services.admin_config_issuance import (
     AdminConfigIssuanceService,
     validate_admin_config_issuance_manifest,
 )
+from app.services.client_compatibility import (
+    ClientCompatibilityEvidence,
+    ClientIdentity,
+    CompatibilityEvidenceStatus,
+)
+from app.services.protocol_admission import ProtocolAdmissionService
+from app.services.vpn_runtime_instances import runtime_spec_from_row
+from app.vpn.protocol_versions import ProtocolVersion
 from app.services.config_identity import (
     build_config_identity,
     build_unassigned_slot_identity,
@@ -836,6 +844,11 @@ def build_admin_config_issuance_plan(
                 "filename": identity.filename,
                 "expiry_policy": slot.expiry.policy,
                 "quota_delta": 1,
+                "client_application": slot.client_application,
+                "client_platform": slot.client_platform,
+                "client_version": slot.client_version,
+                "protocol_version": slot.protocol_version.value,
+                "admission_checked": False,
             }
         )
     return _json_dumps(
@@ -869,6 +882,7 @@ def run_admin_config_issue_manifest(
     client_config_defaults=None,
     command_client: SshClient | None = None,
     attachment_builder: Callable[[str, str], object] | None = None,
+    admission_service: ProtocolAdmissionService | None = None,
     pretty: bool = False,
 ) -> str:
     manifest = _load_admin_config_issuance_manifest(manifest_path)
@@ -887,6 +901,11 @@ def run_admin_config_issue_manifest(
         initialize_schema(conn)
         repo = Repository(conn)
         server_id = _sync_server_row(repo, server)
+        actual_admission_service = admission_service or _build_protocol_admission_service(
+            repo=repo,
+            slots=validated.expanded_slots,
+            server_id=server_id,
+        )
         actual_command_client = command_client or SystemSshClient(
             server,
             password=vps_ssh_password,
@@ -912,6 +931,7 @@ def run_admin_config_issue_manifest(
         result = AdminConfigIssuanceService(
             repo=repo,
             access_service=access_service,
+            admission_service=actual_admission_service,
             admin_telegram_id=admin_telegram_id,
             attachment_builder=attachment_builder,
             max_devices_per_recipient=max_devices_per_user,
@@ -928,6 +948,42 @@ def run_admin_config_issue_manifest(
         return _json_dumps(payload, pretty=pretty)
     finally:
         conn.close()
+
+
+def _build_protocol_admission_service(*, repo, slots, server_id: int):
+    evidence_by_id: dict[str, ClientCompatibilityEvidence] = {}
+    for slot in slots:
+        rows = repo.find_client_compatibility_evidence(
+            application=slot.client_application,
+            platform=slot.client_platform,
+            client_version=slot.client_version,
+            protocol_version=slot.protocol_version.value,
+        )
+        for row in rows:
+            item = ClientCompatibilityEvidence(
+                evidence_id=str(row["evidence_id"]),
+                client=ClientIdentity(
+                    str(row["application"]),
+                    str(row["platform"]),
+                    str(row["client_version"]),
+                ),
+                protocol_version=ProtocolVersion(str(row["protocol_version"])),
+                source_kind=str(row["source_kind"]),
+                status=CompatibilityEvidenceStatus(str(row["status"])),
+                observed_at=_parse_api_datetime(str(row["observed_at"])),
+                safe_reference=str(row["safe_reference"]),
+                scope=str(row["scope"]),
+            )
+            evidence_by_id[item.evidence_id] = item
+    runtimes = tuple(
+        runtime_spec_from_row(row)
+        for row in repo.list_vpn_runtime_instances_for_server(server_id)
+    )
+    return ProtocolAdmissionService(
+        evidence=tuple(evidence_by_id.values()),
+        runtimes=runtimes,
+        now=datetime.now(timezone.utc),
+    )
 
 
 def run_admin_config_assign_slot(

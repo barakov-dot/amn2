@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,9 +9,12 @@ from app.db.schema import initialize_schema
 from app.security.crypto import SecretBox
 from app.services.access import AccessService
 from app.services.admin_config_issuance import (
-    AdminConfigIssuanceService,
+    AdminConfigIssuanceService as _AdminConfigIssuanceService,
+    _request_fingerprint,
     validate_admin_config_issuance_manifest,
 )
+from app.services.protocol_admission import AdmissionResult
+from app.vpn.protocol_versions import ProtocolVersion
 
 
 APP_SECRET = "test-secret-for-admin-issuance-1234567890"
@@ -37,6 +41,45 @@ class FailOnSecondAccessService:
         if self.calls == 2:
             raise RuntimeError("raw ssh endpoint 203.0.113.41 failed with secret material")
         return self.delegate.create_operator_device(**kwargs)
+
+
+class StaticAdmissionService:
+    def __init__(self, result: AdmissionResult) -> None:
+        self._result = result
+
+    def decide(self, request):
+        return self._result
+
+
+class SpyAccessService:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def create_operator_device(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(
+            device_id=1,
+            passport_device_id="dev_phase13",
+            config_filename="phase13.conf",
+            config_text="safe-test-config",
+        )
+
+
+def _admission(decision: str = "admitted_awg2") -> StaticAdmissionService:
+    protocol = ProtocolVersion.AWG3 if decision.endswith("awg3") else ProtocolVersion.AWG2
+    return StaticAdmissionService(
+        AdmissionResult(
+            decision=decision,
+            protocol_version=protocol,
+            runtime_instance_id="rt-spain-" + protocol.value if decision.startswith("admitted") else None,
+            compatibility_evidence_id="compat-exact" if decision.startswith("admitted") else None,
+        )
+    )
+
+
+def AdminConfigIssuanceService(**kwargs):
+    kwargs.setdefault("admission_service", _admission())
+    return _AdminConfigIssuanceService(**kwargs)
 
 
 def _repo(tmp_path):
@@ -80,7 +123,21 @@ def _item(recipient, device, platform="android"):
     return {
         "recipient_label": recipient,
         "device_label": device,
-        "platform": platform,
+        "client_application": "amnezia_vpn",
+        "client_platform": platform,
+        "client_version": "5.0.0.5",
+        "protocol_version": "awg2",
+    }
+
+
+def _phase13_item(recipient="SooL", device="NOTEBOOK", version="5.0.0.5"):
+    return {
+        "recipient_label": recipient,
+        "device_label": device,
+        "client_application": "amnezia_vpn",
+        "client_platform": "windows",
+        "client_version": version,
+        "protocol_version": "awg3",
     }
 
 
@@ -92,27 +149,20 @@ def _unassigned_item(recipient, quantity):
     }
 
 
-def test_unassigned_quantity_expands_deterministically_and_defaults_indefinite():
-    validated = validate_admin_config_issuance_manifest(
-        _manifest(_unassigned_item("Иван", 4))
-    )
-
-    assert len(validated.expanded_slots) == 4
-    assert [slot.slot_sequence for slot in validated.expanded_slots] == [1, 2, 3, 4]
-    assert [slot.device_label for slot in validated.expanded_slots] == ["01", "02", "03", "04"]
-    assert all(slot.assignment_mode == "recipient_unassigned" for slot in validated.expanded_slots)
-    assert all(slot.expiry.policy == "indefinite" for slot in validated.expanded_slots)
+def test_unassigned_quantity_fails_closed_to_separate_reservation_workflow():
+    with pytest.raises(ValueError, match="separate reservation workflow"):
+        validate_admin_config_issuance_manifest(_manifest(_unassigned_item("Иван", 4)))
 
 
 @pytest.mark.parametrize("quantity", [0, 101, True])
 def test_unassigned_quantity_rejects_out_of_range_values(quantity):
-    with pytest.raises(ValueError, match="quantity"):
+    with pytest.raises(ValueError, match="separate reservation workflow"):
         validate_admin_config_issuance_manifest(
             _manifest(_unassigned_item("Иван", quantity))
         )
 
 
-def test_unassigned_quantity_four_issues_four_safe_idempotent_slots(tmp_path):
+def test_unassigned_quantity_does_not_issue_any_slot(tmp_path):
     conn, repo = _repo(tmp_path)
     peer_applier = FakePeerApplier()
     attachments = []
@@ -123,30 +173,11 @@ def test_unassigned_quantity_four_issues_four_safe_idempotent_slots(tmp_path):
         attachment_builder=lambda filename, content: attachments.append((filename, content)),
         max_devices_per_recipient=4,
     )
-    manifest = _manifest(_unassigned_item("Иван", 4))
-
-    first = service.issue_manifest(manifest)
-    replay = service.issue_manifest(manifest)
-
-    assert first == replay
-    assert len(first.receipts) == 4
-    assert [r.slot_sequence for r in first.receipts] == [1, 2, 3, 4]
-    assert [r.config_filename for r in first.receipts] == [
-        "NEOBYATNAYA.NET-Ivan-01.conf",
-        "NEOBYATNAYA.NET-Ivan-02.conf",
-        "NEOBYATNAYA.NET-Ivan-03.conf",
-        "NEOBYATNAYA.NET-Ivan-04.conf",
-    ]
-    assert all(r.assignment_mode == "recipient_unassigned" for r in first.receipts)
-    assert all(r.passport_device_id is None for r in first.receipts)
-    assert all(r.expiry_policy == "indefinite" for r in first.receipts)
-    assert len(peer_applier.applied) == 4
-    assert len(attachments) == 4
-    assert conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0] == 4
-    assert conn.execute("SELECT COUNT(*) FROM device_passports").fetchone()[0] == 0
-    assert conn.execute(
-        "SELECT COUNT(*) FROM devices WHERE duration_days IS NULL AND expires_at IS NULL"
-    ).fetchone()[0] == 4
+    with pytest.raises(ValueError, match="separate reservation workflow"):
+        service.issue_manifest(_manifest(_unassigned_item("Иван", 4)))
+    assert peer_applier.applied == []
+    assert attachments == []
+    assert conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0] == 0
 
 
 def test_full_batch_quota_rejects_before_recipient_or_peer_mutation(tmp_path):
@@ -161,7 +192,9 @@ def test_full_batch_quota_rejects_before_recipient_or_peer_mutation(tmp_path):
     )
 
     with pytest.raises(ValueError, match="full-batch quota"):
-        service.issue_manifest(_manifest(_unassigned_item("Иван", 5)))
+        service.issue_manifest(
+            _manifest(*(_item("Иван", f"Device {index}") for index in range(5)))
+        )
 
     assert repo.get_user_by_operator_label("Иван") is None
     assert peer_applier.applied == []
@@ -178,8 +211,13 @@ def test_new_request_filename_collision_is_rejected_before_second_peer(tmp_path)
         attachment_builder=lambda _filename, _content: None,
         max_devices_per_recipient=4,
     )
-    service.issue_manifest(_manifest(_unassigned_item("Иван", 1)))
-    second = _manifest(_unassigned_item("Иван", 1))
+    first = service.issue_manifest(_manifest(_item("Alice", "Phone")))
+    assert first.status == "completed"
+    assert repo.list_completed_admin_config_filenames_for_recipient(
+        first.receipts[0].recipient_user_id
+    ) == [first.receipts[0].config_filename]
+    assert first.receipts[0].config_filename == "NEOBYATNAYA.NET-Alice-Phone-d1.conf"
+    second = _manifest(_item("Alice", "Phone"))
     second["request_id"] = "spain-second-002"
 
     with pytest.raises(ValueError, match="filename collision"):
@@ -561,3 +599,97 @@ def test_issuance_audit_failure_is_partial_and_replay_never_duplicates_peer(
     assert len(peer_applier.applied) == 1
     assert conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0] == 1
     conn.close()
+
+
+def test_unknown_client_is_rejected_before_recipient_peer_key_or_config_creation(
+    tmp_path,
+):
+    conn, repo = _repo(tmp_path)
+    access = SpyAccessService()
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=access,
+        admission_service=_admission("blocked_unknown_client"),
+        admin_telegram_id=1,
+        attachment_builder=lambda filename, config: (filename, config),
+    )
+
+    with pytest.raises(ValueError, match="blocked_unknown_client"):
+        service.issue_manifest(_manifest(_phase13_item()))
+
+    assert access.calls == []
+    assert conn.execute("SELECT count(*) FROM users").fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT count(*) FROM admin_config_issuance_receipts"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT count(*) FROM admin_config_issuance_requests"
+    ).fetchone()[0] == 0
+
+
+def test_fingerprint_binds_exact_client_version():
+    first = validate_admin_config_issuance_manifest(_manifest(_phase13_item(version="5.0.0.5")))
+    changed = validate_admin_config_issuance_manifest(_manifest(_phase13_item(version="5.0.0.6")))
+    assert _request_fingerprint(first) != _request_fingerprint(changed)
+
+
+class LegacyReplayRepository:
+    def __init__(self) -> None:
+        self.request_id = "phase12-spain-sool-remaining-20260801-002"
+        self._request = {
+            "request_id": self.request_id,
+            "request_fingerprint": "sha256:" + "c" * 64,
+            "item_count": 1,
+        }
+        self._receipts = [
+            {
+                "id": 1,
+                "request_id": self.request_id,
+                "item_index": 0,
+                "recipient_user_id": 1,
+                "device_id": 7,
+                "passport_device_id": "dev_phase12",
+                "assignment_mode": "dedicated_device",
+                "slot_sequence": 1,
+                "expiry_policy": "indefinite",
+                "status": "completed",
+                "config_filename": "SooL-NOTEBOOK.conf",
+                "error_code": None,
+                "config_version": "amneziawg_v2",
+                "protocol_version": None,
+                "runtime_instance_id": None,
+                "compatibility_evidence_id": None,
+                "client_application": None,
+                "client_platform": None,
+                "client_version": None,
+                "created_at": "2026-08-01T00:00:00Z",
+                "updated_at": "2026-08-01T00:00:00Z",
+            }
+        ]
+
+    def get_admin_config_issuance_request(self, *, request_id: str):
+        return self._request if request_id == self.request_id else None
+
+    def list_admin_config_issuance_receipts(self, request_id: str):
+        return list(self._receipts) if request_id == self.request_id else []
+
+    def __getattr__(self, name: str):
+        if name.startswith(("create_", "update_", "delete_", "complete_", "fail_")):
+            raise AssertionError(f"legacy replay attempted mutation: {name}")
+        raise AttributeError(name)
+
+
+def test_completed_legacy_receipt_replays_without_reissue_or_forced_backfill():
+    repo = LegacyReplayRepository()
+    access = SpyAccessService()
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=access,
+        admission_service=_admission("blocked_unverified_version"),
+        admin_telegram_id=1,
+        attachment_builder=lambda filename, config: (filename, config),
+    )
+    result = service.replay_existing_request(repo.request_id)
+    assert result.status == "completed"
+    assert access.calls == []
+    assert result.receipts[0].protocol_version is None

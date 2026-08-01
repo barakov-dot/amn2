@@ -1274,7 +1274,7 @@ def test_issue_admin_config_returns_distinct_secret_handoff_to_admin(tmp_path):
     ]
 
 
-def test_failed_admin_handoff_can_resend_existing_device_without_second_peer(tmp_path):
+def test_default_bot_issuance_fails_closed_without_exact_client_version(tmp_path):
     repo = _repo(tmp_path)
     server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
     peer_applier = RecordingPeerApplier()
@@ -1294,60 +1294,17 @@ def test_failed_admin_handoff_can_resend_existing_device_without_second_peer(tmp
         vps_writes_enabled=True,
     )
 
-    issued = workflow.issue_admin_config(
-        admin_telegram_id=9001,
-        request_id="telegram-9001-78",
-        recipient_label="recipient",
-        device_label="phone",
-        platform="android",
-    )
-    replayed = workflow.issue_admin_config(
-        admin_telegram_id=9001,
-        request_id="telegram-9001-78",
-        recipient_label="recipient",
-        device_label="phone",
-        platform="android",
-    )
-    workflow.record_admin_config_delivery(
-        admin_telegram_id=9001,
-        passport_device_id=issued.passport_device_id,
-        delivered=False,
-        reference="telegram_error:RuntimeError",
-    )
-    resent = workflow.build_admin_config_handoff_for_device(
-        admin_telegram_id=9001,
-        device_id=issued.device_id,
-    )
-    workflow.record_admin_config_delivery(
-        admin_telegram_id=9001,
-        passport_device_id=issued.passport_device_id,
-        delivered=True,
-        reference="telegram_message:55",
-    )
-
-    assert resent.device_id == issued.device_id
-    assert replayed.device_id == issued.device_id
-    assert replayed.config_bytes == issued.config_bytes
-    assert resent.config_bytes == issued.config_bytes
-    assert len(peer_applier.calls) == 1
-    delivered = [
-        event
-        for event in list_device_lifecycle_events(
-            repo, passport_device_id=issued.passport_device_id
+    with pytest.raises(RuntimeError, match="exact client version admission"):
+        workflow.issue_admin_config(
+            admin_telegram_id=9001,
+            request_id="telegram-9001-78",
+            recipient_label="recipient",
+            device_label="phone",
+            platform="android",
         )
-        if event.stage == "delivered"
-    ]
-    assert [event.status for event in delivered] == ["failed", "completed"]
-    safe_audit = json.dumps(
-        [
-            dict(row)
-            for row in repo.list_admin_actions_for_target_user(
-                issued.recipient_user_id
-            )
-        ]
-    )
-    assert "PrivateKey" not in safe_audit
-    assert issued.config_bytes.decode("utf-8") not in safe_audit
+
+    assert peer_applier.calls == []
+    assert repo.list_users_for_admin() == []
 
 
 def _repo(tmp_path):

@@ -10,9 +10,32 @@ from app.cli import (
 )
 from app import cli
 from app.db.connection import connect
+from app.services.protocol_admission import AdmissionResult
+from app.vpn.protocol_versions import ProtocolVersion
 from app.server.ssh import CommandResult
 from app.server_config.loader import load_server_config, select_server
 from tests.server_config.test_loader import DOCKER_YAML
+
+
+def _exact_item():
+    return {
+        "recipient_label": "Example Recipient",
+        "device_label": "Example Device",
+        "client_application": "amnezia_vpn",
+        "client_platform": "android",
+        "client_version": "5.0.0.5",
+        "protocol_version": "awg2",
+    }
+
+
+class StaticAdmissionService:
+    def decide(self, request):
+        return AdmissionResult(
+            decision="admitted_awg2",
+            protocol_version=ProtocolVersion.AWG2,
+            runtime_instance_id="rt-test-awg2",
+            compatibility_evidence_id="compat-test-awg2",
+        )
 
 
 def _manifest_file(tmp_path):
@@ -23,11 +46,7 @@ def _manifest_file(tmp_path):
                 "request_id": "spain-first-real-001",
                 "server": "Spain-Madrid",
                 "items": [
-                    {
-                        "recipient_label": "Example Recipient",
-                        "device_label": "Example Device",
-                        "platform": "android",
-                    }
+                    _exact_item()
                 ],
             }
         ),
@@ -71,17 +90,22 @@ def test_admin_config_issue_manifest_is_dry_run_by_default(tmp_path):
         "slots": [
             {
                 "assignment_mode": "dedicated_device",
+                "admission_checked": False,
+                "client_application": "amnezia_vpn",
+                "client_platform": "android",
+                "client_version": "5.0.0.5",
                 "expiry_policy": "indefinite",
                 "filename": "NEOBYATNAYA.NET-Example-Recipient-Example-Device.conf",
                 "quota_delta": 1,
                 "recipient_label": "Example Recipient",
                 "slot_sequence": 1,
+                "protocol_version": "awg2",
             }
         ],
     }
 
 
-def test_dry_run_expands_unassigned_slots_without_settings_or_mutation(tmp_path):
+def test_dry_run_rejects_unassigned_slots_without_settings_or_mutation(tmp_path):
     manifest = tmp_path / "unassigned.json"
     manifest.write_text(
         json.dumps(
@@ -100,22 +124,11 @@ def test_dry_run_expands_unassigned_slots_without_settings_or_mutation(tmp_path)
         encoding="utf-8",
     )
 
-    plan = json.loads(
+    with pytest.raises(ValueError, match="separate reservation workflow"):
         build_admin_config_issuance_plan(
             manifest_path=manifest,
             server_name="Spain-Madrid",
         )
-    )
-
-    assert plan["expanded_slot_count"] == 4
-    assert [slot["filename"] for slot in plan["slots"]] == [
-        "NEOBYATNAYA.NET-Ivan-01.conf",
-        "NEOBYATNAYA.NET-Ivan-02.conf",
-        "NEOBYATNAYA.NET-Ivan-03.conf",
-        "NEOBYATNAYA.NET-Ivan-04.conf",
-    ]
-    assert all(slot["expiry_policy"] == "indefinite" for slot in plan["slots"])
-    assert all(slot["quota_delta"] == 1 for slot in plan["slots"])
 
 
 def test_admin_config_apply_requires_explicit_admin_id(tmp_path):
@@ -157,11 +170,7 @@ def test_apply_requires_configured_admin_before_injected_peer_client_runs(tmp_pa
                 "request_id": "example-apply-001",
                 "server": "debian-vps-1",
                 "items": [
-                    {
-                        "recipient_label": "Example Recipient",
-                        "device_label": "Example Device",
-                        "platform": "android",
-                    }
+                    _exact_item()
                 ],
             }
         ),
@@ -197,11 +206,7 @@ def test_apply_uses_injected_peer_client_and_returns_only_safe_receipts(tmp_path
                 "request_id": "example-apply-002",
                 "server": "debian-vps-1",
                 "items": [
-                    {
-                        "recipient_label": "Example Recipient",
-                        "device_label": "Example Device",
-                        "platform": "android",
-                    }
+                    _exact_item()
                 ],
             }
         ),
@@ -224,6 +229,7 @@ def test_apply_uses_injected_peer_client_and_returns_only_safe_receipts(tmp_path
         attachment_builder=lambda filename, content: attachments.append(
             (filename, content)
         ),
+        admission_service=StaticAdmissionService(),
     )
 
     payload = json.loads(output)

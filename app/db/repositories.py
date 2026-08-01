@@ -2065,6 +2065,13 @@ class Repository:
         assignment_mode: str = "dedicated_device",
         slot_sequence: int = 1,
         expiry_policy: str = "duration",
+        config_version: str | None = None,
+        protocol_version: str | None = None,
+        runtime_instance_id: str | None = None,
+        compatibility_evidence_id: str | None = None,
+        client_application: str | None = None,
+        client_platform: str | None = None,
+        client_version: str | None = None,
     ) -> sqlite3.Row:
         self._conn.execute(
             """
@@ -2076,9 +2083,16 @@ class Repository:
                 assignment_mode,
                 slot_sequence,
                 expiry_policy,
+                config_version,
+                protocol_version,
+                runtime_instance_id,
+                compatibility_evidence_id,
+                client_application,
+                client_platform,
+                client_version,
                 status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'started')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started')
             """,
             (
                 request_id,
@@ -2088,6 +2102,13 @@ class Repository:
                 assignment_mode,
                 slot_sequence,
                 expiry_policy,
+                config_version,
+                protocol_version,
+                runtime_instance_id,
+                compatibility_evidence_id,
+                client_application,
+                client_platform,
+                client_version,
             ),
         )
         self._commit()
@@ -2097,6 +2118,20 @@ class Repository:
         )
         assert receipt is not None
         return receipt
+
+    def list_admin_config_issuance_receipts(
+        self, request_id: str
+    ) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            """
+            SELECT *
+            FROM admin_config_issuance_receipts
+            WHERE request_id = ?
+            ORDER BY item_index
+            LIMIT 100
+            """,
+            (request_id,),
+        ).fetchall()
 
     def complete_admin_config_issuance_receipt(
         self,

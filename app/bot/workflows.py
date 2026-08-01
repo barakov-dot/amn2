@@ -15,7 +15,6 @@ from app.security.crypto import SecretBox
 from app.security.redaction import redact
 from app.server.operations import remote_changed_local_failed_result
 from app.server.peer_apply import PeerApplyError
-from app.services.admin_config_issuance import AdminConfigIssuanceService
 from app.services.config_delivery import (
     ConfigMaterialUnavailable,
     build_device_config_delivery,
@@ -146,11 +145,8 @@ class BotWorkflow:
 
         factory = self._admin_config_issuance_factory
         if factory is None:
-            factory = lambda **kwargs: AdminConfigIssuanceService(
-                repo=self._repo,
-                access_service=self._access_service,
-                duration_days=self._access_service._duration_days,
-                **kwargs,
+            raise RuntimeError(
+                "Bot config issuance is disabled until exact client version admission is designed"
             )
         service = factory(
             admin_telegram_id=admin_telegram_id,

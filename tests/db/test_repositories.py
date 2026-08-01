@@ -1276,6 +1276,13 @@ def test_completed_admin_issuance_provenance_lookup_rejects_ambiguity(tmp_path):
         item_index=0,
         item_fingerprint=fingerprint,
         recipient_user_id=user_id,
+        config_version="amneziawg_v2",
+        protocol_version="awg2",
+        runtime_instance_id="rt-spain-awg2",
+        compatibility_evidence_id="compat-android-5005-awg2",
+        client_application="amnezia_vpn",
+        client_platform="android",
+        client_version="5.0.0.5",
     )
     repo.complete_admin_config_issuance_receipt(
         request_id="request-one",
@@ -1290,6 +1297,10 @@ def test_completed_admin_issuance_provenance_lookup_rejects_ambiguity(tmp_path):
 
     assert receipt is not None
     assert receipt["request_id"] == "request-one"
+    assert receipt["protocol_version"] == "awg2"
+    assert receipt["runtime_instance_id"] == "rt-spain-awg2"
+    assert receipt["compatibility_evidence_id"] == "compat-android-5005-awg2"
+    assert receipt["client_version"] == "5.0.0.5"
 
     repo.create_admin_config_issuance_request(
         request_id="request-two",
