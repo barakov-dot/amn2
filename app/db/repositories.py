@@ -4,6 +4,7 @@ import re
 import sqlite3
 from contextlib import contextmanager
 from collections.abc import Iterator, Mapping
+from datetime import datetime
 from typing import Any
 
 from app.config_assignment import (
@@ -16,6 +17,15 @@ USER_STATUSES = {"active", "blocked", "deleted"}
 USER_LOCALES = {"ru", "en"}
 SERVER_STATUSES = {"active", "degraded", "disabled"}
 DEVICE_STATUSES = {"pending", "active", "disabled", "expired", "revoked", "failed"}
+PHASE13_PROTOCOL_VERSIONS = {"awg2", "awg3"}
+RUNTIME_LIFECYCLE_STATES = {
+    "planned",
+    "candidate",
+    "accepted",
+    "rollback_pending",
+    "retired",
+}
+COMPATIBILITY_EVIDENCE_STATUSES = {"claimed", "passed", "failed", "superseded"}
 
 
 def user_display_label(row: Mapping[str, Any]) -> str:
@@ -360,6 +370,188 @@ class Repository:
             (name,),
         ).fetchone()
         return int(row["id"])
+
+    def create_vpn_runtime_instance(
+        self,
+        *,
+        runtime_instance_id: str,
+        server_id: int,
+        protocol_version: str,
+        runtime_version: str,
+        interface_name: str,
+        udp_port: int,
+        vpn_cidr: str,
+        container_name: str | None,
+        service_name: str | None,
+        config_path: str,
+        lifecycle_state: str,
+        acceptance_receipt: str | None,
+    ) -> sqlite3.Row:
+        runtime_instance_id = _validate_phase13_text(
+            "runtime_instance_id", runtime_instance_id
+        )
+        runtime_version = _validate_phase13_text("runtime_version", runtime_version)
+        interface_name = _validate_phase13_text("interface_name", interface_name)
+        vpn_cidr = _validate_phase13_text("vpn_cidr", vpn_cidr)
+        config_path = _validate_phase13_text("config_path", config_path, max_length=512)
+        container_name = _validate_optional_phase13_text(
+            "container_name", container_name
+        )
+        service_name = _validate_optional_phase13_text("service_name", service_name)
+        _validate_phase13_protocol(protocol_version)
+        if lifecycle_state not in RUNTIME_LIFECYCLE_STATES:
+            raise ValueError("unsupported lifecycle_state")
+        _validate_port("udp_port", udp_port)
+        try:
+            ipaddress.ip_network(vpn_cidr, strict=False)
+        except ValueError as exc:
+            raise ValueError("vpn_cidr must be a valid network") from exc
+        if acceptance_receipt is not None and not re.fullmatch(
+            r"sha256:[0-9a-f]{64}", acceptance_receipt
+        ):
+            raise ValueError("acceptance_receipt must be a sha256 fingerprint")
+        if lifecycle_state == "accepted" and acceptance_receipt is None:
+            raise ValueError("accepted runtime requires acceptance_receipt")
+
+        self._conn.execute(
+            """
+            INSERT INTO vpn_runtime_instances (
+                runtime_instance_id, server_id, protocol_version, runtime_version,
+                interface_name, udp_port, vpn_cidr, container_name, service_name,
+                config_path, lifecycle_state, acceptance_receipt
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                runtime_instance_id,
+                server_id,
+                protocol_version,
+                runtime_version,
+                interface_name,
+                udp_port,
+                vpn_cidr,
+                container_name,
+                service_name,
+                config_path,
+                lifecycle_state,
+                acceptance_receipt,
+            ),
+        )
+        self._commit()
+        row = self.get_vpn_runtime_instance(runtime_instance_id)
+        assert row is not None
+        return row
+
+    def get_vpn_runtime_instance(
+        self, runtime_instance_id: str
+    ) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM vpn_runtime_instances WHERE runtime_instance_id = ?",
+            (runtime_instance_id,),
+        ).fetchone()
+
+    def list_vpn_runtime_instances_for_server(
+        self, server_id: int
+    ) -> list[sqlite3.Row]:
+        return self._conn.execute(
+            """
+            SELECT *
+            FROM vpn_runtime_instances
+            WHERE server_id = ?
+            ORDER BY runtime_instance_id
+            LIMIT 100
+            """,
+            (server_id,),
+        ).fetchall()
+
+    def create_client_compatibility_evidence(
+        self,
+        *,
+        evidence_id: str,
+        application: str,
+        platform: str,
+        client_version: str,
+        protocol_version: str,
+        source_kind: str,
+        status: str,
+        observed_at: str,
+        safe_reference: str,
+        scope: str,
+    ) -> sqlite3.Row:
+        values = {
+            "evidence_id": _validate_phase13_text("evidence_id", evidence_id),
+            "application": _validate_phase13_text("application", application),
+            "platform": _validate_phase13_text("platform", platform),
+            "client_version": _validate_phase13_text(
+                "client_version", client_version, max_length=64
+            ),
+            "source_kind": _validate_phase13_text("source_kind", source_kind),
+            "safe_reference": _validate_phase13_text(
+                "safe_reference", safe_reference, max_length=512
+            ),
+            "scope": _validate_phase13_text("scope", scope, max_length=512),
+        }
+        _validate_phase13_protocol(protocol_version)
+        if status not in COMPATIBILITY_EVIDENCE_STATUSES:
+            raise ValueError("unsupported compatibility evidence status")
+        _validate_phase13_timestamp("observed_at", observed_at)
+        self._conn.execute(
+            """
+            INSERT INTO client_compatibility_evidence (
+                evidence_id, application, platform, client_version,
+                protocol_version, source_kind, status, observed_at,
+                safe_reference, scope
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                values["evidence_id"],
+                values["application"],
+                values["platform"],
+                values["client_version"],
+                protocol_version,
+                values["source_kind"],
+                status,
+                observed_at,
+                values["safe_reference"],
+                values["scope"],
+            ),
+        )
+        self._commit()
+        row = self._conn.execute(
+            "SELECT * FROM client_compatibility_evidence WHERE evidence_id = ?",
+            (values["evidence_id"],),
+        ).fetchone()
+        assert row is not None
+        return row
+
+    def find_client_compatibility_evidence(
+        self,
+        *,
+        application: str,
+        platform: str,
+        client_version: str,
+        protocol_version: str,
+    ) -> list[sqlite3.Row]:
+        _validate_phase13_protocol(protocol_version)
+        application = _validate_phase13_text("application", application)
+        platform = _validate_phase13_text("platform", platform)
+        client_version = _validate_phase13_text(
+            "client_version", client_version, max_length=64
+        )
+        return self._conn.execute(
+            """
+            SELECT *
+            FROM client_compatibility_evidence
+            WHERE application = ?
+              AND platform = ?
+              AND client_version = ?
+              AND protocol_version = ?
+            ORDER BY observed_at DESC, evidence_id
+            LIMIT 100
+            """,
+            (application, platform, client_version, protocol_version),
+        ).fetchall()
 
     def upsert_server_config(
         self,
@@ -3102,3 +3294,36 @@ def _validate_server_fields(
 def _validate_port(field_name: str, value: int) -> None:
     if not 1 <= value <= 65535:
         raise ValueError(f"{field_name} must be in 1..65535")
+
+
+def _validate_phase13_text(
+    field_name: str, value: str, *, max_length: int = 128
+) -> str:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError(f"{field_name} must be exact non-blank text")
+    if len(value) > max_length or any(ord(char) < 32 for char in value):
+        raise ValueError(f"{field_name} must be bounded one-line text")
+    return value
+
+
+def _validate_optional_phase13_text(
+    field_name: str, value: str | None, *, max_length: int = 128
+) -> str | None:
+    if value is None:
+        return None
+    return _validate_phase13_text(field_name, value, max_length=max_length)
+
+
+def _validate_phase13_protocol(protocol_version: str) -> None:
+    if protocol_version not in PHASE13_PROTOCOL_VERSIONS:
+        raise ValueError("unsupported protocol_version")
+
+
+def _validate_phase13_timestamp(field_name: str, value: str) -> None:
+    value = _validate_phase13_text(field_name, value, max_length=64)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field_name} must include a timezone")

@@ -57,6 +57,52 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE
         );
 
+        CREATE TABLE IF NOT EXISTS vpn_runtime_instances (
+            runtime_instance_id TEXT PRIMARY KEY CHECK (length(trim(runtime_instance_id)) > 0),
+            server_id INTEGER NOT NULL,
+            protocol_version TEXT NOT NULL CHECK (protocol_version IN ('awg2', 'awg3')),
+            runtime_version TEXT NOT NULL CHECK (length(trim(runtime_version)) > 0),
+            interface_name TEXT NOT NULL CHECK (length(trim(interface_name)) > 0),
+            udp_port INTEGER NOT NULL CHECK (udp_port BETWEEN 1 AND 65535),
+            vpn_cidr TEXT NOT NULL CHECK (length(trim(vpn_cidr)) > 0),
+            container_name TEXT,
+            service_name TEXT,
+            config_path TEXT NOT NULL CHECK (length(trim(config_path)) > 0),
+            lifecycle_state TEXT NOT NULL
+                CHECK (lifecycle_state IN ('planned', 'candidate', 'accepted', 'rollback_pending', 'retired')),
+            acceptance_receipt TEXT
+                CHECK (
+                    acceptance_receipt IS NULL OR
+                    (length(acceptance_receipt) = 71
+                     AND substr(acceptance_receipt, 1, 7) = 'sha256:'
+                     AND substr(acceptance_receipt, 8) NOT GLOB '*[^0-9a-f]*')
+                ),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (server_id) REFERENCES servers(id) ON DELETE CASCADE,
+            UNIQUE (server_id, interface_name),
+            UNIQUE (server_id, udp_port),
+            CHECK (lifecycle_state != 'accepted' OR acceptance_receipt IS NOT NULL)
+        );
+
+        CREATE TABLE IF NOT EXISTS client_compatibility_evidence (
+            evidence_id TEXT PRIMARY KEY CHECK (length(trim(evidence_id)) > 0),
+            application TEXT NOT NULL CHECK (length(trim(application)) > 0),
+            platform TEXT NOT NULL CHECK (length(trim(platform)) > 0),
+            client_version TEXT NOT NULL CHECK (length(trim(client_version)) > 0),
+            protocol_version TEXT NOT NULL CHECK (protocol_version IN ('awg2', 'awg3')),
+            source_kind TEXT NOT NULL CHECK (length(trim(source_kind)) > 0),
+            status TEXT NOT NULL CHECK (status IN ('claimed', 'passed', 'failed', 'superseded')),
+            observed_at TEXT NOT NULL CHECK (length(trim(observed_at)) > 0),
+            safe_reference TEXT NOT NULL CHECK (length(trim(safe_reference)) > 0),
+            scope TEXT NOT NULL CHECK (length(trim(scope)) > 0),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (
+                application, platform, client_version, protocol_version,
+                source_kind, safe_reference
+            )
+        );
+
         CREATE TABLE IF NOT EXISTS plans (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
@@ -99,6 +145,11 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                      AND substr(config_fingerprint, 1, 7) = 'sha256:'
                      AND substr(config_fingerprint, 8) NOT GLOB '*[^0-9a-f]*')
                 ),
+            protocol_version TEXT CHECK (protocol_version IS NULL OR protocol_version IN ('awg2', 'awg3')),
+            runtime_instance_id TEXT,
+            client_identity_evidence_status TEXT
+                CHECK (client_identity_evidence_status IS NULL OR client_identity_evidence_status IN ('unknown', 'claimed', 'verified', 'failed', 'stale')),
+            compatibility_evidence_id TEXT,
             last_config_sent_at TEXT,
             first_connected_at TEXT,
             last_connected_at TEXT,
@@ -126,6 +177,11 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             config_fingerprint TEXT NOT NULL,
             last_seen_at TEXT,
             acceptance_evidence_json TEXT,
+            protocol_version TEXT CHECK (protocol_version IS NULL OR protocol_version IN ('awg2', 'awg3')),
+            runtime_instance_id TEXT,
+            client_identity_evidence_status TEXT
+                CHECK (client_identity_evidence_status IS NULL OR client_identity_evidence_status IN ('unknown', 'claimed', 'verified', 'failed', 'stale')),
+            compatibility_evidence_id TEXT,
             revoked_at TEXT,
             revoke_reason TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -259,6 +315,13 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
                 CHECK (status IN ('started', 'completed', 'partial_failure')),
             config_filename TEXT,
             error_code TEXT,
+            config_version TEXT,
+            protocol_version TEXT CHECK (protocol_version IS NULL OR protocol_version IN ('awg2', 'awg3')),
+            runtime_instance_id TEXT,
+            compatibility_evidence_id TEXT,
+            client_application TEXT,
+            client_platform TEXT,
+            client_version TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (request_id, item_index),
@@ -443,8 +506,48 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     )
     _migrate_access_slot_contract(conn)
     _migrate_admin_config_issuance_receipts(conn)
+    _ensure_column(
+        conn,
+        "devices",
+        "protocol_version",
+        "TEXT CHECK (protocol_version IS NULL OR protocol_version IN ('awg2', 'awg3'))",
+    )
+    _ensure_column(conn, "devices", "runtime_instance_id", "TEXT")
+    _ensure_column(
+        conn,
+        "devices",
+        "client_identity_evidence_status",
+        "TEXT CHECK (client_identity_evidence_status IS NULL OR client_identity_evidence_status IN ('unknown', 'claimed', 'verified', 'failed', 'stale'))",
+    )
+    _ensure_column(conn, "devices", "compatibility_evidence_id", "TEXT")
     _ensure_column(conn, "device_passports", "revoked_at", "TEXT")
     _ensure_column(conn, "device_passports", "revoke_reason", "TEXT")
+    _ensure_column(
+        conn,
+        "device_passports",
+        "protocol_version",
+        "TEXT CHECK (protocol_version IS NULL OR protocol_version IN ('awg2', 'awg3'))",
+    )
+    _ensure_column(conn, "device_passports", "runtime_instance_id", "TEXT")
+    _ensure_column(
+        conn,
+        "device_passports",
+        "client_identity_evidence_status",
+        "TEXT CHECK (client_identity_evidence_status IS NULL OR client_identity_evidence_status IN ('unknown', 'claimed', 'verified', 'failed', 'stale'))",
+    )
+    _ensure_column(conn, "device_passports", "compatibility_evidence_id", "TEXT")
+    _ensure_column(conn, "admin_config_issuance_receipts", "config_version", "TEXT")
+    _ensure_column(
+        conn,
+        "admin_config_issuance_receipts",
+        "protocol_version",
+        "TEXT CHECK (protocol_version IS NULL OR protocol_version IN ('awg2', 'awg3'))",
+    )
+    _ensure_column(conn, "admin_config_issuance_receipts", "runtime_instance_id", "TEXT")
+    _ensure_column(conn, "admin_config_issuance_receipts", "compatibility_evidence_id", "TEXT")
+    _ensure_column(conn, "admin_config_issuance_receipts", "client_application", "TEXT")
+    _ensure_column(conn, "admin_config_issuance_receipts", "client_platform", "TEXT")
+    _ensure_column(conn, "admin_config_issuance_receipts", "client_version", "TEXT")
     conn.commit()
 
 
