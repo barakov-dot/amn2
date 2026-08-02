@@ -58,6 +58,12 @@ class MigrationPolicy:
 @dataclass(frozen=True)
 class BotWebMigrationPreview:
     migration_id: str
+    source_schema_sha256: str
+    source_counts_sha256: str
+    source_allowed_rows_sha256: str
+    target_schema_sha256: str
+    target_counts_sha256: str
+    target_allowed_rows_sha256: str
     users_create: int
     users_preserve: int
     users_update: int
@@ -99,6 +105,73 @@ class BotWebMigrationPreview:
     @property
     def sha256(self) -> str:
         return hashlib.sha256(self.canonical_bytes()).hexdigest()
+
+
+class MigrationPreconditionError(RuntimeError):
+    """The supplied preview no longer describes the input databases."""
+
+
+class MigrationApplyError(RuntimeError):
+    """The copy-only transaction failed and its output was removed."""
+
+
+@dataclass(frozen=True)
+class BotWebMigrationResult:
+    migration_id: str
+    preview_sha256: str
+    created_rows: int
+    imported_users: int
+    imported_plans: int
+    imported_orders: int
+    imported_legacy_devices: int
+    imported_message_templates: int
+    usable_secret_records_imported: int
+    integrity_ok: bool
+    foreign_key_issues: int
+    spain_device_fingerprint_unchanged: bool
+    spain_passport_fingerprint_unchanged: bool
+    spain_issuance_fingerprints_unchanged: bool
+    spain_lifecycle_fingerprint_unchanged: bool
+    spain_server_fingerprint_unchanged: bool
+    final_schema_sha256: str
+    final_counts_sha256: str
+    final_invariant_hashes: tuple[tuple[str, str], ...]
+
+    def _stable_payload(self) -> dict[str, object]:
+        return {
+            "migration_id": self.migration_id,
+            "preview_sha256": self.preview_sha256,
+            "imported_users": self.imported_users,
+            "imported_plans": self.imported_plans,
+            "imported_orders": self.imported_orders,
+            "imported_legacy_devices": self.imported_legacy_devices,
+            "imported_message_templates": self.imported_message_templates,
+            "usable_secret_records_imported": self.usable_secret_records_imported,
+            "integrity_ok": self.integrity_ok,
+            "foreign_key_issues": self.foreign_key_issues,
+            "spain_device_fingerprint_unchanged": (
+                self.spain_device_fingerprint_unchanged
+            ),
+            "spain_passport_fingerprint_unchanged": (
+                self.spain_passport_fingerprint_unchanged
+            ),
+            "spain_issuance_fingerprints_unchanged": (
+                self.spain_issuance_fingerprints_unchanged
+            ),
+            "spain_lifecycle_fingerprint_unchanged": (
+                self.spain_lifecycle_fingerprint_unchanged
+            ),
+            "spain_server_fingerprint_unchanged": (
+                self.spain_server_fingerprint_unchanged
+            ),
+            "final_schema_sha256": self.final_schema_sha256,
+            "final_counts_sha256": self.final_counts_sha256,
+            "final_invariant_hashes": dict(self.final_invariant_hashes),
+        }
+
+    @property
+    def result_sha256(self) -> str:
+        return _canonical_sha256(self._stable_payload())
 
 
 class _StopReasons:
@@ -226,10 +299,22 @@ def build_bot_web_migration_preview(
         }
         invariant_hashes = _target_invariant_hashes(target)
         api_token_count = _table_count(source, "api_tokens")
+        source_schema_sha256 = _database_schema_sha256(source)
+        source_counts_sha256 = _database_counts_sha256(source)
+        source_allowed_rows_sha256 = _source_allowed_rows_sha256(source)
+        target_schema_sha256 = _database_schema_sha256(target)
+        target_counts_sha256 = _database_counts_sha256(target)
+        target_allowed_rows_sha256 = _source_allowed_rows_sha256(target)
 
     stop_reasons = reasons.as_tuple()
     return BotWebMigrationPreview(
         migration_id=migration_id,
+        source_schema_sha256=source_schema_sha256,
+        source_counts_sha256=source_counts_sha256,
+        source_allowed_rows_sha256=source_allowed_rows_sha256,
+        target_schema_sha256=target_schema_sha256,
+        target_counts_sha256=target_counts_sha256,
+        target_allowed_rows_sha256=target_allowed_rows_sha256,
         users_create=users_create,
         users_preserve=users_preserve,
         users_update=0,
@@ -262,6 +347,424 @@ def build_bot_web_migration_preview(
         conflict_count=len(stop_reasons),
         apply_allowed=not stop_reasons,
     )
+
+
+def apply_bot_web_migration_to_copy(
+    preview: BotWebMigrationPreview,
+    *,
+    source_db: Path,
+    target_copy_db: Path,
+) -> BotWebMigrationResult:
+    """Apply an approved preview only to an explicit disposable DB copy."""
+
+    if not isinstance(preview, BotWebMigrationPreview) or not preview.apply_allowed:
+        raise MigrationPreconditionError("migration preview is not applyable")
+    source_path = _resolve_database_path(source_db)
+    target_path = _resolve_database_path(target_copy_db)
+    if source_path == target_path:
+        raise ValueError("source_db and target_copy_db must be different files")
+    if not target_path.name.endswith(".copy.sqlite3"):
+        raise ValueError("target database must be an explicit .copy.sqlite3 file")
+
+    try:
+        return _apply_verified_copy(preview, source_path, target_path)
+    except MigrationPreconditionError:
+        _remove_incomplete_copy(target_path)
+        raise
+    except Exception as error:
+        _remove_incomplete_copy(target_path)
+        if isinstance(error, MigrationApplyError):
+            raise
+        raise MigrationApplyError("copy-only migration apply failed") from error
+
+
+def _apply_verified_copy(
+    preview: BotWebMigrationPreview,
+    source_path: Path,
+    target_path: Path,
+) -> BotWebMigrationResult:
+    with ExitStack() as stack:
+        source = stack.enter_context(_readonly_connection(source_path))
+        target = sqlite3.connect(target_path)
+        stack.callback(target.close)
+        target.row_factory = sqlite3.Row
+        target.execute("PRAGMA foreign_keys=ON")
+        _verify_source_preconditions(source, preview)
+        _verify_target_schema(target, preview)
+
+        replay = _is_complete_replay(target, preview, source)
+        if replay:
+            return _build_result(preview, target, created_rows=0)
+
+        target.execute("BEGIN IMMEDIATE")
+        try:
+            _verify_target_baseline(target, preview)
+            baseline_counts = {
+                str(item["table"]): int(item["count"])
+                for item in _database_counts(target)
+            }
+            created_rows = _apply_rows(target, source, preview)
+            _verify_source_preconditions(source, preview)
+            _verify_target_schema(target, preview)
+            if _target_invariant_hashes(target) != preview.invariant_hashes:
+                raise MigrationPreconditionError("Spain invariants changed during apply")
+            _verify_final_counts(target, baseline_counts, preview)
+            result = _build_result(preview, target, created_rows=created_rows)
+            if not result.integrity_ok or result.foreign_key_issues:
+                raise MigrationApplyError("copy database health check failed")
+            target.commit()
+            return result
+        except Exception:
+            target.rollback()
+            raise
+
+
+def _verify_source_preconditions(
+    source: sqlite3.Connection,
+    preview: BotWebMigrationPreview,
+) -> None:
+    if _database_schema_sha256(source) != preview.source_schema_sha256:
+        raise MigrationPreconditionError("source schema changed after preview")
+    if _database_counts_sha256(source) != preview.source_counts_sha256:
+        raise MigrationPreconditionError("source counts changed after preview")
+    if _source_allowed_rows_sha256(source) != preview.source_allowed_rows_sha256:
+        raise MigrationPreconditionError("source rows changed after preview")
+
+
+def _verify_target_schema(
+    target: sqlite3.Connection,
+    preview: BotWebMigrationPreview,
+) -> None:
+    if _database_schema_sha256(target) != preview.target_schema_sha256:
+        raise MigrationPreconditionError("target schema changed after preview")
+
+
+def _verify_target_baseline(
+    target: sqlite3.Connection,
+    preview: BotWebMigrationPreview,
+) -> None:
+    _verify_target_schema(target, preview)
+    if _database_counts_sha256(target) != preview.target_counts_sha256:
+        raise MigrationPreconditionError("target counts changed after preview")
+    if _source_allowed_rows_sha256(target) != preview.target_allowed_rows_sha256:
+        raise MigrationPreconditionError("target merge rows changed after preview")
+    if _target_invariant_hashes(target) != preview.invariant_hashes:
+        raise MigrationPreconditionError("target invariants changed after preview")
+
+
+def _is_complete_replay(
+    target: sqlite3.Connection,
+    preview: BotWebMigrationPreview,
+    source: sqlite3.Connection,
+) -> bool:
+    rows = target.execute(
+        """
+        SELECT source_table, source_row_sha256
+        FROM legacy_migration_records
+        WHERE migration_id=?
+        """,
+        (preview.migration_id,),
+    ).fetchall()
+    if not rows:
+        return False
+    actual = {(str(row[0]), str(row[1])) for row in rows}
+    expected = _expected_ledger_keys(preview, source)
+    if actual != expected:
+        raise MigrationPreconditionError("migration ledger is partial or invalid")
+    if _target_invariant_hashes(target) != preview.invariant_hashes:
+        raise MigrationPreconditionError("Spain invariants changed after migration")
+    return True
+
+
+def _apply_rows(
+    target: sqlite3.Connection,
+    source: sqlite3.Connection,
+    preview: BotWebMigrationPreview,
+) -> int:
+    rows = _source_allowed_rows(source)
+    created = 0
+    server_id, inserted = _ensure_legacy_server(target, preview)
+    created += inserted
+
+    user_map: dict[int, int] = {}
+    for row in rows["users"]:
+        telegram_id = int(row["telegram_id"])
+        existing = target.execute(
+            "SELECT id FROM users WHERE telegram_id=?", (telegram_id,)
+        ).fetchone()
+        if existing is None:
+            cursor = target.execute(
+                """
+                INSERT INTO users(
+                    telegram_id, operator_label, username, first_name, last_name,
+                    status, locale, is_admin, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                """,
+                (
+                    telegram_id, row["operator_label"], row["username"],
+                    row["first_name"], row["last_name"], row["status"],
+                    row["locale"], row["created_at"], row["updated_at"],
+                ),
+            )
+            target_id = int(cursor.lastrowid)
+            created += 1
+        else:
+            target_id = int(existing[0])
+        user_map[int(row["id"])] = target_id
+        _record_ledger(target, preview, "users", row, target_id)
+
+    for row in rows["plans"]:
+        existing = target.execute(
+            "SELECT id FROM plans WHERE id=?", (str(row["id"]),)
+        ).fetchone()
+        if existing is None:
+            target.execute(
+                """
+                INSERT INTO plans(
+                    id, name, duration_days, max_devices, price, currency,
+                    is_free, is_active, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                tuple(row[field] for field in (
+                    "id", "name", "duration_days", "max_devices", "price",
+                    "currency", "is_free", "is_active", "created_at", "updated_at",
+                )),
+            )
+            created += 1
+        _record_ledger(target, preview, "plans", row, str(row["id"]))
+
+    device_map: dict[int, int] = {}
+    for row in rows["devices"]:
+        row_hash = _source_row_sha256("devices", row)
+        cursor = target.execute(
+            """
+            INSERT INTO devices(
+                user_id, server_id, name, created_at, activated_at, expires_at,
+                duration_days, expiry_policy, status, vpn_ip, peer_public_key,
+                peer_private_key_encrypted, preshared_key_encrypted,
+                config_version, config_material_status, assignment_mode,
+                config_fingerprint, last_config_sent_at, first_connected_at,
+                last_connected_at, revoked_at, revoke_reason
+            ) VALUES (?, ?, ?, ?, ?, NULL, NULL, 'indefinite', 'revoked',
+                      '0.0.0.0/32', ?, ?, ?, ?, 'external_only', ?, NULL,
+                      ?, ?, ?, ?, 'phase13_usa_legacy_migration')
+            """,
+            (
+                user_map[int(row["user_id"])], server_id, row["name"],
+                row["created_at"], row["activated_at"], f"legacy:{row_hash}",
+                "unavailable:phase13-migration-redacted",
+                "unavailable:phase13-migration-redacted", row["config_version"],
+                row["assignment_mode"], row["last_config_sent_at"],
+                row["first_connected_at"], row["last_connected_at"],
+                row["revoked_at"] or row["created_at"],
+            ),
+        )
+        target_id = int(cursor.lastrowid)
+        device_map[int(row["id"])] = target_id
+        created += 1
+        _record_ledger(target, preview, "devices", row, target_id)
+
+    for row in rows["orders"]:
+        cursor = target.execute(
+            """
+            INSERT INTO orders(
+                user_id, device_id, plan_id, requested_config_version, status,
+                payment_mode, created_at, approved_at, fulfilled_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                user_map[int(row["user_id"])], device_map[int(row["device_id"])],
+                row["plan_id"], row["requested_config_version"], row["status"],
+                row["payment_mode"], row["created_at"], row["approved_at"],
+                row["fulfilled_at"],
+            ),
+        )
+        created += 1
+        _record_ledger(target, preview, "orders", row, int(cursor.lastrowid))
+
+    for row in rows["message_templates"]:
+        existing = target.execute(
+            "SELECT key FROM message_templates WHERE key=?", (row["key"],)
+        ).fetchone()
+        if existing is None:
+            target.execute(
+                "INSERT INTO message_templates(key, text, updated_at) VALUES (?, ?, ?)",
+                (row["key"], row["text"], row["updated_at"]),
+            )
+            created += 1
+        _record_ledger(target, preview, "message_templates", row, str(row["key"]))
+
+    _record_ledger_hash(target, preview, "__preview__", preview.sha256, "complete")
+    return created
+
+
+def _ensure_legacy_server(
+    target: sqlite3.Connection,
+    preview: BotWebMigrationPreview,
+) -> tuple[int, int]:
+    name = f"legacy-usa-history:{preview.migration_id}"
+    cursor = target.execute(
+        """
+        INSERT INTO servers(
+            name, host, ssh_port, endpoint_host, vpn_port, vpn_network_cidr,
+            server_address, server_public_key, runtime, firewall, status,
+            max_devices, current_devices
+        ) VALUES (?, NULL, NULL, NULL, NULL, '0.0.0.0/32', NULL, NULL,
+                  'legacy-metadata-only', NULL, 'disabled', 0, 0)
+        """,
+        (name,),
+    )
+    server_id = int(cursor.lastrowid)
+    marker_hash = _canonical_sha256(
+        {"kind": "legacy_server", "migration_id": preview.migration_id}
+    )
+    _record_ledger_hash(target, preview, "__legacy_server__", marker_hash, server_id)
+    return server_id, 1
+
+
+def _record_ledger(
+    target: sqlite3.Connection,
+    preview: BotWebMigrationPreview,
+    source_table: str,
+    source_row: Mapping[str, object],
+    target_row_id: object,
+) -> None:
+    _record_ledger_hash(
+        target,
+        preview,
+        source_table,
+        _source_row_sha256(source_table, source_row),
+        target_row_id,
+    )
+
+
+def _record_ledger_hash(
+    target: sqlite3.Connection,
+    preview: BotWebMigrationPreview,
+    source_table: str,
+    source_row_sha256: str,
+    target_row_id: object,
+) -> None:
+    target.execute(
+        """
+        INSERT INTO legacy_migration_records(
+            migration_id, source_table, source_row_sha256, target_row_id
+        ) VALUES (?, ?, ?, ?)
+        """,
+        (preview.migration_id, source_table, source_row_sha256, str(target_row_id)),
+    )
+
+
+def _source_row_sha256(table: str, row: Mapping[str, object]) -> str:
+    return _canonical_sha256({"source_table": table, "row": dict(row)})
+
+
+def _expected_ledger_keys(
+    preview: BotWebMigrationPreview,
+    source: sqlite3.Connection,
+) -> set[tuple[str, str]]:
+    keys = {
+        (table, _source_row_sha256(table, row))
+        for table, rows in _source_allowed_rows(source).items()
+        for row in rows
+    }
+    keys.add(("__preview__", preview.sha256))
+    keys.add(
+        (
+            "__legacy_server__",
+            _canonical_sha256(
+                {"kind": "legacy_server", "migration_id": preview.migration_id}
+            ),
+        )
+    )
+    return keys
+
+
+def _verify_final_counts(
+    target: sqlite3.Connection,
+    baseline: Mapping[str, int],
+    preview: BotWebMigrationPreview,
+) -> None:
+    expected = dict(baseline)
+    increments = {
+        "users": preview.users_create,
+        "plans": preview.plans_create,
+        "orders": preview.orders_create,
+        "devices": preview.legacy_devices_external_only,
+        "message_templates": preview.message_templates_create,
+        "servers": 1,
+        "legacy_migration_records": sum(
+            (
+                preview.users_create + preview.users_preserve,
+                preview.plans_create + preview.plans_preserve,
+                preview.orders_create,
+                preview.legacy_devices_external_only,
+                preview.message_templates_create + preview.message_templates_preserve,
+                2,
+            )
+        ),
+    }
+    for table, increment in increments.items():
+        expected[table] += increment
+    actual = {str(item["table"]): int(item["count"]) for item in _database_counts(target)}
+    if actual != expected:
+        raise MigrationApplyError("target row counts do not match preview")
+
+
+def _build_result(
+    preview: BotWebMigrationPreview,
+    target: sqlite3.Connection,
+    *,
+    created_rows: int,
+) -> BotWebMigrationResult:
+    final_invariants = _target_invariant_hashes(target)
+    invariant_map = dict(final_invariants)
+    expected = dict(preview.invariant_hashes)
+    integrity = tuple(str(row[0]) for row in target.execute("PRAGMA integrity_check"))
+    foreign_key_issues = len(target.execute("PRAGMA foreign_key_check").fetchall())
+    return BotWebMigrationResult(
+        migration_id=preview.migration_id,
+        preview_sha256=preview.sha256,
+        created_rows=created_rows,
+        imported_users=preview.users_create,
+        imported_plans=preview.plans_create,
+        imported_orders=preview.orders_create,
+        imported_legacy_devices=preview.legacy_devices_external_only,
+        imported_message_templates=preview.message_templates_create,
+        usable_secret_records_imported=0,
+        integrity_ok=integrity == ("ok",),
+        foreign_key_issues=foreign_key_issues,
+        spain_device_fingerprint_unchanged=(
+            invariant_map["devices"] == expected["devices"]
+        ),
+        spain_passport_fingerprint_unchanged=(
+            invariant_map["passports"] == expected["passports"]
+        ),
+        spain_issuance_fingerprints_unchanged=(
+            invariant_map["issuance_requests"] == expected["issuance_requests"]
+            and invariant_map["issuance_receipts"] == expected["issuance_receipts"]
+        ),
+        spain_lifecycle_fingerprint_unchanged=(
+            invariant_map["lifecycle_events"] == expected["lifecycle_events"]
+        ),
+        spain_server_fingerprint_unchanged=(
+            invariant_map["servers"] == expected["servers"]
+        ),
+        final_schema_sha256=_database_schema_sha256(target),
+        final_counts_sha256=_database_counts_sha256(target),
+        final_invariant_hashes=final_invariants,
+    )
+
+
+def _remove_incomplete_copy(path: Path) -> None:
+    for candidate in (
+        path,
+        Path(f"{path}-wal"),
+        Path(f"{path}-shm"),
+        Path(f"{path}-journal"),
+    ):
+        if candidate.exists() and not candidate.is_symlink():
+            candidate.unlink()
 
 
 def _validate_migration_id(value: str) -> None:
@@ -449,20 +952,46 @@ def _target_invariant_hashes(
 ) -> tuple[tuple[str, str], ...]:
     tables = {
         "access_slot_assignments": "access_slot_assignment_requests",
-        "devices": "devices",
         "issuance_receipts": "admin_config_issuance_receipts",
         "issuance_requests": "admin_config_issuance_requests",
         "lifecycle_events": "device_lifecycle_events",
         "passports": "device_passports",
-        "servers": "servers",
     }
     values = [
         (name, _table_fingerprint(connection, table))
         for name, table in sorted(tables.items())
     ]
+    values.extend(
+        (
+            (
+                "devices",
+                _query_fingerprint(
+                    connection,
+                    """
+                    SELECT * FROM devices
+                    WHERE config_material_status != 'external_only'
+                    """,
+                ),
+            ),
+            (
+                "servers",
+                _query_fingerprint(
+                    connection,
+                    """
+                    SELECT * FROM servers
+                    WHERE runtime IS NULL OR runtime != 'legacy-metadata-only'
+                    """,
+                ),
+            ),
+        )
+    )
     peer_rows = _row_dicts(
         connection,
-        "SELECT peer_public_key FROM devices ORDER BY peer_public_key",
+        """
+        SELECT peer_public_key FROM devices
+        WHERE config_material_status != 'external_only'
+        ORDER BY peer_public_key
+        """,
     )
     values.append(("peer_public_key_set", _canonical_sha256(peer_rows)))
     return tuple(sorted(values))
@@ -485,7 +1014,11 @@ def _table_count(connection: sqlite3.Connection, table: str) -> int:
 
 def _table_fingerprint(connection: sqlite3.Connection, table: str) -> str:
     quoted = _quote_identifier(table)
-    rows = _row_dicts(connection, f"SELECT * FROM {quoted}")
+    return _query_fingerprint(connection, f"SELECT * FROM {quoted}")
+
+
+def _query_fingerprint(connection: sqlite3.Connection, query: str) -> str:
+    rows = _row_dicts(connection, query)
     canonical_rows = sorted(
         rows,
         key=lambda row: json.dumps(
@@ -496,6 +1029,68 @@ def _table_fingerprint(connection: sqlite3.Connection, table: str) -> str:
         ),
     )
     return _canonical_sha256(canonical_rows)
+
+
+def _database_schema_sha256(connection: sqlite3.Connection) -> str:
+    rows = _row_dicts(
+        connection,
+        """
+        SELECT type, name, tbl_name, sql
+        FROM sqlite_master
+        WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL
+        ORDER BY type, name
+        """,
+    )
+    return _canonical_sha256(rows)
+
+
+def _database_counts_sha256(connection: sqlite3.Connection) -> str:
+    return _canonical_sha256(_database_counts(connection))
+
+
+def _database_counts(connection: sqlite3.Connection) -> list[dict[str, object]]:
+    return [
+        {"table": table, "count": _table_count(connection, table)}
+        for table in sorted(_table_names(connection))
+    ]
+
+
+def _source_allowed_rows(connection: sqlite3.Connection) -> dict[str, list[dict[str, object]]]:
+    queries = {
+        "users": """
+            SELECT id, telegram_id, operator_label, username, first_name,
+                   last_name, status, locale, is_admin, created_at, updated_at
+            FROM users ORDER BY id
+        """,
+        "plans": """
+            SELECT id, name, duration_days, max_devices, price, currency,
+                   is_free, is_active, created_at, updated_at
+            FROM plans ORDER BY id
+        """,
+        "devices": """
+            SELECT id, user_id, name, created_at, activated_at, expires_at,
+                   duration_days, expiry_policy, status, config_version,
+                   assignment_mode, last_config_sent_at, first_connected_at,
+                   last_connected_at, revoked_at, revoke_reason
+            FROM devices ORDER BY id
+        """,
+        "orders": """
+            SELECT id, user_id, device_id, plan_id, requested_config_version,
+                   status, payment_mode, created_at, approved_at, fulfilled_at
+            FROM orders ORDER BY id
+        """,
+        "message_templates": """
+            SELECT key, text, updated_at FROM message_templates ORDER BY key
+        """,
+    }
+    return {
+        table: _row_dicts(connection, query)
+        for table, query in sorted(queries.items())
+    }
+
+
+def _source_allowed_rows_sha256(connection: sqlite3.Connection) -> str:
+    return _canonical_sha256(_source_allowed_rows(connection))
 
 
 def _quote_identifier(value: str) -> str:
