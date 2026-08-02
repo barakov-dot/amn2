@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import FrozenInstanceError
 import hashlib
 from pathlib import Path
+import shutil
 import sqlite3
 
 import pytest
@@ -22,10 +23,12 @@ class MigrationFixture:
     def __init__(self, root: Path) -> None:
         self.usa_db = root / "usa.sqlite3"
         self.spain_db = root / "spain.sqlite3"
+        self.spain_copy = root / "spain.copy.sqlite3"
         self._create_database(self.usa_db)
         self._create_database(self.spain_db)
         self._seed_usa()
         self._seed_spain()
+        self.refresh_spain_copy()
 
     @staticmethod
     def _create_database(path: Path) -> None:
@@ -290,6 +293,55 @@ class MigrationFixture:
         finally:
             connection.close()
 
+    def add_rejecting_target_trigger(self) -> None:
+        connection = self._open(self.spain_db)
+        try:
+            connection.execute(
+                """
+                CREATE TRIGGER reject_migrated_user
+                BEFORE INSERT ON users
+                WHEN NEW.telegram_id != 1000
+                BEGIN
+                    SELECT RAISE(ABORT, 'synthetic apply rejection');
+                END
+                """
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def change_target_copy_row_without_changing_counts(self) -> None:
+        connection = self._open(self.spain_copy)
+        try:
+            connection.execute(
+                "UPDATE users SET username='changed-after-preview' WHERE id=1"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    def refresh_spain_copy(self) -> None:
+        if self.spain_copy.exists():
+            self.spain_copy.unlink()
+        shutil.copy2(self.spain_db, self.spain_copy)
+
+    def build_preview(self):
+        bot_web = migration_module()
+        return bot_web.build_bot_web_migration_preview(
+            self.usa_db,
+            self.spain_db,
+            migration_id="phase13-copy-apply-test",
+        )
+
+    def apply(self, preview=None):
+        bot_web = migration_module()
+        actual_preview = preview or self.build_preview()
+        return bot_web.apply_bot_web_migration_to_copy(
+            actual_preview,
+            source_db=self.usa_db,
+            target_copy_db=self.spain_copy,
+        )
+
 
 @pytest.fixture
 def migration_fixture(tmp_path: Path) -> MigrationFixture:
@@ -482,3 +534,128 @@ def test_policy_is_immutable_and_excludes_every_secret_bearing_surface() -> None
     } <= policy.preserved_target_tables
     with pytest.raises(FrozenInstanceError):
         policy.allowed_tables = frozenset()
+
+
+def test_apply_to_copy_imports_history_without_resurrecting_config_material(
+    migration_fixture: MigrationFixture,
+) -> None:
+    preview = migration_fixture.build_preview()
+    source_before = file_sha256(migration_fixture.usa_db)
+    target_before = file_sha256(migration_fixture.spain_db)
+
+    result = migration_fixture.apply(preview)
+
+    assert result.integrity_ok is True
+    assert result.foreign_key_issues == 0
+    assert result.spain_device_fingerprint_unchanged is True
+    assert result.spain_passport_fingerprint_unchanged is True
+    assert result.spain_issuance_fingerprints_unchanged is True
+    assert result.spain_lifecycle_fingerprint_unchanged is True
+    assert result.spain_server_fingerprint_unchanged is True
+    assert result.imported_users == 5
+    assert result.imported_plans == 8
+    assert result.imported_orders == 8
+    assert result.imported_legacy_devices == 8
+    assert result.imported_message_templates == 1
+    assert result.usable_secret_records_imported == 0
+    assert file_sha256(migration_fixture.usa_db) == source_before
+    assert file_sha256(migration_fixture.spain_db) == target_before
+
+    connection = sqlite3.connect(migration_fixture.spain_copy)
+    connection.row_factory = sqlite3.Row
+    try:
+        assert connection.execute("SELECT count(*) FROM users").fetchone()[0] == 6
+        assert connection.execute("SELECT count(*) FROM plans").fetchone()[0] == 8
+        assert connection.execute("SELECT count(*) FROM orders").fetchone()[0] == 8
+        assert connection.execute("SELECT count(*) FROM devices").fetchone()[0] == 15
+        assert connection.execute("SELECT count(*) FROM api_tokens").fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT is_admin FROM users WHERE telegram_id=1000"
+        ).fetchone()[0] == 1
+        legacy_rows = connection.execute(
+            """
+            SELECT status, config_material_status,
+                   peer_private_key_encrypted, preshared_key_encrypted,
+                   config_fingerprint
+            FROM devices WHERE id > 7 ORDER BY id
+            """
+        ).fetchall()
+        assert len(legacy_rows) == 8
+        assert {
+            (row["status"], row["config_material_status"])
+            for row in legacy_rows
+        } == {("revoked", "external_only")}
+        assert all(row["config_fingerprint"] is None for row in legacy_rows)
+        serialized = repr([tuple(row) for row in legacy_rows])
+        assert "synthetic-private" not in serialized
+        assert "synthetic-psk" not in serialized
+    finally:
+        connection.close()
+
+
+def test_apply_to_copy_replay_is_idempotent(
+    migration_fixture: MigrationFixture,
+) -> None:
+    preview = migration_fixture.build_preview()
+
+    first = migration_fixture.apply(preview)
+    copy_after_first = file_sha256(migration_fixture.spain_copy)
+    second = migration_fixture.apply(preview)
+
+    assert first.created_rows > 0
+    assert second.created_rows == 0
+    assert second.result_sha256 == first.result_sha256
+    assert file_sha256(migration_fixture.spain_copy) == copy_after_first
+
+
+def test_apply_deletes_copy_when_source_changed_after_preview(
+    migration_fixture: MigrationFixture,
+) -> None:
+    bot_web = migration_module()
+    preview = migration_fixture.build_preview()
+    connection = migration_fixture._open(migration_fixture.usa_db)
+    try:
+        connection.execute(
+            "UPDATE message_templates SET text='changed-after-preview' WHERE key='welcome'"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(bot_web.MigrationPreconditionError):
+        migration_fixture.apply(preview)
+
+    assert migration_fixture.usa_db.exists()
+    assert migration_fixture.spain_db.exists()
+    assert not migration_fixture.spain_copy.exists()
+
+
+def test_apply_deletes_copy_when_target_row_changed_after_preview(
+    migration_fixture: MigrationFixture,
+) -> None:
+    bot_web = migration_module()
+    preview = migration_fixture.build_preview()
+    migration_fixture.change_target_copy_row_without_changing_counts()
+
+    with pytest.raises(bot_web.MigrationPreconditionError):
+        migration_fixture.apply(preview)
+
+    assert migration_fixture.usa_db.exists()
+    assert migration_fixture.spain_db.exists()
+    assert not migration_fixture.spain_copy.exists()
+
+
+def test_apply_rolls_back_and_deletes_copy_on_transaction_failure(
+    migration_fixture: MigrationFixture,
+) -> None:
+    bot_web = migration_module()
+    migration_fixture.add_rejecting_target_trigger()
+    migration_fixture.refresh_spain_copy()
+    preview = migration_fixture.build_preview()
+
+    with pytest.raises(bot_web.MigrationApplyError):
+        migration_fixture.apply(preview)
+
+    assert migration_fixture.usa_db.exists()
+    assert migration_fixture.spain_db.exists()
+    assert not migration_fixture.spain_copy.exists()

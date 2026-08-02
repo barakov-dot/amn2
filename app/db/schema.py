@@ -342,6 +342,19 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             FOREIGN KEY (rotated_from_token_id) REFERENCES api_tokens(id) ON DELETE SET NULL
         );
 
+        CREATE TABLE IF NOT EXISTS legacy_migration_records (
+            migration_id TEXT NOT NULL CHECK (length(trim(migration_id)) > 0),
+            source_table TEXT NOT NULL CHECK (length(trim(source_table)) > 0),
+            source_row_sha256 TEXT NOT NULL
+                CHECK (
+                    length(source_row_sha256) = 64
+                    AND source_row_sha256 NOT GLOB '*[^0-9a-f]*'
+                ),
+            target_row_id TEXT NOT NULL CHECK (length(trim(target_row_id)) > 0),
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (migration_id, source_table, source_row_sha256)
+        );
+
         CREATE TABLE IF NOT EXISTS ignored_remote_peers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             server_id INTEGER NOT NULL,
@@ -375,6 +388,8 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
             WHERE status IN ('pending', 'active', 'disabled');
         CREATE INDEX IF NOT EXISTS idx_device_traffic_device_collected
             ON device_traffic_snapshots(device_id, collected_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_legacy_migration_records_migration
+            ON legacy_migration_records(migration_id, source_table);
         CREATE INDEX IF NOT EXISTS idx_admin_config_issuance_recipient
             ON admin_config_issuance_receipts(
                 recipient_user_id, created_at DESC, id DESC
