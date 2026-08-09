@@ -48,18 +48,7 @@ def _seed_existing_awg2_device(
     )
 
 
-def test_phase13_schema_is_additive_and_leaves_legacy_rows_unclassified(database):
-    conn, repo = database
-    user_id, server_id = _seed_user_and_server(repo)
-    device_id = _seed_existing_awg2_device(
-        repo, user_id=user_id, server_id=server_id
-    )
-
-    device = repo.get_device(device_id)
-    assert device["protocol_version"] is None
-    assert device["runtime_instance_id"] is None
-    assert device["compatibility_evidence_id"] is None
-
+def assert_phase13_protocol_schema(conn: sqlite3.Connection) -> None:
     passport_columns = {
         row["name"] for row in conn.execute("PRAGMA table_info(device_passports)")
     }
@@ -82,6 +71,21 @@ def test_phase13_schema_is_additive_and_leaves_legacy_rows_unclassified(database
         "client_platform",
         "client_version",
     } <= receipt_columns
+
+
+def test_phase13_schema_is_additive_and_leaves_legacy_rows_unclassified(database):
+    conn, repo = database
+    user_id, server_id = _seed_user_and_server(repo)
+    device_id = _seed_existing_awg2_device(
+        repo, user_id=user_id, server_id=server_id
+    )
+
+    device = repo.get_device(device_id)
+    assert device["protocol_version"] is None
+    assert device["runtime_instance_id"] is None
+    assert device["compatibility_evidence_id"] is None
+
+    assert_phase13_protocol_schema(conn)
 
 
 def test_runtime_identity_is_unique_per_physical_server(database):
