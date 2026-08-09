@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from app.vpn.amneziawg_v2.config import ClientConfigInput
@@ -80,7 +82,7 @@ class _Resolver:
 
 def _awg3_input() -> Awg3ClientConfigInput:
     return Awg3ClientConfigInput(
-        awg2=_input(),
+        awg2=replace(_input(), s1=12, s2=12, s3=12, s4=12),
         header_protection_key=HeaderProtectionSecretRef(
             "secret:awg3:hpk", "sha256:" + "b" * 64
         ),

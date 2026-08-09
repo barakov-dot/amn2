@@ -54,6 +54,12 @@ class Awg3ClientConfigInput:
             raise ValueError("awg2")
         if not isinstance(self.header_protection_key, HeaderProtectionSecretRef):
             raise ValueError("header_protection_key")
+        nonce_values = (self.awg2.s1, self.awg2.s2, self.awg2.s3, self.awg2.s4)
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 12
+            for value in nonce_values
+        ):
+            raise ValueError("AWG3 HeaderProtectionKey requires S1-S4 values >= 12")
         for field in (
             "content_padding_addition",
             "rekey_after_time",

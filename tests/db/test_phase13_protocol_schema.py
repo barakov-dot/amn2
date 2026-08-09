@@ -111,7 +111,7 @@ def test_runtime_identity_is_unique_per_physical_server(database):
             runtime_instance_id="rt-conflict",
             server_id=server_id,
             protocol_version="awg3",
-            runtime_version="3.0.1",
+            runtime_version="3.0.3",
             interface_name="awg0",
             udp_port=30002,
             vpn_cidr="10.212.13.0/24",

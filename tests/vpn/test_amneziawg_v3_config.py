@@ -1,5 +1,6 @@
 import hashlib
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -45,9 +46,11 @@ class StaticResolver:
         return self._value
 
 
-def awg3_input() -> Awg3ClientConfigInput:
+def awg3_input(
+    *, s1: int = 12, s2: int = 12, s3: int = 12, s4: int = 12
+) -> Awg3ClientConfigInput:
     return Awg3ClientConfigInput(
-        awg2=existing_awg2_input(),
+        awg2=replace(existing_awg2_input(), s1=s1, s2=s2, s3=s3, s4=s4),
         header_protection_key=HeaderProtectionSecretRef(
             reference="secret:awg3:hpk",
             fingerprint="sha256:" + "b" * 64,
@@ -62,11 +65,31 @@ def awg3_input() -> Awg3ClientConfigInput:
 
 
 def test_awg2_renderer_golden_output_is_byte_unchanged():
-    rendered = render_awg2_client_config(existing_awg2_input()).encode()
+    source = existing_awg2_input()
+    assert (source.s1, source.s2, source.s3, source.s4) == (0, 0, 0, 0)
+    rendered = render_awg2_client_config(source).encode()
     assert len(rendered) == 323
     assert hashlib.sha256(rendered).hexdigest() == (
         "8425d1666135621c398e1df29ee82c849a28641a152ddf1f69b5330f6b95e5eb"
     )
+
+
+@pytest.mark.parametrize("field", ["s1", "s2", "s3", "s4"])
+def test_awg3_header_protection_rejects_each_nonce_below_12(field):
+    values = {"s1": 12, "s2": 12, "s3": 12, "s4": 12}
+    values[field] = 11
+    with pytest.raises(ValueError, match="S1-S4.*12"):
+        render_awg3_client_config(
+            awg3_input(**values), resolver=StaticResolver("raw-hpk")
+        )
+
+
+def test_awg3_header_protection_accepts_all_nonces_at_12():
+    rendered = render_awg3_client_config(
+        awg3_input(s1=12, s2=12, s3=12, s4=12),
+        resolver=StaticResolver("raw-hpk"),
+    )
+    assert "HeaderProtectionKey" in rendered
 
 
 def test_awg2_input_rejects_awg3_only_fields():

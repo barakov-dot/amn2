@@ -22,7 +22,7 @@ def runtime(protocol: ProtocolVersion, *, accepted: bool) -> RuntimeInstanceSpec
         runtime_instance_id=f"rt-spain-{protocol.value}",
         server_id=1,
         protocol_version=protocol,
-        runtime_version="3.0.1" if protocol is ProtocolVersion.AWG3 else "accepted-phase12",
+        runtime_version="3.0.3" if protocol is ProtocolVersion.AWG3 else "accepted-phase12",
         interface_name="awg3" if protocol is ProtocolVersion.AWG3 else "awg0",
         udp_port=30002 if protocol is ProtocolVersion.AWG3 else 30001,
         vpn_cidr="10.212.13.0/24" if protocol is ProtocolVersion.AWG3 else "10.212.12.0/24",

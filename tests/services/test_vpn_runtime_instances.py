@@ -32,7 +32,7 @@ def _planned_awg3_spec() -> RuntimeInstanceSpec:
         runtime_instance_id="rt-spain-awg3",
         server_id=1,
         protocol_version=ProtocolVersion.AWG3,
-        runtime_version="3.0.1",
+        runtime_version="3.0.3",
         interface_name="awg3",
         udp_port=30002,
         vpn_cidr="10.212.13.0/24",
