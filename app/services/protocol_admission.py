@@ -153,39 +153,36 @@ class ProtocolAdmissionService:
                     else "blocked_unverified_version"
                 )
                 return AdmissionResult(decision, request.protocol_version, None, None)
-            if self._awg3_control_state is not None:
-                control = self._awg3_control_state
-                if not isinstance(control, Awg3ControlState):
-                    raise ValueError("awg3_control_state")
-                accepted_builds = self._accepted_awg3_builds
-                if not isinstance(accepted_builds, frozenset):
-                    accepted_builds = frozenset()
-                if (
-                    not control.runtime_accepted
-                    or not control.global_accepted
-                    or not control.runtime_receipt
-                    or request.client not in accepted_builds
-                ):
-                    return AdmissionResult(
-                        "blocked_global_acceptance",
-                        request.protocol_version,
-                        None,
-                        None,
-                    )
-                if not control.issuance_enabled:
-                    return AdmissionResult(
-                        "blocked_issuance_disabled",
-                        request.protocol_version,
-                        None,
-                        None,
-                    )
-                if control.emergency_suspended:
-                    return AdmissionResult(
-                        "blocked_runtime_suspended",
-                        request.protocol_version,
-                        None,
-                        None,
-                    )
+            control = self._awg3_control_state
+            accepted_builds = self._accepted_awg3_builds
+            if (
+                not isinstance(control, Awg3ControlState)
+                or not isinstance(accepted_builds, frozenset)
+                or not control.runtime_accepted
+                or not control.global_accepted
+                or not control.runtime_receipt
+                or request.client not in accepted_builds
+            ):
+                return AdmissionResult(
+                    "blocked_global_acceptance",
+                    request.protocol_version,
+                    None,
+                    None,
+                )
+            if not control.issuance_enabled:
+                return AdmissionResult(
+                    "blocked_issuance_disabled",
+                    request.protocol_version,
+                    None,
+                    None,
+                )
+            if control.emergency_suspended:
+                return AdmissionResult(
+                    "blocked_runtime_suspended",
+                    request.protocol_version,
+                    None,
+                    None,
+                )
         passed = next(
             (
                 item

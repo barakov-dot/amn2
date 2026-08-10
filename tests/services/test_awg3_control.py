@@ -1,5 +1,6 @@
 import importlib
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, timezone
 
 import pytest
@@ -202,3 +203,118 @@ def test_emergency_suspend_disables_issuance_and_resume_requires_fresh_receipt(r
     assert resumed.emergency_suspended is False
     assert resumed.issuance_enabled is False
     assert resumed.runtime_receipt == FRESH_RUNTIME_RECEIPT
+
+
+def test_each_control_transition_enters_repository_transaction(repo, monkeypatch):
+    module = awg3_control_module()
+    service = module.Awg3ControlService(repo, now=NOW)
+    original_transaction = repo.transaction
+    transaction_entries = 0
+
+    @contextmanager
+    def tracked_transaction():
+        nonlocal transaction_entries
+        transaction_entries += 1
+        with original_transaction():
+            yield
+
+    monkeypatch.setattr(repo, "transaction", tracked_transaction)
+
+    service.accept_runtime(
+        runtime_receipt=RUNTIME_RECEIPT,
+        actor_id=14001,
+        reason="runtime accepted",
+    )
+    service.accept_build(
+        client=exact_client(),
+        evidence=complete_evidence(),
+        actor_id=14001,
+        reason="build accepted",
+    )
+    service.set_issuance_enabled(
+        True,
+        accepted_build=exact_client(),
+        actor_id=14001,
+        reason="issuance enabled",
+    )
+    service.emergency_suspend(
+        actor_id=14001,
+        reason="emergency suspended",
+    )
+    service.resume_after_preflight(
+        runtime_receipt=FRESH_RUNTIME_RECEIPT,
+        actor_id=14001,
+        reason="preflight resumed",
+    )
+
+    assert transaction_entries == 5
+
+
+def test_emergency_suspend_rolls_back_when_state_write_raises(repo, monkeypatch):
+    module = awg3_control_module()
+    service = module.Awg3ControlService(repo, now=NOW)
+    service.accept_runtime(
+        runtime_receipt=RUNTIME_RECEIPT,
+        actor_id=14001,
+        reason="runtime accepted",
+    )
+    service.accept_build(
+        client=exact_client(),
+        evidence=complete_evidence(),
+        actor_id=14001,
+        reason="build accepted",
+    )
+    service.set_issuance_enabled(
+        True,
+        accepted_build=exact_client(),
+        actor_id=14001,
+        reason="issuance enabled",
+    )
+    original_update = repo.update_awg3_control_state
+
+    def write_then_raise(**kwargs):
+        original_update(**kwargs)
+        raise RuntimeError("forced persistence failure")
+
+    monkeypatch.setattr(repo, "update_awg3_control_state", write_then_raise)
+
+    with pytest.raises(RuntimeError, match="forced persistence failure"):
+        service.emergency_suspend(
+            actor_id=14001,
+            reason="must roll back",
+        )
+
+    state = repo.get_awg3_control_state()
+    assert state["issuance_enabled"] == 1
+    assert state["emergency_suspended"] == 0
+
+
+def test_accept_build_rolls_back_if_global_state_write_raises(repo, monkeypatch):
+    module = awg3_control_module()
+    service = module.Awg3ControlService(repo, now=NOW)
+
+    def raise_before_global_write(**kwargs):
+        raise RuntimeError("forced global-state failure")
+
+    monkeypatch.setattr(
+        repo,
+        "update_awg3_control_state",
+        raise_before_global_write,
+    )
+
+    with pytest.raises(RuntimeError, match="forced global-state failure"):
+        service.accept_build(
+            client=exact_client(),
+            evidence=complete_evidence(),
+            actor_id=14001,
+            reason="must roll back together",
+        )
+
+    build = repo.get_client_build_acceptance(
+        application="amnezia_vpn",
+        platform="windows",
+        client_version="5.0.0.5",
+        client_build="exact-build",
+    )
+    assert build is None
+    assert repo.get_awg3_control_state()["global_accepted"] == 0

@@ -74,6 +74,17 @@ def request(application: str, version: str) -> AdmissionRequest:
     )
 
 
+def permitting_awg3_state():
+    module = importlib.import_module("app.services.awg3_control")
+    return module.Awg3ControlState(
+        runtime_accepted=True,
+        global_accepted=True,
+        issuance_enabled=True,
+        emergency_suspended=False,
+        runtime_receipt="sha256:" + "a" * 64,
+    )
+
+
 def decide_exact_awg3(
     runtime_accepted: bool,
     build_accepted: bool,
@@ -111,6 +122,17 @@ def decide_exact_awg3(
 def test_awg3_gate_order(runtime, build, enabled, suspended, decision):
     result = decide_exact_awg3(runtime, build, enabled, suspended)
     assert result.decision == decision
+
+
+def test_awg3_admission_without_injected_controls_fails_closed():
+    result = ProtocolAdmissionService(
+        evidence=complete_evidence(),
+        runtimes=(runtime(ProtocolVersion.AWG3, accepted=True),),
+        now=NOW,
+    ).decide(request("amnezia_vpn", "5.0.0.5"))
+
+    assert result.decision == "blocked_global_acceptance"
+    assert result.admitted is False
 
 
 def test_awg2_admission_does_not_access_awg3_control_state():
@@ -176,23 +198,33 @@ def test_future_dated_passed_evidence_fails_closed():
 
 
 def test_passed_exact_client_and_accepted_runtime_admit_awg3():
+    client = request("amnezia_vpn", "5.0.0.5").client
     service = ProtocolAdmissionService(
         evidence=complete_evidence(),
         runtimes=(runtime(ProtocolVersion.AWG3, accepted=True),),
         now=NOW,
+        awg3_control_state=permitting_awg3_state(),
+        accepted_awg3_builds=frozenset({client}),
     )
-    result = service.decide(request("amnezia_vpn", "5.0.0.5"))
+    result = service.decide(
+        AdmissionRequest(client=client, protocol_version=ProtocolVersion.AWG3)
+    )
     assert result.decision == "admitted_awg3"
     assert result.runtime_instance_id == "rt-spain-awg3"
 
 
 def test_passed_client_with_candidate_runtime_stays_candidate():
+    client = request("amnezia_vpn", "5.0.0.5").client
     service = ProtocolAdmissionService(
         evidence=complete_evidence(),
         runtimes=(runtime(ProtocolVersion.AWG3, accepted=False),),
         now=NOW,
+        awg3_control_state=permitting_awg3_state(),
+        accepted_awg3_builds=frozenset({client}),
     )
-    result = service.decide(request("amnezia_vpn", "5.0.0.5"))
+    result = service.decide(
+        AdmissionRequest(client=client, protocol_version=ProtocolVersion.AWG3)
+    )
     assert result.decision == "candidate_awg3"
     assert result.admitted is False
 

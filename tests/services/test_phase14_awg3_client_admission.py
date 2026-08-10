@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from app.services.awg3_control import Awg3ControlState
 from app.services.client_compatibility import (
     ClientCompatibilityEvidence,
     ClientIdentity,
@@ -299,6 +300,14 @@ def test_superseded_nonstable_history_does_not_block_current_stable_state(
         evidence=tuple(evidence),
         runtimes=(accepted_runtime(),),
         now=NOW,
+        awg3_control_state=Awg3ControlState(
+            runtime_accepted=True,
+            global_accepted=True,
+            issuance_enabled=True,
+            emergency_suspended=False,
+            runtime_receipt="sha256:" + "a" * 64,
+        ),
+        accepted_awg3_builds=frozenset({evidence[0].client}),
     ).decide(
         AdmissionRequest(
             client=evidence[0].client,

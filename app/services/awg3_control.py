@@ -68,13 +68,14 @@ class Awg3ControlService:
         reason: str,
     ) -> Awg3ControlState:
         self._validate_runtime_receipt(runtime_receipt)
-        state = replace(
-            self._state(),
-            runtime_accepted=True,
-            issuance_enabled=False,
-            runtime_receipt=runtime_receipt,
-        )
-        return self._save(state, actor_id=actor_id, reason=reason)
+        with self._repo.transaction():
+            state = replace(
+                self._state(),
+                runtime_accepted=True,
+                issuance_enabled=False,
+                runtime_receipt=runtime_receipt,
+            )
+            return self._save(state, actor_id=actor_id, reason=reason)
 
     def accept_build(
         self,
@@ -103,19 +104,20 @@ class Awg3ControlService:
             state = ClientBuildState.CANDIDATE
         else:
             state = ClientBuildState.COMPATIBILITY_REJECTED
-        self._repo.upsert_client_build_acceptance(
-            application=client.application,
-            platform=client.platform,
-            client_version=client.version,
-            client_build=client.build_id,
-            state=state.value,
-            evidence_ids=tuple(item.evidence_id for item in current),
-            actor_id=actor_id,
-            reason=reason,
-        )
-        if state is ClientBuildState.ACCEPTED:
-            control = replace(self._state(), global_accepted=True)
-            self._save(control, actor_id=actor_id, reason=reason)
+        with self._repo.transaction():
+            self._repo.upsert_client_build_acceptance(
+                application=client.application,
+                platform=client.platform,
+                client_version=client.version,
+                client_build=client.build_id,
+                state=state.value,
+                evidence_ids=tuple(item.evidence_id for item in current),
+                actor_id=actor_id,
+                reason=reason,
+            )
+            if state is ClientBuildState.ACCEPTED:
+                control = replace(self._state(), global_accepted=True)
+                self._save(control, actor_id=actor_id, reason=reason)
         return state
 
     def set_issuance_enabled(
@@ -126,31 +128,35 @@ class Awg3ControlService:
         actor_id: int,
         reason: str,
     ) -> Awg3ControlState:
-        state = self._state()
-        if enabled:
-            if not state.runtime_accepted or not self._is_valid_receipt(
-                state.runtime_receipt
-            ):
-                raise ValueError("runtime acceptance is required")
-            if accepted_build is None or accepted_build.build_id is None:
-                raise ValueError("accepted exact build is required")
-            build = self._repo.get_client_build_acceptance(
-                application=accepted_build.application,
-                platform=accepted_build.platform,
-                client_version=accepted_build.version,
-                client_build=accepted_build.build_id,
+        with self._repo.transaction():
+            state = self._state()
+            if enabled:
+                if not state.runtime_accepted or not self._is_valid_receipt(
+                    state.runtime_receipt
+                ):
+                    raise ValueError("runtime acceptance is required")
+                if accepted_build is None or accepted_build.build_id is None:
+                    raise ValueError("accepted exact build is required")
+                build = self._repo.get_client_build_acceptance(
+                    application=accepted_build.application,
+                    platform=accepted_build.platform,
+                    client_version=accepted_build.version,
+                    client_build=accepted_build.build_id,
+                )
+                if (
+                    build is None
+                    or build["state"] != ClientBuildState.ACCEPTED.value
+                ):
+                    raise ValueError("accepted exact build is required")
+                if not state.global_accepted:
+                    raise ValueError("global acceptance is required")
+                if state.emergency_suspended:
+                    raise ValueError("runtime suspension must be cleared")
+            return self._save(
+                replace(state, issuance_enabled=enabled),
+                actor_id=actor_id,
+                reason=reason,
             )
-            if build is None or build["state"] != ClientBuildState.ACCEPTED.value:
-                raise ValueError("accepted exact build is required")
-            if not state.global_accepted:
-                raise ValueError("global acceptance is required")
-            if state.emergency_suspended:
-                raise ValueError("runtime suspension must be cleared")
-        return self._save(
-            replace(state, issuance_enabled=enabled),
-            actor_id=actor_id,
-            reason=reason,
-        )
 
     def emergency_suspend(
         self,
@@ -158,12 +164,13 @@ class Awg3ControlService:
         actor_id: int,
         reason: str,
     ) -> Awg3ControlState:
-        state = replace(
-            self._state(),
-            issuance_enabled=False,
-            emergency_suspended=True,
-        )
-        return self._save(state, actor_id=actor_id, reason=reason)
+        with self._repo.transaction():
+            state = replace(
+                self._state(),
+                issuance_enabled=False,
+                emergency_suspended=True,
+            )
+            return self._save(state, actor_id=actor_id, reason=reason)
 
     def resume_after_preflight(
         self,
@@ -173,17 +180,18 @@ class Awg3ControlService:
         reason: str,
     ) -> Awg3ControlState:
         self._validate_runtime_receipt(runtime_receipt)
-        current = self._state()
-        if runtime_receipt == current.runtime_receipt:
-            raise ValueError("fresh runtime receipt is required")
-        resumed = replace(
-            current,
-            runtime_accepted=True,
-            issuance_enabled=False,
-            emergency_suspended=False,
-            runtime_receipt=runtime_receipt,
-        )
-        return self._save(resumed, actor_id=actor_id, reason=reason)
+        with self._repo.transaction():
+            current = self._state()
+            if runtime_receipt == current.runtime_receipt:
+                raise ValueError("fresh runtime receipt is required")
+            resumed = replace(
+                current,
+                runtime_accepted=True,
+                issuance_enabled=False,
+                emergency_suspended=False,
+                runtime_receipt=runtime_receipt,
+            )
+            return self._save(resumed, actor_id=actor_id, reason=reason)
 
     def _state(self) -> Awg3ControlState:
         row = self._repo.get_awg3_control_state()
