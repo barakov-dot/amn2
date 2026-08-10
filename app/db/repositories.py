@@ -71,8 +71,14 @@ class Repository:
     @contextmanager
     def transaction(self) -> Iterator[None]:
         is_outermost = self._transaction_depth == 0
+        savepoint: str | None = None
         if is_outermost:
             self._conn.execute("BEGIN")
+        else:
+            sequence = getattr(self, "_transaction_savepoint_sequence", 0)
+            self._transaction_savepoint_sequence = sequence + 1
+            savepoint = f"repository_transaction_{sequence}"
+            self._conn.execute(f"SAVEPOINT {savepoint}")
 
         self._transaction_depth += 1
         try:
@@ -81,11 +87,18 @@ class Repository:
             self._transaction_depth -= 1
             if is_outermost:
                 self._conn.rollback()
+            else:
+                assert savepoint is not None
+                self._conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             raise
         else:
             self._transaction_depth -= 1
             if is_outermost:
                 self._conn.commit()
+            else:
+                assert savepoint is not None
+                self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
 
     def upsert_user(
         self,
