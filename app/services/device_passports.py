@@ -9,6 +9,10 @@ from datetime import datetime, timezone
 from typing import Literal
 
 from app.db.repositories import Repository
+from app.services.dual_protocol_profiles import (
+    DualProtocolProfileService,
+    ProtocolProfile,
+)
 from app.services.drift_diagnostics import (
     DesiredPeerState,
     ObservedPeerState,
@@ -97,6 +101,7 @@ class DevicePassport:
     reconciliation: ReconciliationSnapshot
     created_at: datetime
     updated_at: datetime
+    protocol_profiles: tuple[ProtocolProfile, ...] = ()
 
     def safe_metadata(self) -> dict[str, object]:
         snapshot = self.reconciliation
@@ -136,6 +141,13 @@ class DevicePassport:
             "recommended_next_action": snapshot.recommended_next_action,
             "created_at": _format_datetime(self.created_at),
             "updated_at": _format_datetime(self.updated_at),
+            "protocol_profiles": [
+                profile.safe_metadata()
+                for profile in sorted(
+                    self.protocol_profiles,
+                    key=lambda item: item.protocol_version.value,
+                )
+            ],
             "capability_boundary": {
                 "hardware_fingerprint": False,
                 "endpoint_posture": False,
@@ -423,6 +435,9 @@ def _passport_from_row(
         reconciliation=snapshot,
         created_at=_parse_datetime(str(row["created_at"])),
         updated_at=_parse_datetime(str(row["updated_at"])),
+        protocol_profiles=DualProtocolProfileService(repo).for_passport(
+            str(row["device_id"])
+        ),
     )
 
 

@@ -19,6 +19,7 @@ from app.services.device_passports import (
     list_device_passports,
     record_device_acceptance,
 )
+from app.vpn.protocol_versions import ProtocolVersion
 
 
 NOW = datetime(2026, 7, 11, 15, 0, tzinfo=timezone.utc)
@@ -104,6 +105,69 @@ def test_device_passport_safe_metadata_states_capability_boundary():
         "amnezia_agent_present": False,
     }
     assert "PrivateKey" not in json.dumps(payload)
+
+
+def test_device_passport_safe_metadata_adds_sorted_protocol_profiles_without_removing_legacy_fields():
+    from app.services.dual_protocol_profiles import DualProtocolProfileService
+
+    _, repo, user_id, awg2_device_id = _repo()
+    passport = create_device_passport(
+        repo,
+        owner_user_id=user_id,
+        local_device_id=awg2_device_id,
+        platform="windows",
+        official_client_type="amnezia_vpn",
+        import_method="standard_conf",
+        config_schema_version="amneziawg_v2",
+        config_text=RAW_CONFIG,
+    )
+    before = passport.safe_metadata()
+    server_id = int(repo.get_device(awg2_device_id)["server_id"])
+    awg3_device_id = repo.create_device(
+        user_id=user_id,
+        server_id=server_id,
+        name="phone-awg3",
+        duration_days=30,
+        vpn_ip="10.8.0.3",
+        peer_public_key="passport-awg3-public-key",
+        peer_private_key_encrypted="encrypted-private-awg3",
+        preshared_key_encrypted="encrypted-psk-awg3",
+        config_version="amneziawg_v3",
+        protocol_version="awg3",
+    )
+    service = DualProtocolProfileService(repo)
+    awg3 = service.attach_active(
+        passport.device_id,
+        ProtocolVersion.AWG3,
+        awg3_device_id,
+    )
+    awg2 = service.attach_active(
+        passport.device_id,
+        ProtocolVersion.AWG2,
+        awg2_device_id,
+    )
+
+    after = get_device_passport(repo, passport.device_id).safe_metadata()
+
+    for key, value in before.items():
+        if key != "protocol_profiles":
+            assert after[key] == value
+    assert after["protocol_profiles"] == [
+        {
+            "profile_id": awg2.profile_id,
+            "protocol_version": "awg2",
+            "local_device_id": awg2_device_id,
+            "lifecycle_state": "active",
+            "replacement_device_id": None,
+        },
+        {
+            "profile_id": awg3.profile_id,
+            "protocol_version": "awg3",
+            "local_device_id": awg3_device_id,
+            "lifecycle_state": "active",
+            "replacement_device_id": None,
+        },
+    ]
 
 
 def test_acceptance_and_last_seen_can_be_recorded_without_config_material():
