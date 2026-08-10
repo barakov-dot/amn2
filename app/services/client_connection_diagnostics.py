@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 from typing import Literal
 
 
@@ -27,6 +28,41 @@ class ClientConnectionObservation:
     sustained_transfer_seconds: float | None
     short_probe_failures_present: bool
     observation_fresh: bool = True
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "sustained_transfer_completed",
+            "short_probe_failures_present",
+            "observation_fresh",
+        ):
+            if type(getattr(self, field_name)) is not bool:
+                raise ValueError(field_name)
+
+        for field_name in (
+            "site_successes",
+            "site_attempts",
+            "telegram_successes",
+            "telegram_attempts",
+            "sustained_transfer_bytes",
+        ):
+            value = getattr(self, field_name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(field_name)
+
+        for field_name in (
+            "telegram_connect_max_seconds",
+            "telegram_ttfb_max_seconds",
+            "sustained_transfer_seconds",
+        ):
+            value = getattr(self, field_name)
+            if value is None:
+                continue
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or (isinstance(value, float) and not isfinite(value))
+            ):
+                raise ValueError(field_name)
 
 
 @dataclass(frozen=True, slots=True)

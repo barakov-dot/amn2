@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, fields
+from dataclasses import FrozenInstanceError, fields, replace
 
 import pytest
 
@@ -43,6 +43,34 @@ def _stale_partial_observation() -> ClientConnectionObservation:
         short_probe_failures_present=True,
         observation_fresh=False,
     )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "malformed_value"),
+    [
+        ("sustained_transfer_completed", "false"),
+        ("short_probe_failures_present", "false"),
+        ("observation_fresh", "false"),
+        ("site_successes", True),
+        ("site_attempts", True),
+        ("telegram_successes", True),
+        ("telegram_attempts", True),
+        ("sustained_transfer_bytes", True),
+        ("telegram_connect_max_seconds", float("inf")),
+        ("telegram_ttfb_max_seconds", float("inf")),
+        ("sustained_transfer_seconds", float("inf")),
+        ("site_attempts", "6"),
+    ],
+)
+def test_observation_rejects_malformed_runtime_evidence(
+    field_name: str,
+    malformed_value: object,
+):
+    with pytest.raises(ValueError, match=field_name):
+        replace(
+            _successful_observation(),
+            **{field_name: malformed_value},
+        )
 
 
 def test_realistic_success_with_latency_is_a_nonblocking_warning():

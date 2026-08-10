@@ -361,10 +361,12 @@ def apply_bot_web_migration_to_copy(
         raise MigrationPreconditionError("migration preview is not applyable")
     source_path = _resolve_database_path(source_db)
     target_path = _resolve_database_path(target_copy_db)
-    if source_path == target_path:
+    if source_path.samefile(target_path):
         raise ValueError("source_db and target_copy_db must be different files")
     if not target_path.name.endswith(".copy.sqlite3"):
         raise ValueError("target database must be an explicit .copy.sqlite3 file")
+    if target_path.stat().st_nlink != 1:
+        raise ValueError("target database must not be hard-linked")
 
     try:
         return _apply_verified_copy(preview, source_path, target_path)
@@ -459,7 +461,7 @@ def _is_complete_replay(
 ) -> bool:
     rows = target.execute(
         """
-        SELECT source_table, source_row_sha256
+        SELECT source_table, source_row_sha256, target_row_id
         FROM legacy_migration_records
         WHERE migration_id=?
         """,
@@ -471,6 +473,14 @@ def _is_complete_replay(
     expected = _expected_ledger_keys(preview, source)
     if actual != expected:
         raise MigrationPreconditionError("migration ledger is partial or invalid")
+    complete_marker = next(
+        str(row[2])
+        for row in rows
+        if str(row[0]) == "__preview__"
+        and str(row[1]) == preview.sha256
+    )
+    if complete_marker != _replay_target_state_sha256(target, preview.migration_id):
+        raise MigrationPreconditionError("migration replay target state changed")
     if _target_invariant_hashes(target) != preview.invariant_hashes:
         raise MigrationPreconditionError("Spain invariants changed after migration")
     return True
@@ -594,7 +604,13 @@ def _apply_rows(
             created += 1
         _record_ledger(target, preview, "message_templates", row, str(row["key"]))
 
-    _record_ledger_hash(target, preview, "__preview__", preview.sha256, "complete")
+    _record_ledger_hash(
+        target,
+        preview,
+        "__preview__",
+        preview.sha256,
+        _replay_target_state_sha256(target, preview.migration_id),
+    )
     return created
 
 
@@ -678,6 +694,58 @@ def _expected_ledger_keys(
         )
     )
     return keys
+
+
+_REPLAY_TARGET_TABLES = {
+    "users": ("users", "id"),
+    "plans": ("plans", "id"),
+    "devices": ("devices", "id"),
+    "orders": ("orders", "id"),
+    "message_templates": ("message_templates", "key"),
+    "__legacy_server__": ("servers", "id"),
+}
+
+
+def _replay_target_state_sha256(
+    target: sqlite3.Connection,
+    migration_id: str,
+) -> str:
+    ledger_rows = target.execute(
+        """
+        SELECT source_table, source_row_sha256, target_row_id
+        FROM legacy_migration_records
+        WHERE migration_id=? AND source_table != '__preview__'
+        ORDER BY source_table, source_row_sha256
+        """,
+        (migration_id,),
+    ).fetchall()
+    payload: list[dict[str, object]] = []
+    for ledger_row in ledger_rows:
+        source_table = str(ledger_row[0])
+        target_spec = _REPLAY_TARGET_TABLES.get(source_table)
+        if target_spec is None:
+            raise MigrationPreconditionError("migration replay target state changed")
+        target_table, target_key = target_spec
+        target_row_id = str(ledger_row[2])
+        target_row = target.execute(
+            f"SELECT * FROM {_quote_identifier(target_table)} "
+            f"WHERE {_quote_identifier(target_key)}=?",
+            (target_row_id,),
+        ).fetchone()
+        if target_row is None:
+            raise MigrationPreconditionError("migration replay target state changed")
+        payload.append(
+            {
+                "source_table": source_table,
+                "source_row_sha256": str(ledger_row[1]),
+                "target_row_id": target_row_id,
+                "target_row": {
+                    key: _canonical_sqlite_value(target_row[key])
+                    for key in target_row.keys()
+                },
+            }
+        )
+    return _canonical_sha256(payload)
 
 
 def _verify_final_counts(

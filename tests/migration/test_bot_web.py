@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import FrozenInstanceError
 import hashlib
+import os
 from pathlib import Path
 import shutil
 import sqlite3
@@ -606,6 +607,96 @@ def test_apply_to_copy_replay_is_idempotent(
     assert second.created_rows == 0
     assert second.result_sha256 == first.result_sha256
     assert file_sha256(migration_fixture.spain_copy) == copy_after_first
+
+
+def test_apply_rejects_hard_link_to_live_target(
+    migration_fixture: MigrationFixture,
+) -> None:
+    bot_web = migration_module()
+    preview = migration_fixture.build_preview()
+    migration_fixture.spain_copy.unlink()
+    os.link(migration_fixture.spain_db, migration_fixture.spain_copy)
+    live_before = file_sha256(migration_fixture.spain_db)
+
+    with pytest.raises(ValueError, match="target database must not be hard-linked"):
+        migration_fixture.apply(preview)
+
+    assert file_sha256(migration_fixture.spain_db) == live_before
+
+
+def test_apply_replay_deletes_copy_when_imported_target_row_is_deleted(
+    migration_fixture: MigrationFixture,
+) -> None:
+    bot_web = migration_module()
+    preview = migration_fixture.build_preview()
+    migration_fixture.apply(preview)
+    connection = migration_fixture._open(migration_fixture.spain_copy)
+    try:
+        connection.execute("DELETE FROM message_templates WHERE key='welcome'")
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(
+        bot_web.MigrationPreconditionError,
+        match="migration replay target state changed",
+    ):
+        migration_fixture.apply(preview)
+
+    assert not migration_fixture.spain_copy.exists()
+
+
+def test_apply_replay_deletes_copy_when_imported_target_row_content_changes(
+    migration_fixture: MigrationFixture,
+) -> None:
+    bot_web = migration_module()
+    preview = migration_fixture.build_preview()
+    migration_fixture.apply(preview)
+    connection = migration_fixture._open(migration_fixture.spain_copy)
+    try:
+        connection.execute(
+            "UPDATE message_templates SET text='tampered' WHERE key='welcome'"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(
+        bot_web.MigrationPreconditionError,
+        match="migration replay target state changed",
+    ):
+        migration_fixture.apply(preview)
+
+    assert not migration_fixture.spain_copy.exists()
+
+
+def test_apply_replay_deletes_copy_when_ledger_target_mapping_changes(
+    migration_fixture: MigrationFixture,
+) -> None:
+    bot_web = migration_module()
+    preview = migration_fixture.build_preview()
+    migration_fixture.apply(preview)
+    connection = migration_fixture._open(migration_fixture.spain_copy)
+    try:
+        connection.execute(
+            """
+            UPDATE legacy_migration_records
+            SET target_row_id='missing-template'
+            WHERE migration_id=? AND source_table='message_templates'
+            """,
+            (preview.migration_id,),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    with pytest.raises(
+        bot_web.MigrationPreconditionError,
+        match="migration replay target state changed",
+    ):
+        migration_fixture.apply(preview)
+
+    assert not migration_fixture.spain_copy.exists()
 
 
 def test_apply_deletes_copy_when_source_changed_after_preview(
