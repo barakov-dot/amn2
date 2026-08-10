@@ -553,6 +553,231 @@ class Repository:
             (application, platform, client_version, protocol_version),
         ).fetchall()
 
+    def get_awg3_control_state(self) -> sqlite3.Row:
+        return self._fetch_one(
+            "SELECT * FROM awg3_control_state WHERE singleton_id = 1",
+            (),
+        )
+
+    def update_awg3_control_state(
+        self,
+        *,
+        runtime_accepted: bool,
+        global_accepted: bool,
+        issuance_enabled: bool,
+        emergency_suspended: bool,
+        runtime_receipt: str | None,
+        actor_id: int,
+        reason: str,
+    ) -> None:
+        self._conn.execute(
+            """
+            UPDATE awg3_control_state
+            SET runtime_accepted = ?,
+                global_accepted = ?,
+                issuance_enabled = ?,
+                emergency_suspended = ?,
+                runtime_receipt = ?,
+                actor_id = ?,
+                reason = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE singleton_id = 1
+            """,
+            (
+                int(runtime_accepted),
+                int(global_accepted),
+                int(issuance_enabled),
+                int(emergency_suspended),
+                runtime_receipt,
+                actor_id,
+                reason,
+            ),
+        )
+        self._commit()
+
+    def upsert_client_build_acceptance(
+        self,
+        *,
+        application: str,
+        platform: str,
+        client_version: str,
+        client_build: str,
+        state: str,
+        evidence_ids: tuple[str, ...],
+        actor_id: int,
+        reason: str,
+    ) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO client_build_acceptances (
+                application,
+                platform,
+                client_version,
+                client_build,
+                state,
+                evidence_ids_json,
+                actor_id,
+                reason
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(
+                application,
+                platform,
+                client_version,
+                client_build,
+                protocol_version
+            ) DO UPDATE SET
+                state = excluded.state,
+                evidence_ids_json = excluded.evidence_ids_json,
+                actor_id = excluded.actor_id,
+                reason = excluded.reason,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                application,
+                platform,
+                client_version,
+                client_build,
+                state,
+                json.dumps(
+                    evidence_ids,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+                actor_id,
+                reason,
+            ),
+        )
+        self._commit()
+
+    def get_client_build_acceptance(
+        self,
+        *,
+        application: str,
+        platform: str,
+        client_version: str,
+        client_build: str,
+    ) -> sqlite3.Row | None:
+        return self._conn.execute(
+            """
+            SELECT *
+            FROM client_build_acceptances
+            WHERE application = ?
+              AND platform = ?
+              AND client_version = ?
+              AND client_build = ?
+              AND protocol_version = 'awg3'
+            """,
+            (application, platform, client_version, client_build),
+        ).fetchone()
+
+    def create_device_protocol_profile(
+        self,
+        *,
+        passport_device_id: str,
+        protocol_version: str,
+        local_device_id: int,
+        lifecycle_state: str,
+    ) -> int:
+        cursor = self._conn.execute(
+            """
+            INSERT INTO device_protocol_profiles (
+                passport_device_id,
+                protocol_version,
+                local_device_id,
+                lifecycle_state
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                passport_device_id,
+                protocol_version,
+                local_device_id,
+                lifecycle_state,
+            ),
+        )
+        self._commit()
+        return int(cursor.lastrowid)
+
+    def get_device_protocol_profile(
+        self,
+        *,
+        passport_device_id: str,
+        protocol_version: str,
+    ) -> sqlite3.Row | None:
+        return self._conn.execute(
+            """
+            SELECT *
+            FROM device_protocol_profiles
+            WHERE passport_device_id = ?
+              AND protocol_version = ?
+            """,
+            (passport_device_id, protocol_version),
+        ).fetchone()
+
+    def update_device_protocol_profile(
+        self,
+        *,
+        profile_id: int,
+        lifecycle_state: str,
+        replacement_device_id: int | None,
+    ) -> None:
+        self._conn.execute(
+            """
+            UPDATE device_protocol_profiles
+            SET lifecycle_state = ?,
+                replacement_device_id = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (lifecycle_state, replacement_device_id, profile_id),
+        )
+        self._commit()
+
+    def append_protocol_config_event(
+        self,
+        *,
+        event_type: str,
+        actor_kind: str,
+        actor_id: int,
+        reason: str,
+        passport_device_id: str | None,
+        protocol_version: str | None,
+        local_device_id: int | None,
+        metadata: dict[str, object],
+    ) -> int:
+        cursor = self._conn.execute(
+            """
+            INSERT INTO protocol_config_events (
+                event_type,
+                actor_kind,
+                actor_id,
+                reason,
+                passport_device_id,
+                protocol_version,
+                local_device_id,
+                metadata_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_type,
+                actor_kind,
+                actor_id,
+                reason,
+                passport_device_id,
+                protocol_version,
+                local_device_id,
+                json.dumps(
+                    metadata,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            ),
+        )
+        self._commit()
+        return int(cursor.lastrowid)
+
     def upsert_server_config(
         self,
         *,

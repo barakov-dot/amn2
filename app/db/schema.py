@@ -1,5 +1,7 @@
 import sqlite3
 
+from app.db.phase14_dual_protocol import ensure_phase14_dual_protocol_schema
+
 
 def initialize_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
@@ -563,6 +565,7 @@ def initialize_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "admin_config_issuance_receipts", "client_application", "TEXT")
     _ensure_column(conn, "admin_config_issuance_receipts", "client_platform", "TEXT")
     _ensure_column(conn, "admin_config_issuance_receipts", "client_version", "TEXT")
+    ensure_phase14_dual_protocol_schema(conn)
     conn.commit()
 
 
