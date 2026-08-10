@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
 
+from app.services.awg3_control import Awg3ControlState
 from app.services.client_compatibility import (
     ClientCompatibilityEvidence,
     ClientIdentity,
@@ -26,6 +27,9 @@ AdmissionDecision = Literal[
     "blocked_unsupported_platform",
     "blocked_runtime_not_accepted",
     "blocked_evidence_stale_or_failed",
+    "blocked_global_acceptance",
+    "blocked_issuance_disabled",
+    "blocked_runtime_suspended",
 ]
 
 
@@ -61,6 +65,8 @@ class ProtocolAdmissionService:
         runtimes: tuple[RuntimeInstanceSpec, ...],
         now: datetime,
         max_evidence_age: timedelta = timedelta(days=90),
+        awg3_control_state: Awg3ControlState | None = None,
+        accepted_awg3_builds: frozenset[ClientIdentity] | None = None,
     ) -> None:
         if not isinstance(now, datetime) or now.utcoffset() is None:
             raise ValueError("now")
@@ -70,6 +76,8 @@ class ProtocolAdmissionService:
         self._runtimes = runtimes
         self._now = now
         self._max_evidence_age = max_evidence_age
+        self._awg3_control_state = awg3_control_state
+        self._accepted_awg3_builds = accepted_awg3_builds
 
     def decide(self, request: AdmissionRequest) -> AdmissionResult:
         known_apps = {item.client.application for item in self._evidence}
@@ -145,6 +153,39 @@ class ProtocolAdmissionService:
                     else "blocked_unverified_version"
                 )
                 return AdmissionResult(decision, request.protocol_version, None, None)
+            if self._awg3_control_state is not None:
+                control = self._awg3_control_state
+                if not isinstance(control, Awg3ControlState):
+                    raise ValueError("awg3_control_state")
+                accepted_builds = self._accepted_awg3_builds
+                if not isinstance(accepted_builds, frozenset):
+                    accepted_builds = frozenset()
+                if (
+                    not control.runtime_accepted
+                    or not control.global_accepted
+                    or not control.runtime_receipt
+                    or request.client not in accepted_builds
+                ):
+                    return AdmissionResult(
+                        "blocked_global_acceptance",
+                        request.protocol_version,
+                        None,
+                        None,
+                    )
+                if not control.issuance_enabled:
+                    return AdmissionResult(
+                        "blocked_issuance_disabled",
+                        request.protocol_version,
+                        None,
+                        None,
+                    )
+                if control.emergency_suspended:
+                    return AdmissionResult(
+                        "blocked_runtime_suspended",
+                        request.protocol_version,
+                        None,
+                        None,
+                    )
         passed = next(
             (
                 item
