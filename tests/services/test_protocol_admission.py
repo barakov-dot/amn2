@@ -5,6 +5,7 @@ from app.services.client_compatibility import (
     ClientCompatibilityEvidence,
     ClientIdentity,
     CompatibilityEvidenceStatus,
+    SourceReleaseKind,
 )
 from app.services.protocol_admission import (
     AdmissionRequest,
@@ -34,44 +35,67 @@ def runtime(protocol: ProtocolVersion, *, accepted: bool) -> RuntimeInstanceSpec
     )
 
 
-def evidence(status: CompatibilityEvidenceStatus) -> ClientCompatibilityEvidence:
+def evidence(
+    source_kind: str,
+    status: CompatibilityEvidenceStatus,
+) -> ClientCompatibilityEvidence:
     return ClientCompatibilityEvidence(
-        evidence_id=f"compat-win-5005-awg3-{status.value}",
-        client=ClientIdentity("amnezia_vpn", "windows", "5.0.0.5"),
+        evidence_id=f"compat-win-5005-awg3-{source_kind}-{status.value}",
+        client=ClientIdentity(
+            "amnezia_vpn", "windows", "5.0.0.5", build_id="exact-build"
+        ),
         protocol_version=ProtocolVersion.AWG3,
-        source_kind="full_data" if status is CompatibilityEvidenceStatus.PASSED else "official_release",
+        source_kind=source_kind,
         status=status,
         observed_at=NOW,
         safe_reference=f"receipt:{status.value}",
         scope="windows exact build 5.0.0.5",
+        release_kind=SourceReleaseKind.STABLE,
+    )
+
+
+def complete_evidence() -> tuple[ClientCompatibilityEvidence, ...]:
+    return (
+        evidence("official_release", CompatibilityEvidenceStatus.CLAIMED),
+        evidence("local_import", CompatibilityEvidenceStatus.PASSED),
+        evidence("full_data", CompatibilityEvidenceStatus.PASSED),
     )
 
 
 def request(application: str, version: str) -> AdmissionRequest:
     return AdmissionRequest(
-        client=ClientIdentity(application, "windows", version),
+        client=ClientIdentity(
+            application, "windows", version, build_id="exact-build"
+        ),
         protocol_version=ProtocolVersion.AWG3,
     )
 
 
 def test_official_claim_alone_does_not_admit_awg3():
     service = ProtocolAdmissionService(
-        evidence=(evidence(CompatibilityEvidenceStatus.CLAIMED),),
+        evidence=(
+            evidence("official_release", CompatibilityEvidenceStatus.CLAIMED),
+        ),
         runtimes=(runtime(ProtocolVersion.AWG3, accepted=True),),
         now=NOW,
     )
     result = service.decide(request("amnezia_vpn", "5.0.0.5"))
-    assert result.decision == "blocked_unverified_version"
+    assert result.decision == "candidate_awg3"
+    assert result.admitted is False
     assert result.compatibility_evidence_id is None
 
 
 def test_future_dated_passed_evidence_fails_closed():
     future = replace(
-        evidence(CompatibilityEvidenceStatus.PASSED),
+        evidence("full_data", CompatibilityEvidenceStatus.PASSED),
         observed_at=NOW + timedelta(seconds=1),
     )
     result = ProtocolAdmissionService(
-        evidence=(future,),
+        evidence=(
+            evidence("official_release", CompatibilityEvidenceStatus.CLAIMED),
+            evidence("local_import", CompatibilityEvidenceStatus.PASSED),
+            future,
+        ),
         runtimes=(runtime(ProtocolVersion.AWG3, accepted=True),),
         now=NOW,
     ).decide(request("amnezia_vpn", "5.0.0.5"))
@@ -80,7 +104,7 @@ def test_future_dated_passed_evidence_fails_closed():
 
 def test_passed_exact_client_and_accepted_runtime_admit_awg3():
     service = ProtocolAdmissionService(
-        evidence=(evidence(CompatibilityEvidenceStatus.PASSED),),
+        evidence=complete_evidence(),
         runtimes=(runtime(ProtocolVersion.AWG3, accepted=True),),
         now=NOW,
     )
@@ -91,7 +115,7 @@ def test_passed_exact_client_and_accepted_runtime_admit_awg3():
 
 def test_passed_client_with_candidate_runtime_stays_candidate():
     service = ProtocolAdmissionService(
-        evidence=(evidence(CompatibilityEvidenceStatus.PASSED),),
+        evidence=complete_evidence(),
         runtimes=(runtime(ProtocolVersion.AWG3, accepted=False),),
         now=NOW,
     )
@@ -109,3 +133,27 @@ def test_unknown_awg3_does_not_silently_fallback_to_awg2():
     result = service.decide(request("unknown", "1.0.0"))
     assert result.decision == "blocked_unknown_client"
     assert result.protocol_version is ProtocolVersion.AWG3
+
+
+def test_legacy_awg2_passed_evidence_remains_admitted():
+    client = ClientIdentity("amnezia_vpn", "windows", "5.0.0.5")
+    awg2_evidence = ClientCompatibilityEvidence(
+        evidence_id="compat-win-5005-awg2-passed",
+        client=client,
+        protocol_version=ProtocolVersion.AWG2,
+        source_kind="full_data",
+        status=CompatibilityEvidenceStatus.PASSED,
+        observed_at=NOW,
+        safe_reference="receipt:passed",
+        scope="windows exact version 5.0.0.5",
+    )
+    result = ProtocolAdmissionService(
+        evidence=(awg2_evidence,),
+        runtimes=(runtime(ProtocolVersion.AWG2, accepted=True),),
+        now=NOW,
+    ).decide(
+        AdmissionRequest(client=client, protocol_version=ProtocolVersion.AWG2)
+    )
+
+    assert result.decision == "admitted_awg2"
+    assert result.compatibility_evidence_id == awg2_evidence.evidence_id

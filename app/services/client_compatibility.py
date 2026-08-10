@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 
 from app.vpn.protocol_versions import ProtocolVersion
@@ -45,11 +45,24 @@ class CompatibilityEvidenceStatus(StrEnum):
     SUPERSEDED = "superseded"
 
 
+class SourceReleaseKind(StrEnum):
+    STABLE = "stable"
+    PRERELEASE = "prerelease"
+    UNRELEASED = "unreleased"
+
+
+class CompatibilityAdmissionState(StrEnum):
+    ACCEPTED = "accepted"
+    CANDIDATE = "candidate"
+    REJECTED = "rejected"
+
+
 @dataclass(frozen=True)
 class ClientIdentity:
     application: str
     platform: str
     version: str
+    build_id: str | None = None
 
     def __post_init__(self) -> None:
         application = _exact_text(self.application, "client_application")
@@ -57,6 +70,10 @@ class ClientIdentity:
         version = _exact_text(self.version, "client_version")
         if version.casefold() in {"latest", "current", "unknown"}:
             raise ValueError("exact client_version is required")
+        if self.build_id is not None:
+            build_id = _exact_text(self.build_id, "client_build")
+            if build_id.casefold() in {"latest", "current", "unknown"}:
+                raise ValueError("exact client_build is required")
         object.__setattr__(
             self,
             "application",
@@ -79,6 +96,7 @@ class ClientCompatibilityEvidence:
     observed_at: datetime
     safe_reference: str
     scope: str
+    release_kind: SourceReleaseKind | None = None
 
     def __post_init__(self) -> None:
         _safe_text(self.evidence_id, "evidence_id", maximum=255)
@@ -93,3 +111,71 @@ class ClientCompatibilityEvidence:
             raise ValueError("observed_at")
         _safe_text(self.safe_reference, "safe_reference", maximum=1024)
         _safe_text(self.scope, "scope", maximum=1024)
+        if self.release_kind is not None and not isinstance(
+            self.release_kind, SourceReleaseKind
+        ):
+            raise ValueError("release_kind")
+
+
+def classify_awg3_compatibility(
+    evidence: tuple[ClientCompatibilityEvidence, ...],
+    *,
+    client: ClientIdentity,
+    now: datetime,
+    max_evidence_age: timedelta = timedelta(days=90),
+) -> CompatibilityAdmissionState:
+    if not isinstance(client, ClientIdentity):
+        raise ValueError("client")
+    if not isinstance(now, datetime) or now.utcoffset() is None:
+        raise ValueError("now")
+    if max_evidence_age < timedelta(0):
+        raise ValueError("max_evidence_age")
+    if client.build_id is None:
+        return CompatibilityAdmissionState.REJECTED
+
+    exact = tuple(
+        item
+        for item in evidence
+        if item.client == client and item.protocol_version is ProtocolVersion.AWG3
+    )
+    release_kinds = {
+        item.release_kind for item in exact if item.release_kind is not None
+    }
+    if SourceReleaseKind.UNRELEASED in release_kinds:
+        return CompatibilityAdmissionState.REJECTED
+    if SourceReleaseKind.PRERELEASE in release_kinds:
+        return CompatibilityAdmissionState.CANDIDATE
+    if not any(
+        item.source_kind == "official_release"
+        and item.release_kind is SourceReleaseKind.STABLE
+        for item in exact
+    ):
+        return CompatibilityAdmissionState.REJECTED
+
+    latest_local = {
+        source_kind: max(
+            (item for item in exact if item.source_kind == source_kind),
+            key=lambda item: item.observed_at,
+            default=None,
+        )
+        for source_kind in ("local_import", "full_data")
+    }
+    if all(
+        item is not None
+        and item.release_kind is SourceReleaseKind.STABLE
+        and item.status is CompatibilityEvidenceStatus.PASSED
+        and timedelta(0) <= now - item.observed_at <= max_evidence_age
+        for item in latest_local.values()
+    ):
+        return CompatibilityAdmissionState.ACCEPTED
+    if any(
+        item is not None
+        and item.status
+        in {
+            CompatibilityEvidenceStatus.FAILED,
+            CompatibilityEvidenceStatus.SUPERSEDED,
+        }
+        for item in latest_local.values()
+    ):
+        return CompatibilityAdmissionState.REJECTED
+    return CompatibilityAdmissionState.CANDIDATE

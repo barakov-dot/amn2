@@ -7,7 +7,10 @@ from typing import Literal
 from app.services.client_compatibility import (
     ClientCompatibilityEvidence,
     ClientIdentity,
+    CompatibilityAdmissionState,
     CompatibilityEvidenceStatus,
+    SourceReleaseKind,
+    classify_awg3_compatibility,
 )
 from app.services.vpn_runtime_instances import RuntimeInstanceSpec
 from app.vpn.protocol_versions import ProtocolVersion
@@ -89,11 +92,66 @@ class ProtocolAdmissionService:
             if item.client == request.client
             and item.protocol_version is request.protocol_version
         )
+        stale_or_failed = any(
+            item.status
+            in {
+                CompatibilityEvidenceStatus.FAILED,
+                CompatibilityEvidenceStatus.SUPERSEDED,
+            }
+            or not timedelta(0)
+            <= self._now - item.observed_at
+            <= self._max_evidence_age
+            for item in exact
+        )
+        if request.protocol_version is ProtocolVersion.AWG3:
+            compatibility = classify_awg3_compatibility(
+                exact,
+                client=request.client,
+                now=self._now,
+                max_evidence_age=self._max_evidence_age,
+            )
+            if compatibility is CompatibilityAdmissionState.CANDIDATE:
+                if stale_or_failed:
+                    return AdmissionResult(
+                        "blocked_evidence_stale_or_failed",
+                        request.protocol_version,
+                        None,
+                        None,
+                    )
+                runtime = next(
+                    (
+                        item
+                        for item in self._runtimes
+                        if item.protocol_version is request.protocol_version
+                    ),
+                    None,
+                )
+                return AdmissionResult(
+                    "candidate_awg3",
+                    request.protocol_version,
+                    runtime.runtime_instance_id if runtime is not None else None,
+                    None,
+                )
+            if compatibility is CompatibilityAdmissionState.REJECTED:
+                decision: AdmissionDecision = (
+                    "blocked_evidence_stale_or_failed"
+                    if stale_or_failed
+                    else "blocked_unverified_version"
+                )
+                return AdmissionResult(decision, request.protocol_version, None, None)
         passed = next(
             (
                 item
                 for item in sorted(exact, key=lambda value: value.observed_at, reverse=True)
                 if item.status is CompatibilityEvidenceStatus.PASSED
+                and (
+                    request.protocol_version is not ProtocolVersion.AWG3
+                    or (
+                        item.source_kind == "full_data"
+                        and item.client.build_id is not None
+                        and item.release_kind is SourceReleaseKind.STABLE
+                    )
+                )
                 and timedelta(0)
                 <= self._now - item.observed_at
                 <= self._max_evidence_age
@@ -101,17 +159,6 @@ class ProtocolAdmissionService:
             None,
         )
         if passed is None:
-            stale_or_failed = any(
-                item.status
-                in {
-                    CompatibilityEvidenceStatus.FAILED,
-                    CompatibilityEvidenceStatus.SUPERSEDED,
-                }
-                or not timedelta(0)
-                <= self._now - item.observed_at
-                <= self._max_evidence_age
-                for item in exact
-            )
             decision: AdmissionDecision = (
                 "blocked_evidence_stale_or_failed"
                 if stale_or_failed
