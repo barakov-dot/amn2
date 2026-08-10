@@ -117,6 +117,32 @@ class ClientCompatibilityEvidence:
             raise ValueError("release_kind")
 
 
+def current_awg3_compatibility_evidence(
+    evidence: tuple[ClientCompatibilityEvidence, ...],
+    *,
+    client: ClientIdentity,
+) -> tuple[ClientCompatibilityEvidence, ...]:
+    exact = tuple(
+        item
+        for item in evidence
+        if item.client == client and item.protocol_version is ProtocolVersion.AWG3
+    )
+    current: list[ClientCompatibilityEvidence] = []
+    for source_kind in ("official_release", "local_import", "full_data"):
+        source_evidence = tuple(
+            item for item in exact if item.source_kind == source_kind
+        )
+        if not source_evidence:
+            continue
+        latest_observed_at = max(item.observed_at for item in source_evidence)
+        current.extend(
+            item
+            for item in source_evidence
+            if item.observed_at == latest_observed_at
+        )
+    return tuple(current)
+
+
 def classify_awg3_compatibility(
     evidence: tuple[ClientCompatibilityEvidence, ...],
     *,
@@ -133,49 +159,67 @@ def classify_awg3_compatibility(
     if client.build_id is None:
         return CompatibilityAdmissionState.REJECTED
 
-    exact = tuple(
-        item
-        for item in evidence
-        if item.client == client and item.protocol_version is ProtocolVersion.AWG3
+    current = current_awg3_compatibility_evidence(
+        evidence,
+        client=client,
     )
-    release_kinds = {
-        item.release_kind for item in exact if item.release_kind is not None
-    }
+    release_evidence = tuple(
+        item for item in current if item.source_kind == "official_release"
+    )
+    if not release_evidence or any(
+        item.status
+        not in {
+            CompatibilityEvidenceStatus.CLAIMED,
+            CompatibilityEvidenceStatus.PASSED,
+        }
+        or not timedelta(0) <= now - item.observed_at <= max_evidence_age
+        for item in release_evidence
+    ):
+        return CompatibilityAdmissionState.REJECTED
+
+    release_kinds = {item.release_kind for item in release_evidence}
     if SourceReleaseKind.UNRELEASED in release_kinds:
         return CompatibilityAdmissionState.REJECTED
     if SourceReleaseKind.PRERELEASE in release_kinds:
         return CompatibilityAdmissionState.CANDIDATE
-    if not any(
-        item.source_kind == "official_release"
-        and item.release_kind is SourceReleaseKind.STABLE
-        for item in exact
-    ):
+    if release_kinds != {SourceReleaseKind.STABLE}:
         return CompatibilityAdmissionState.REJECTED
 
-    latest_local = {
-        source_kind: max(
-            (item for item in exact if item.source_kind == source_kind),
-            key=lambda item: item.observed_at,
-            default=None,
+    latest_local: dict[str, tuple[ClientCompatibilityEvidence, ...]] = {}
+    for source_kind in ("local_import", "full_data"):
+        source_evidence = tuple(
+            item for item in current if item.source_kind == source_kind
         )
-        for source_kind in ("local_import", "full_data")
-    }
+        if not source_evidence:
+            latest_local[source_kind] = ()
+            continue
+        latest_observed_at = max(item.observed_at for item in source_evidence)
+        latest_local[source_kind] = tuple(
+            item
+            for item in source_evidence
+            if item.observed_at == latest_observed_at
+        )
     if all(
-        item is not None
-        and item.release_kind is SourceReleaseKind.STABLE
-        and item.status is CompatibilityEvidenceStatus.PASSED
-        and timedelta(0) <= now - item.observed_at <= max_evidence_age
-        for item in latest_local.values()
+        items
+        and all(
+            item.release_kind is SourceReleaseKind.STABLE
+            and item.status is CompatibilityEvidenceStatus.PASSED
+            and timedelta(0) <= now - item.observed_at <= max_evidence_age
+            for item in items
+        )
+        for items in latest_local.values()
     ):
         return CompatibilityAdmissionState.ACCEPTED
     if any(
-        item is not None
-        and item.status
-        in {
-            CompatibilityEvidenceStatus.FAILED,
-            CompatibilityEvidenceStatus.SUPERSEDED,
-        }
-        for item in latest_local.values()
+        any(
+            item.status
+            in {
+                CompatibilityEvidenceStatus.FAILED,
+                CompatibilityEvidenceStatus.SUPERSEDED,
+            }
+            for item in items
+        )
+        for items in latest_local.values()
     ):
         return CompatibilityAdmissionState.REJECTED
     return CompatibilityAdmissionState.CANDIDATE

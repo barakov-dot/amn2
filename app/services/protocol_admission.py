@@ -11,6 +11,7 @@ from app.services.client_compatibility import (
     CompatibilityEvidenceStatus,
     SourceReleaseKind,
     classify_awg3_compatibility,
+    current_awg3_compatibility_evidence,
 )
 from app.services.vpn_runtime_instances import RuntimeInstanceSpec
 from app.vpn.protocol_versions import ProtocolVersion
@@ -92,6 +93,11 @@ class ProtocolAdmissionService:
             if item.client == request.client
             and item.protocol_version is request.protocol_version
         )
+        status_evidence = (
+            current_awg3_compatibility_evidence(exact, client=request.client)
+            if request.protocol_version is ProtocolVersion.AWG3
+            else exact
+        )
         stale_or_failed = any(
             item.status
             in {
@@ -101,7 +107,7 @@ class ProtocolAdmissionService:
             or not timedelta(0)
             <= self._now - item.observed_at
             <= self._max_evidence_age
-            for item in exact
+            for item in status_evidence
         )
         if request.protocol_version is ProtocolVersion.AWG3:
             compatibility = classify_awg3_compatibility(

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -171,6 +172,141 @@ def test_awg3_acceptance_requires_fresh_local_evidence(
         ).value
         != "accepted"
     )
+
+
+@pytest.mark.parametrize(
+    ("release_status", "release_observed_at"),
+    [
+        (CompatibilityEvidenceStatus.FAILED, NOW),
+        (CompatibilityEvidenceStatus.SUPERSEDED, NOW),
+        (CompatibilityEvidenceStatus.CLAIMED, NOW + timedelta(seconds=1)),
+        (CompatibilityEvidenceStatus.CLAIMED, NOW - timedelta(days=91)),
+    ],
+)
+def test_invalid_official_release_cannot_admit_awg3(
+    release_status, release_observed_at
+):
+    evidence = list(
+        build_awg3_evidence(
+            platform="test-platform",
+            app_version="exact-version",
+            build_id="exact-build",
+            release_kind="stable",
+            import_status="passed",
+            full_data_status="passed",
+        )
+    )
+    evidence[0] = replace(
+        evidence[0],
+        status=release_status,
+        observed_at=release_observed_at,
+    )
+
+    result = ProtocolAdmissionService(
+        evidence=tuple(evidence),
+        runtimes=(accepted_runtime(),),
+        now=NOW,
+    ).decide(
+        AdmissionRequest(
+            client=evidence[0].client,
+            protocol_version=ProtocolVersion.AWG3,
+        )
+    )
+
+    assert result.admitted is False
+
+
+@pytest.mark.parametrize(
+    ("source_kind", "conflicting_status"),
+    [
+        ("local_import", CompatibilityEvidenceStatus.FAILED),
+        ("local_import", CompatibilityEvidenceStatus.SUPERSEDED),
+        ("full_data", CompatibilityEvidenceStatus.FAILED),
+        ("full_data", CompatibilityEvidenceStatus.SUPERSEDED),
+    ],
+)
+def test_equal_time_conflicting_local_evidence_fails_closed(
+    source_kind, conflicting_status
+):
+    evidence = list(
+        build_awg3_evidence(
+            platform="test-platform",
+            app_version="exact-version",
+            build_id="exact-build",
+            release_kind="stable",
+            import_status="passed",
+            full_data_status="passed",
+        )
+    )
+    passed = next(item for item in evidence if item.source_kind == source_kind)
+    evidence.append(
+        replace(
+            passed,
+            evidence_id=f"{passed.evidence_id}-conflict",
+            status=conflicting_status,
+            safe_reference=f"local:{source_kind}:conflict",
+        )
+    )
+
+    result = ProtocolAdmissionService(
+        evidence=tuple(evidence),
+        runtimes=(accepted_runtime(),),
+        now=NOW,
+    ).decide(
+        AdmissionRequest(
+            client=evidence[0].client,
+            protocol_version=ProtocolVersion.AWG3,
+        )
+    )
+
+    assert result.admitted is False
+
+
+@pytest.mark.parametrize("historical_release_kind", ["prerelease", "unreleased"])
+@pytest.mark.parametrize(
+    ("local_status", "expected_decision"),
+    [
+        ("passed", "admitted_awg3"),
+        ("unknown", "candidate_awg3"),
+    ],
+)
+def test_superseded_nonstable_history_does_not_block_current_stable_state(
+    historical_release_kind, local_status, expected_decision
+):
+    evidence = list(
+        build_awg3_evidence(
+            platform="test-platform",
+            app_version="exact-version",
+            build_id="exact-build",
+            release_kind="stable",
+            import_status=local_status,
+            full_data_status=local_status,
+        )
+    )
+    evidence.insert(
+        0,
+        replace(
+            evidence[0],
+            evidence_id=f"compat-release-history-{historical_release_kind}",
+            release_kind=SourceReleaseKind(historical_release_kind),
+            status=CompatibilityEvidenceStatus.SUPERSEDED,
+            observed_at=NOW - timedelta(days=1),
+            safe_reference=f"release:history:{historical_release_kind}",
+        ),
+    )
+
+    result = ProtocolAdmissionService(
+        evidence=tuple(evidence),
+        runtimes=(accepted_runtime(),),
+        now=NOW,
+    ).decide(
+        AdmissionRequest(
+            client=evidence[0].client,
+            protocol_version=ProtocolVersion.AWG3,
+        )
+    )
+
+    assert result.decision == expected_decision
 
 
 def test_awg3_release_note_passed_alone_cannot_admit_client():
