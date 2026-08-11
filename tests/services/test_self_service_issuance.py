@@ -54,15 +54,31 @@ class MutableControlService:
         return self.state
 
 
+class FreshAdmissionProvider:
+    def __init__(self, admission, control):
+        self.admission = admission
+        self.control = control
+        self.calls = []
+
+    def __call__(self, request):
+        self.calls.append(request)
+        return self.admission.decide(request), self.control._state()
+
+
 class SyntheticIssuer:
     def __init__(self, repo: Repository, *, user_id: int, server_id: int):
         self.repo = repo
         self.user_id = user_id
         self.server_id = server_id
         self.calls = []
+        self.callback = None
 
     def issue(self, *, request, admission):
         self.calls.append((request, admission))
+        callback = self.callback
+        self.callback = None
+        if callback is not None:
+            callback()
         sequence = len(self.calls) + 20
         local_device_id = self.repo.create_device(
             user_id=self.user_id,
@@ -84,6 +100,24 @@ class SyntheticIssuer:
             client_identity_evidence_status="verified",
         )
         return SimpleNamespace(local_device_id=local_device_id)
+
+
+class InvalidResultIssuer:
+    def __init__(self):
+        self.calls = []
+
+    def issue(self, *, request, admission):
+        self.calls.append((request, admission))
+        return SimpleNamespace(local_device_id=None)
+
+
+class RaisingIssuer:
+    def __init__(self):
+        self.calls = []
+
+    def issue(self, *, request, admission):
+        self.calls.append((request, admission))
+        raise RuntimeError("synthetic issuer boundary failed")
 
 
 @dataclass
@@ -212,10 +246,10 @@ def _service(
     issuer = issuer or SyntheticIssuer(
         harness.repo, user_id=harness.user_id, server_id=harness.server_id
     )
+    admission_provider = FreshAdmissionProvider(admission, control)
     service = module.SelfServiceIssuanceService(
         repo=harness.repo,
-        admission_service=admission,
-        control_service=control,
+        admission_provider=admission_provider,
         profile_service=DualProtocolProfileService(harness.repo),
         issuer=issuer,
         now=now or (lambda: NOW),
@@ -227,7 +261,14 @@ def _service(
         pilot_client=CANDIDATE_CLIENT,
     )
     service.issuer = issuer
+    service.admission_provider = admission_provider
     return service
+
+
+def _attempts(harness: Harness):
+    return harness.conn.execute(
+        "SELECT * FROM protocol_issuance_attempts ORDER BY id"
+    ).fetchall()
 
 
 def test_decide_checks_owner_user_device_profile_admission_and_gates_in_order(
@@ -275,6 +316,9 @@ def test_compatible_awg3_issues_without_per_user_admin_approval(harness):
     assert result.protocol_version is ProtocolVersion.AWG3
     assert result.issued_device_id is not None
     assert len(service.issuer.calls) == 1
+    attempt = _attempts(harness)[0]
+    assert attempt["state"] == "completed"
+    assert attempt["local_device_id"] == result.issued_device_id
 
 
 def test_incompatible_awg3_only_offers_awg2_without_issuing(harness):
@@ -452,6 +496,7 @@ def test_admin_pilot_allows_one_exact_candidate_profile_without_general_enable(
     assert result.reason_code == "admin_pilot"
     assert control.state == disabled
     assert len(service.issuer.calls) == 1
+    assert _attempts(harness)[0]["state"] == "completed"
     with pytest.raises(ValueError, match="pilot profile already exists"):
         service.issue_admin_pilot(admin_telegram_id=700, request=request)
     assert len(service.issuer.calls) == 1
@@ -534,3 +579,247 @@ def test_admin_pilot_never_bypasses_emergency_suspension(harness):
 
     assert result.reason_code == "blocked_runtime_suspended"
     assert service.issuer.calls == []
+
+
+def test_distinct_confirmation_race_reservation_calls_issuer_once(harness):
+    issuer = SyntheticIssuer(
+        harness.repo, user_id=harness.user_id, server_id=harness.server_id
+    )
+    first = _service(
+        harness,
+        issuer=issuer,
+        token_factory=lambda: "synthetic-confirmation-one",
+    )
+    second = _service(
+        harness,
+        issuer=issuer,
+        token_factory=lambda: "synthetic-confirmation-two",
+    )
+    request = _request(harness)
+    first_token = first.decide(request).token
+    second_token = second.decide(request).token
+    inner = {}
+    issuer.callback = lambda: inner.setdefault(
+        "result",
+        second.issue_after_confirmation(
+            request, confirmation_token=second_token
+        ),
+    )
+
+    outer = first.issue_after_confirmation(
+        request, confirmation_token=first_token
+    )
+
+    assert outer.status == "issued"
+    assert inner["result"].status == "blocked"
+    assert inner["result"].reason_code == "issuance_in_progress"
+    assert len(issuer.calls) == 1
+    assert [row["state"] for row in _attempts(harness)] == ["completed"]
+
+
+def test_admin_pilot_race_reservation_calls_issuer_once(harness):
+    issuer = SyntheticIssuer(
+        harness.repo, user_id=harness.user_id, server_id=harness.server_id
+    )
+    disabled = Awg3ControlState(False, False, False, False, None)
+    first = _service(
+        harness,
+        admission=StaticAdmissionService({ProtocolVersion.AWG3: _candidate()}),
+        control=MutableControlService(disabled),
+        issuer=issuer,
+    )
+    second = _service(
+        harness,
+        admission=StaticAdmissionService({ProtocolVersion.AWG3: _candidate()}),
+        control=MutableControlService(disabled),
+        issuer=issuer,
+    )
+    request = _request(harness, client=CANDIDATE_CLIENT)
+    inner = {}
+    issuer.callback = lambda: inner.setdefault(
+        "result",
+        second.issue_admin_pilot(admin_telegram_id=700, request=request),
+    )
+
+    outer = first.issue_admin_pilot(admin_telegram_id=700, request=request)
+
+    assert outer.status == "issued"
+    assert inner["result"].status == "blocked"
+    assert inner["result"].reason_code == "issuance_in_progress"
+    assert len(issuer.calls) == 1
+    assert [row["state"] for row in _attempts(harness)] == ["completed"]
+
+
+@pytest.mark.parametrize(
+    ("fresh_result", "reason"),
+    [
+        (
+            AdmissionResult(
+                "blocked_global_acceptance",
+                ProtocolVersion.AWG3,
+                None,
+                None,
+            ),
+            "blocked_global_acceptance",
+        ),
+        (
+            AdmissionResult(
+                "blocked_evidence_stale_or_failed",
+                ProtocolVersion.AWG3,
+                None,
+                None,
+            ),
+            "blocked_evidence_stale_or_failed",
+        ),
+    ],
+    ids=["security_revoked_build", "newly_stale_evidence"],
+)
+def test_issue_rechecks_fresh_admission_view_before_reservation_and_issuer(
+    harness, fresh_result, reason
+):
+    admission = StaticAdmissionService({ProtocolVersion.AWG3: _admitted()})
+    service = _service(harness, admission=admission)
+    request = _request(harness)
+    token = service.decide(request).token
+    admission.results[ProtocolVersion.AWG3] = fresh_result
+
+    result = service.issue_after_confirmation(request, confirmation_token=token)
+
+    assert result.status == "blocked"
+    assert result.reason_code == reason
+    assert len(service.admission_provider.calls) == 2
+    assert service.issuer.calls == []
+    assert _attempts(harness) == []
+
+
+def test_expired_confirmations_are_pruned_opportunistically(harness):
+    clock = [NOW]
+    tokens = iter(("synthetic-old-token", "synthetic-new-token"))
+    service = _service(
+        harness,
+        now=lambda: clock[0],
+        token_factory=lambda: next(tokens),
+    )
+    request = _request(harness)
+    old = service.decide(request).token
+    clock[0] = NOW + timedelta(minutes=6)
+
+    service.decide(request)
+    result = service.issue_after_confirmation(request, confirmation_token=old)
+
+    assert result.reason_code == "invalid_confirmation"
+    assert service.issuer.calls == []
+
+
+def test_invalid_issuer_result_requires_recovery_and_blocks_fresh_token(harness):
+    issuer = InvalidResultIssuer()
+    first = _service(
+        harness,
+        issuer=issuer,
+        token_factory=lambda: "synthetic-invalid-one",
+    )
+    second = _service(
+        harness,
+        issuer=issuer,
+        token_factory=lambda: "synthetic-invalid-two",
+    )
+    request = _request(harness)
+    first_token = first.decide(request).token
+    second_token = second.decide(request).token
+
+    with pytest.raises(ValueError, match="issuer did not return a local device id"):
+        first.issue_after_confirmation(request, confirmation_token=first_token)
+
+    attempt = _attempts(harness)[0]
+    assert attempt["state"] == "recovery_required"
+    assert attempt["reason_code"] == "issuer_result_invalid"
+    blocked = second.issue_after_confirmation(
+        request, confirmation_token=second_token
+    )
+    assert blocked.reason_code == "issuance_recovery_required"
+    assert len(issuer.calls) == 1
+
+
+def test_issuer_exception_requires_recovery_and_blocks_fresh_token(harness):
+    issuer = RaisingIssuer()
+    first = _service(
+        harness,
+        issuer=issuer,
+        token_factory=lambda: "synthetic-exception-one",
+    )
+    second = _service(
+        harness,
+        issuer=issuer,
+        token_factory=lambda: "synthetic-exception-two",
+    )
+    request = _request(harness)
+    first_token = first.decide(request).token
+    second_token = second.decide(request).token
+
+    with pytest.raises(RuntimeError, match="synthetic issuer boundary failed"):
+        first.issue_after_confirmation(request, confirmation_token=first_token)
+
+    attempt = _attempts(harness)[0]
+    assert attempt["state"] == "recovery_required"
+    assert attempt["reason_code"] == "issuer_failed"
+    blocked = second.issue_after_confirmation(
+        request, confirmation_token=second_token
+    )
+    assert blocked.reason_code == "issuance_recovery_required"
+    assert len(issuer.calls) == 1
+
+
+def test_finalization_failure_requires_recovery_and_blocks_retry(
+    harness, monkeypatch
+):
+    issuer = SyntheticIssuer(
+        harness.repo, user_id=harness.user_id, server_id=harness.server_id
+    )
+    first = _service(
+        harness,
+        issuer=issuer,
+        token_factory=lambda: "synthetic-finalize-one",
+    )
+    second = _service(
+        harness,
+        issuer=issuer,
+        token_factory=lambda: "synthetic-finalize-two",
+    )
+    request = _request(harness)
+    first_token = first.decide(request).token
+    second_token = second.decide(request).token
+    original_append = harness.repo.append_protocol_config_event
+
+    def fail_issuance_event(**kwargs):
+        if kwargs["event_type"] == "self_service_issued":
+            raise RuntimeError("synthetic finalization failure")
+        return original_append(**kwargs)
+
+    monkeypatch.setattr(
+        harness.repo, "append_protocol_config_event", fail_issuance_event
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic finalization failure"):
+        first.issue_after_confirmation(request, confirmation_token=first_token)
+
+    attempt = _attempts(harness)[0]
+    assert attempt["state"] == "recovery_required"
+    assert attempt["reason_code"] == "finalization_failed"
+    assert attempt["local_device_id"] is not None
+    assert harness.repo.get_device_protocol_profile(
+        passport_device_id=harness.passport_device_id,
+        protocol_version="awg3",
+    ) is None
+    recovery_event = harness.conn.execute(
+        "SELECT metadata_json FROM protocol_config_events "
+        "WHERE event_type = 'protocol_issuance_recovery_required'"
+    ).fetchone()
+    assert json.loads(recovery_event["metadata_json"]) == {
+        "attempt_id": int(attempt["id"]),
+        "reason_code": "finalization_failed",
+    }
+    blocked = second.issue_after_confirmation(
+        request, confirmation_token=second_token
+    )
+    assert blocked.reason_code == "issuance_recovery_required"
+    assert len(issuer.calls) == 1

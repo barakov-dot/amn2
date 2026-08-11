@@ -4,19 +4,19 @@ import hashlib
 import hmac
 import json
 import secrets
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Protocol
 
 from app.db.repositories import Repository
-from app.services.awg3_control import Awg3ControlService, Awg3ControlState
+from app.services.awg3_control import Awg3ControlState
 from app.services.client_compatibility import ClientIdentity
 from app.services.dual_protocol_profiles import DualProtocolProfileService
 from app.services.protocol_admission import (
     AdmissionRequest,
     AdmissionResult,
-    ProtocolAdmissionService,
 )
 from app.vpn.protocol_versions import ProtocolVersion
 
@@ -83,8 +83,9 @@ class SelfServiceIssuanceService:
         self,
         *,
         repo: Repository,
-        admission_service: ProtocolAdmissionService,
-        control_service: Awg3ControlService,
+        admission_provider: Callable[
+            [AdmissionRequest], tuple[AdmissionResult, Awg3ControlState | None]
+        ],
         profile_service: DualProtocolProfileService,
         issuer: ConfigIssuer,
         now: Callable[[], datetime] | None = None,
@@ -97,9 +98,10 @@ class SelfServiceIssuanceService:
     ) -> None:
         if confirmation_ttl <= timedelta(0):
             raise ValueError("confirmation_ttl")
+        if not callable(admission_provider):
+            raise ValueError("admission_provider")
         self._repo = repo
-        self._admission = admission_service
-        self._control = control_service
+        self._admission_provider = admission_provider
         self._profiles = profile_service
         self._issuer = issuer
         self._now = now or (lambda: datetime.now(timezone.utc))
@@ -110,6 +112,7 @@ class SelfServiceIssuanceService:
         self._pilot_passport_device_id = pilot_passport_device_id
         self._pilot_client = pilot_client
         self._pending: dict[str, _PendingConfirmation] = {}
+        self._confirmation_lock = threading.RLock()
 
     def decide(
         self, request: SelfServiceIssuanceRequest
@@ -121,10 +124,13 @@ class SelfServiceIssuanceService:
         if not isinstance(token, str) or not token:
             raise ValueError("confirmation token factory returned an invalid token")
         token_digest = _digest(token)
-        self._pending[token_digest] = _PendingConfirmation(
-            request_fingerprint=_request_fingerprint(request),
-            expires_at=self._now() + self._confirmation_ttl,
-        )
+        now = self._now()
+        with self._confirmation_lock:
+            self._prune_expired_confirmations(now)
+            self._pending[token_digest] = _PendingConfirmation(
+                request_fingerprint=_request_fingerprint(request),
+                expires_at=now + self._confirmation_ttl,
+            )
         return SelfServiceIssuanceResult(
             status="confirmation_required",
             protocol_version=request.protocol_version,
@@ -140,22 +146,36 @@ class SelfServiceIssuanceService:
         *,
         confirmation_token: str | None,
     ) -> SelfServiceIssuanceResult:
-        pending, token_digest, invalid = self._validate_confirmation(
-            request, confirmation_token
-        )
-        if invalid is not None:
-            return invalid
-        assert pending is not None and token_digest is not None
-        blocked, admission = self._validate_standard(request)
-        if blocked is not None:
-            return blocked
-        assert admission is not None
-        consumed = self._pending.pop(token_digest, None)
-        if consumed is not pending:
-            return self._blocked(request, "invalid_confirmation")
-        return self._issue(
+        with self._confirmation_lock:
+            pending, token_digest, invalid = self._validate_confirmation(
+                request, confirmation_token
+            )
+            if invalid is not None:
+                return invalid
+            assert pending is not None and token_digest is not None
+            blocked, admission = self._validate_standard(request)
+            if blocked is not None:
+                return blocked
+            assert admission is not None
+            attempt, reservation_block = self._reserve(
+                request,
+                admission,
+                actor_kind="user",
+                actor_id=request.telegram_id,
+            )
+            if reservation_block is not None:
+                return reservation_block
+            assert attempt is not None
+            consumed = self._pending.pop(token_digest, None)
+            if consumed is not pending:
+                self._repo.cancel_protocol_issuance_attempt(
+                    int(attempt["id"]), reason_code="confirmation_not_consumed"
+                )
+                return self._blocked(request, "invalid_confirmation")
+        return self._issue_reserved(
             request,
             admission,
+            attempt_id=int(attempt["id"]),
             event_type="self_service_issued",
             actor_kind="user",
             actor_id=request.telegram_id,
@@ -186,24 +206,30 @@ class SelfServiceIssuanceService:
             if identity_block.reason_code == "profile_already_exists":
                 raise ValueError("pilot profile already exists")
             return identity_block
-        admission = self._admission.decide(
-            AdmissionRequest(
-                client=request.client,
-                protocol_version=request.protocol_version,
-            )
-        )
+        admission, state = self._fresh_admission_view(request)
+        if admission is None:
+            return self._blocked(request, "admission_view_unavailable")
         if (
             admission.decision != "candidate_awg3"
             or admission.runtime_instance_id is None
             or admission.compatibility_evidence_id is None
         ):
             return self._blocked(request, admission.decision)
-        state = self._control._state()
         if not isinstance(state, Awg3ControlState) or state.emergency_suspended:
             return self._blocked(request, "blocked_runtime_suspended")
-        return self._issue(
+        attempt, reservation_block = self._reserve(
             request,
             admission,
+            actor_kind="admin",
+            actor_id=admin_telegram_id,
+        )
+        if reservation_block is not None:
+            return reservation_block
+        assert attempt is not None
+        return self._issue_reserved(
+            request,
+            admission,
+            attempt_id=int(attempt["id"]),
             event_type="admin_pilot_issued",
             actor_kind="admin",
             actor_id=admin_telegram_id,
@@ -216,16 +242,13 @@ class SelfServiceIssuanceService:
         identity_block = self._validate_identity_and_profile(request)
         if identity_block is not None:
             return identity_block, None
-        admission = self._admission.decide(
-            AdmissionRequest(
-                client=request.client,
-                protocol_version=request.protocol_version,
-            )
-        )
+        admission, state = self._fresh_admission_view(request)
+        if admission is None:
+            return self._blocked(request, "admission_view_unavailable"), None
         if not admission.admitted:
             return self._blocked(request, admission.decision), None
         if request.protocol_version is ProtocolVersion.AWG3:
-            gate_block = self._validate_live_awg3_gates(request)
+            gate_block = self._validate_live_awg3_gates(request, state)
             if gate_block is not None:
                 return gate_block, None
         return None, admission
@@ -270,9 +293,10 @@ class SelfServiceIssuanceService:
         return None
 
     def _validate_live_awg3_gates(
-        self, request: SelfServiceIssuanceRequest
+        self,
+        request: SelfServiceIssuanceRequest,
+        state: Awg3ControlState | None,
     ) -> SelfServiceIssuanceResult | None:
-        state = self._control._state()
         if (
             not isinstance(state, Awg3ControlState)
             or not state.runtime_accepted
@@ -285,6 +309,27 @@ class SelfServiceIssuanceService:
         if state.emergency_suspended:
             return self._blocked(request, "blocked_runtime_suspended")
         return None
+
+    def _fresh_admission_view(
+        self, request: SelfServiceIssuanceRequest
+    ) -> tuple[AdmissionResult | None, Awg3ControlState | None]:
+        try:
+            view = self._admission_provider(
+                AdmissionRequest(
+                    client=request.client,
+                    protocol_version=request.protocol_version,
+                )
+            )
+        except Exception:
+            return None, None
+        if not isinstance(view, tuple) or len(view) != 2:
+            return None, None
+        admission, state = view
+        if not isinstance(admission, AdmissionResult):
+            return None, None
+        if state is not None and not isinstance(state, Awg3ControlState):
+            return None, None
+        return admission, state
 
     def _validate_confirmation(
         self,
@@ -310,17 +355,79 @@ class SelfServiceIssuanceService:
             return None, None, self._blocked(request, "confirmation_expired")
         return pending, token_digest, None
 
-    def _issue(
+    def _prune_expired_confirmations(self, now: datetime) -> None:
+        expired = tuple(
+            token_digest
+            for token_digest, pending in self._pending.items()
+            if now > pending.expires_at
+        )
+        for token_digest in expired:
+            self._pending.pop(token_digest, None)
+
+    def _reserve(
         self,
         request: SelfServiceIssuanceRequest,
         admission: AdmissionResult,
         *,
+        actor_kind: str,
+        actor_id: int,
+    ):
+        attempt = self._repo.reserve_protocol_issuance_attempt(
+            passport_device_id=request.passport_device_id,
+            protocol_version=request.protocol_version.value,
+            request_fingerprint=_request_fingerprint(request),
+            actor_kind=actor_kind,
+            actor_id=actor_id,
+            client_application=request.client.application,
+            client_platform=request.client.platform,
+            client_version=request.client.version,
+            client_build=request.client.build_id,
+            runtime_instance_id=admission.runtime_instance_id,
+            compatibility_evidence_id=admission.compatibility_evidence_id,
+        )
+        if attempt is not None:
+            return attempt, None
+        blocking = self._repo.get_blocking_protocol_issuance_attempt(
+            passport_device_id=request.passport_device_id,
+            protocol_version=request.protocol_version.value,
+        )
+        if blocking is not None:
+            reason_code = (
+                "issuance_recovery_required"
+                if str(blocking["state"]) == "recovery_required"
+                else "issuance_in_progress"
+            )
+            return None, self._blocked(request, reason_code)
+        if self._repo.get_device_protocol_profile(
+            passport_device_id=request.passport_device_id,
+            protocol_version=request.protocol_version.value,
+        ) is not None:
+            return None, self._blocked(request, "profile_already_exists")
+        return None, self._blocked(request, "issuance_in_progress")
+
+    def _issue_reserved(
+        self,
+        request: SelfServiceIssuanceRequest,
+        admission: AdmissionResult,
+        *,
+        attempt_id: int,
         event_type: str,
         actor_kind: str,
         actor_id: int,
         reason_code: str,
     ) -> SelfServiceIssuanceResult:
-        issued = self._issuer.issue(request=request, admission=admission)
+        try:
+            issued = self._issuer.issue(request=request, admission=admission)
+        except Exception:
+            self._record_recovery_required(
+                request,
+                attempt_id=attempt_id,
+                actor_kind=actor_kind,
+                actor_id=actor_id,
+                local_device_id=None,
+                reason_code="issuer_failed",
+            )
+            raise
         local_device_id = getattr(
             issued, "local_device_id", getattr(issued, "device_id", None)
         )
@@ -329,32 +436,54 @@ class SelfServiceIssuanceService:
             or not isinstance(local_device_id, int)
             or local_device_id <= 0
         ):
+            self._record_recovery_required(
+                request,
+                attempt_id=attempt_id,
+                actor_kind=actor_kind,
+                actor_id=actor_id,
+                local_device_id=None,
+                reason_code="issuer_result_invalid",
+            )
             raise ValueError("issuer did not return a local device id")
-        with self._repo.transaction():
-            profile = self._profiles.attach_active(
-                request.passport_device_id,
-                request.protocol_version,
-                local_device_id,
+        try:
+            with self._repo.transaction():
+                profile = self._profiles.attach_active(
+                    request.passport_device_id,
+                    request.protocol_version,
+                    local_device_id,
+                    actor_kind=actor_kind,
+                    actor_id=actor_id,
+                    reason=reason_code,
+                )
+                self._repo.append_protocol_config_event(
+                    event_type=event_type,
+                    actor_kind=actor_kind,
+                    actor_id=actor_id,
+                    reason=reason_code,
+                    passport_device_id=request.passport_device_id,
+                    protocol_version=request.protocol_version.value,
+                    local_device_id=local_device_id,
+                    metadata={
+                        "profile_id": profile.profile_id,
+                        "client_application": request.client.application,
+                        "client_platform": request.client.platform,
+                        "client_version": request.client.version,
+                        "client_build": request.client.build_id,
+                    },
+                )
+                self._repo.complete_protocol_issuance_attempt(
+                    attempt_id, local_device_id=local_device_id
+                )
+        except Exception:
+            self._record_recovery_required(
+                request,
+                attempt_id=attempt_id,
                 actor_kind=actor_kind,
                 actor_id=actor_id,
-                reason=reason_code,
-            )
-            self._repo.append_protocol_config_event(
-                event_type=event_type,
-                actor_kind=actor_kind,
-                actor_id=actor_id,
-                reason=reason_code,
-                passport_device_id=request.passport_device_id,
-                protocol_version=request.protocol_version.value,
                 local_device_id=local_device_id,
-                metadata={
-                    "profile_id": profile.profile_id,
-                    "client_application": request.client.application,
-                    "client_platform": request.client.platform,
-                    "client_version": request.client.version,
-                    "client_build": request.client.build_id,
-                },
+                reason_code="finalization_failed",
             )
+            raise
         return SelfServiceIssuanceResult(
             status="issued",
             protocol_version=request.protocol_version,
@@ -363,6 +492,39 @@ class SelfServiceIssuanceService:
             issued_device_id=local_device_id,
             token=None,
         )
+
+    def _record_recovery_required(
+        self,
+        request: SelfServiceIssuanceRequest,
+        *,
+        attempt_id: int,
+        actor_kind: str,
+        actor_id: int,
+        local_device_id: int | None,
+        reason_code: str,
+    ) -> None:
+        try:
+            with self._repo.transaction():
+                self._repo.mark_protocol_issuance_attempt_recovery_required(
+                    attempt_id,
+                    local_device_id=local_device_id,
+                    reason_code=reason_code,
+                )
+                self._repo.append_protocol_config_event(
+                    event_type="protocol_issuance_recovery_required",
+                    actor_kind=actor_kind,
+                    actor_id=actor_id,
+                    reason=reason_code,
+                    passport_device_id=request.passport_device_id,
+                    protocol_version=request.protocol_version.value,
+                    local_device_id=local_device_id,
+                    metadata={
+                        "attempt_id": attempt_id,
+                        "reason_code": reason_code,
+                    },
+                )
+        except Exception:
+            return
 
     @staticmethod
     def _blocked(
@@ -400,4 +562,4 @@ def _request_fingerprint(request: SelfServiceIssuanceRequest) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
-    return _digest(canonical)
+    return "sha256:" + _digest(canonical)

@@ -65,6 +65,37 @@ CREATE TABLE IF NOT EXISTS protocol_config_events (
     metadata_json TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS protocol_issuance_attempts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    passport_device_id TEXT NOT NULL,
+    protocol_version TEXT NOT NULL CHECK (protocol_version IN ('awg2','awg3')),
+    request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) = 71),
+    actor_kind TEXT NOT NULL CHECK (actor_kind IN ('user','admin','system')),
+    actor_id INTEGER NOT NULL,
+    client_application TEXT NOT NULL,
+    client_platform TEXT NOT NULL,
+    client_version TEXT NOT NULL,
+    client_build TEXT,
+    runtime_instance_id TEXT,
+    compatibility_evidence_id TEXT,
+    state TEXT NOT NULL DEFAULT 'reserved' CHECK (state IN (
+        'reserved','completed','cancelled','recovery_required'
+    )),
+    local_device_id INTEGER,
+    reason_code TEXT,
+    reserved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT,
+    cancelled_at TEXT,
+    recovery_required_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(passport_device_id) REFERENCES device_passports(device_id),
+    FOREIGN KEY(local_device_id) REFERENCES devices(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_protocol_issuance_blocking_attempt
+    ON protocol_issuance_attempts(passport_device_id, protocol_version)
+    WHERE state IN ('reserved','recovery_required');
 """
 
 
@@ -84,5 +115,14 @@ def ensure_phase14_dual_protocol_schema(conn: sqlite3.Connection) -> None:
             "ADD COLUMN release_kind TEXT "
             "CHECK (release_kind IS NULL OR release_kind IN "
             "('stable','prerelease','unreleased'))"
+        )
+    receipt_columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(admin_config_issuance_receipts)")
+    }
+    if receipt_columns and "client_build" not in receipt_columns:
+        conn.execute(
+            "ALTER TABLE admin_config_issuance_receipts "
+            "ADD COLUMN client_build TEXT"
         )
     conn.executescript(PHASE14_DUAL_PROTOCOL_SQL)

@@ -21,7 +21,13 @@ from app.vpn.protocol_versions import ProtocolVersion
 NOW = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
 
 
-def runtime(protocol: ProtocolVersion, *, accepted: bool) -> RuntimeInstanceSpec:
+def runtime(
+    protocol: ProtocolVersion,
+    *,
+    accepted: bool | None = None,
+    lifecycle_state: str | None = None,
+) -> RuntimeInstanceSpec:
+    state = lifecycle_state or ("accepted" if accepted else "candidate")
     return RuntimeInstanceSpec(
         runtime_instance_id=f"rt-spain-{protocol.value}",
         server_id=1,
@@ -33,8 +39,8 @@ def runtime(protocol: ProtocolVersion, *, accepted: bool) -> RuntimeInstanceSpec
         container_name=f"amn2-{protocol.value}",
         service_name=None,
         config_path=f"/opt/amn2/{protocol.value}/wg0.conf",
-        lifecycle_state="accepted" if accepted else "candidate",
-        acceptance_receipt=("sha256:" + "a" * 64) if accepted else None,
+        lifecycle_state=state,
+        acceptance_receipt=("sha256:" + "a" * 64) if state == "accepted" else None,
     )
 
 
@@ -171,7 +177,7 @@ def test_official_claim_alone_does_not_admit_awg3():
         evidence=(
             evidence("official_release", CompatibilityEvidenceStatus.CLAIMED),
         ),
-        runtimes=(runtime(ProtocolVersion.AWG3, accepted=True),),
+        runtimes=(runtime(ProtocolVersion.AWG3, accepted=False),),
         now=NOW,
     )
     result = service.decide(request("amnezia_vpn", "5.0.0.5"))
@@ -226,6 +232,31 @@ def test_passed_client_with_candidate_runtime_stays_candidate():
         AdmissionRequest(client=client, protocol_version=ProtocolVersion.AWG3)
     )
     assert result.decision == "candidate_awg3"
+    assert result.admitted is False
+
+
+@pytest.mark.parametrize(
+    "lifecycle_state",
+    ["planned", "rollback_pending", "retired"],
+)
+def test_only_exact_candidate_runtime_can_return_candidate_awg3(lifecycle_state):
+    client = request("amnezia_vpn", "5.0.0.5").client
+    result = ProtocolAdmissionService(
+        evidence=complete_evidence(),
+        runtimes=(
+            runtime(
+                ProtocolVersion.AWG3,
+                lifecycle_state=lifecycle_state,
+            ),
+        ),
+        now=NOW,
+        awg3_control_state=permitting_awg3_state(),
+        accepted_awg3_builds=frozenset({client}),
+    ).decide(
+        AdmissionRequest(client=client, protocol_version=ProtocolVersion.AWG3)
+    )
+
+    assert result.decision == "blocked_runtime_not_accepted"
     assert result.admitted is False
 
 

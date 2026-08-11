@@ -249,6 +249,7 @@ class AdminConfigIssuanceService:
                 client_application=slot.client_application,
                 client_platform=slot.client_platform,
                 client_version=slot.client_version,
+                client_build=slot.client_build,
             )
             device_id = None
             passport_device_id = None
@@ -618,6 +619,7 @@ def _request_fingerprint(
 def _receipt_from_row(
     row, *, client_build: str | None = None
 ) -> AdminConfigIssuanceReceipt:
+    persisted_client_build = _optional_row_text(row, "client_build")
     return AdminConfigIssuanceReceipt(
         receipt_id=int(row["id"]),
         request_id=str(row["request_id"]),
@@ -640,7 +642,9 @@ def _receipt_from_row(
         client_application=_optional_row_text(row, "client_application"),
         client_platform=_optional_row_text(row, "client_platform"),
         client_version=_optional_row_text(row, "client_version"),
-        client_build=client_build,
+        client_build=(
+            client_build if client_build is not None else persisted_client_build
+        ),
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )

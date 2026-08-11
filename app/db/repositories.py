@@ -684,6 +684,220 @@ class Repository:
             (application, platform, client_version, client_build),
         ).fetchone()
 
+    def reserve_protocol_issuance_attempt(
+        self,
+        *,
+        passport_device_id: str,
+        protocol_version: str,
+        request_fingerprint: str,
+        actor_kind: str,
+        actor_id: int,
+        client_application: str,
+        client_platform: str,
+        client_version: str,
+        client_build: str | None,
+        runtime_instance_id: str | None,
+        compatibility_evidence_id: str | None,
+    ) -> sqlite3.Row | None:
+        with self.transaction():
+            try:
+                cursor = self._conn.execute(
+                    """
+                    INSERT INTO protocol_issuance_attempts (
+                        passport_device_id,
+                        protocol_version,
+                        request_fingerprint,
+                        actor_kind,
+                        actor_id,
+                        client_application,
+                        client_platform,
+                        client_version,
+                        client_build,
+                        runtime_instance_id,
+                        compatibility_evidence_id
+                    )
+                    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    WHERE NOT EXISTS (
+                        SELECT 1
+                        FROM device_protocol_profiles
+                        WHERE passport_device_id = ?
+                          AND protocol_version = ?
+                    )
+                      AND NOT EXISTS (
+                        SELECT 1
+                        FROM protocol_issuance_attempts
+                        WHERE passport_device_id = ?
+                          AND protocol_version = ?
+                          AND state IN ('reserved','recovery_required')
+                    )
+                    """,
+                    (
+                        passport_device_id,
+                        protocol_version,
+                        request_fingerprint,
+                        actor_kind,
+                        actor_id,
+                        client_application,
+                        client_platform,
+                        client_version,
+                        client_build,
+                        runtime_instance_id,
+                        compatibility_evidence_id,
+                        passport_device_id,
+                        protocol_version,
+                        passport_device_id,
+                        protocol_version,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                if (
+                    self.get_device_protocol_profile(
+                        passport_device_id=passport_device_id,
+                        protocol_version=protocol_version,
+                    )
+                    is not None
+                    or self.get_blocking_protocol_issuance_attempt(
+                        passport_device_id=passport_device_id,
+                        protocol_version=protocol_version,
+                    )
+                    is not None
+                ):
+                    return None
+                raise
+            if cursor.rowcount != 1:
+                return None
+            attempt_id = int(cursor.lastrowid)
+            attempt = self.get_protocol_issuance_attempt(attempt_id)
+            assert attempt is not None
+            return attempt
+
+    def get_protocol_issuance_attempt(
+        self, attempt_id: int
+    ) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM protocol_issuance_attempts WHERE id = ?",
+            (attempt_id,),
+        ).fetchone()
+
+    def get_blocking_protocol_issuance_attempt(
+        self,
+        *,
+        passport_device_id: str,
+        protocol_version: str,
+    ) -> sqlite3.Row | None:
+        return self._conn.execute(
+            """
+            SELECT *
+            FROM protocol_issuance_attempts
+            WHERE passport_device_id = ?
+              AND protocol_version = ?
+              AND state IN ('reserved','recovery_required')
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (passport_device_id, protocol_version),
+        ).fetchone()
+
+    def list_protocol_issuance_attempts(
+        self,
+        *,
+        passport_device_id: str,
+        protocol_version: str | None = None,
+    ) -> list[sqlite3.Row]:
+        if protocol_version is None:
+            return self._conn.execute(
+                """
+                SELECT *
+                FROM protocol_issuance_attempts
+                WHERE passport_device_id = ?
+                ORDER BY id
+                """,
+                (passport_device_id,),
+            ).fetchall()
+        return self._conn.execute(
+            """
+            SELECT *
+            FROM protocol_issuance_attempts
+            WHERE passport_device_id = ? AND protocol_version = ?
+            ORDER BY id
+            """,
+            (passport_device_id, protocol_version),
+        ).fetchall()
+
+    def cancel_protocol_issuance_attempt(
+        self, attempt_id: int, *, reason_code: str
+    ) -> sqlite3.Row:
+        with self.transaction():
+            cursor = self._conn.execute(
+                """
+                UPDATE protocol_issuance_attempts
+                SET state = 'cancelled',
+                    reason_code = ?,
+                    cancelled_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND state = 'reserved'
+                """,
+                (reason_code, attempt_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("issuance attempt is not reserved")
+            attempt = self.get_protocol_issuance_attempt(attempt_id)
+            assert attempt is not None
+            return attempt
+
+    def complete_protocol_issuance_attempt(
+        self, attempt_id: int, *, local_device_id: int
+    ) -> sqlite3.Row:
+        with self.transaction():
+            cursor = self._conn.execute(
+                """
+                UPDATE protocol_issuance_attempts
+                SET state = 'completed',
+                    local_device_id = ?,
+                    reason_code = 'issued',
+                    completed_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND state = 'reserved'
+                """,
+                (local_device_id, attempt_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("issuance attempt is not reserved")
+            attempt = self.get_protocol_issuance_attempt(attempt_id)
+            assert attempt is not None
+            return attempt
+
+    def mark_protocol_issuance_attempt_recovery_required(
+        self,
+        attempt_id: int,
+        *,
+        local_device_id: int | None,
+        reason_code: str,
+    ) -> sqlite3.Row:
+        with self.transaction():
+            current = self.get_protocol_issuance_attempt(attempt_id)
+            if current is None:
+                raise LookupError("issuance attempt not found")
+            if str(current["state"]) == "recovery_required":
+                return current
+            cursor = self._conn.execute(
+                """
+                UPDATE protocol_issuance_attempts
+                SET state = 'recovery_required',
+                    local_device_id = ?,
+                    reason_code = ?,
+                    recovery_required_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND state = 'reserved'
+                """,
+                (local_device_id, reason_code, attempt_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("issuance attempt is not reserved")
+            attempt = self.get_protocol_issuance_attempt(attempt_id)
+            assert attempt is not None
+            return attempt
+
     def create_device_protocol_profile(
         self,
         *,
@@ -2423,6 +2637,7 @@ class Repository:
         client_application: str | None = None,
         client_platform: str | None = None,
         client_version: str | None = None,
+        client_build: str | None = None,
     ) -> sqlite3.Row:
         self._conn.execute(
             """
@@ -2441,9 +2656,10 @@ class Repository:
                 client_application,
                 client_platform,
                 client_version,
+                client_build,
                 status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'started')
             """,
             (
                 request_id,
@@ -2460,6 +2676,7 @@ class Repository:
                 client_application,
                 client_platform,
                 client_version,
+                client_build,
             ),
         )
         self._commit()

@@ -298,7 +298,11 @@ def test_superseded_nonstable_history_does_not_block_current_stable_state(
 
     result = ProtocolAdmissionService(
         evidence=tuple(evidence),
-        runtimes=(accepted_runtime(),),
+        runtimes=(
+            replace(accepted_runtime(), lifecycle_state="candidate")
+            if local_status == "unknown"
+            else accepted_runtime(),
+        ),
         now=NOW,
         awg3_control_state=Awg3ControlState(
             runtime_accepted=True,

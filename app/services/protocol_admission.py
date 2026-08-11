@@ -140,6 +140,13 @@ class ProtocolAdmissionService:
                     ),
                     None,
                 )
+                if runtime is None or runtime.lifecycle_state != "candidate":
+                    return AdmissionResult(
+                        "blocked_runtime_not_accepted",
+                        request.protocol_version,
+                        runtime.runtime_instance_id if runtime is not None else None,
+                        None,
+                    )
                 return AdmissionResult(
                     "candidate_awg3",
                     request.protocol_version,
@@ -153,36 +160,6 @@ class ProtocolAdmissionService:
                     else "blocked_unverified_version"
                 )
                 return AdmissionResult(decision, request.protocol_version, None, None)
-            control = self._awg3_control_state
-            accepted_builds = self._accepted_awg3_builds
-            if (
-                not isinstance(control, Awg3ControlState)
-                or not isinstance(accepted_builds, frozenset)
-                or not control.runtime_accepted
-                or not control.global_accepted
-                or not control.runtime_receipt
-                or request.client not in accepted_builds
-            ):
-                return AdmissionResult(
-                    "blocked_global_acceptance",
-                    request.protocol_version,
-                    None,
-                    None,
-                )
-            if not control.issuance_enabled:
-                return AdmissionResult(
-                    "blocked_issuance_disabled",
-                    request.protocol_version,
-                    None,
-                    None,
-                )
-            if control.emergency_suspended:
-                return AdmissionResult(
-                    "blocked_runtime_suspended",
-                    request.protocol_version,
-                    None,
-                    None,
-                )
         passed = next(
             (
                 item
@@ -228,7 +205,10 @@ class ProtocolAdmissionService:
         if runtime.lifecycle_state != "accepted" or not runtime.acceptance_receipt:
             decision = (
                 "candidate_awg3"
-                if request.protocol_version is ProtocolVersion.AWG3
+                if (
+                    request.protocol_version is ProtocolVersion.AWG3
+                    and runtime.lifecycle_state == "candidate"
+                )
                 else "blocked_runtime_not_accepted"
             )
             return AdmissionResult(
@@ -237,6 +217,37 @@ class ProtocolAdmissionService:
                 runtime.runtime_instance_id,
                 passed.evidence_id,
             )
+        if request.protocol_version is ProtocolVersion.AWG3:
+            control = self._awg3_control_state
+            accepted_builds = self._accepted_awg3_builds
+            if (
+                not isinstance(control, Awg3ControlState)
+                or not isinstance(accepted_builds, frozenset)
+                or not control.runtime_accepted
+                or not control.global_accepted
+                or not control.runtime_receipt
+                or request.client not in accepted_builds
+            ):
+                return AdmissionResult(
+                    "blocked_global_acceptance",
+                    request.protocol_version,
+                    None,
+                    passed.evidence_id,
+                )
+            if not control.issuance_enabled:
+                return AdmissionResult(
+                    "blocked_issuance_disabled",
+                    request.protocol_version,
+                    runtime.runtime_instance_id,
+                    passed.evidence_id,
+                )
+            if control.emergency_suspended:
+                return AdmissionResult(
+                    "blocked_runtime_suspended",
+                    request.protocol_version,
+                    runtime.runtime_instance_id,
+                    passed.evidence_id,
+                )
         decision = (
             "admitted_awg3"
             if request.protocol_version is ProtocolVersion.AWG3

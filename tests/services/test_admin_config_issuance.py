@@ -738,6 +738,14 @@ def test_awg3_safe_receipt_carries_client_build_without_config_material(tmp_path
     assert "private_key" not in serialized
     assert "preshared_key" not in serialized
     assert "qr" not in serialized.casefold()
+    stored = conn.execute(
+        "SELECT client_build FROM admin_config_issuance_receipts "
+        "WHERE request_id = ? AND item_index = 0",
+        ("spain-first-real-001",),
+    ).fetchone()
+    assert stored["client_build"] == "exact-build"
+    replay = service.replay_existing_request("spain-first-real-001")
+    assert replay.receipts[0].client_build == "exact-build"
     conn.close()
 
 
