@@ -247,12 +247,21 @@ class DualProtocolProfileService:
                     replacement_device_id,
                     old_profile.protocol_version,
                 )
-                self._cas_transition(
-                    row,
+                changed = self._repo.transition_device_protocol_profile(
+                    profile_id=revoked.profile_id,
+                    expected_lifecycle_state=revoked.lifecycle_state,
+                    expected_local_device_id=revoked.local_device_id,
+                    expected_replacement_device_id=(
+                        revoked.replacement_device_id
+                    ),
                     lifecycle_state="active",
                     local_device_id=replacement_device_id,
                     replacement_device_id=None,
                 )
+                if not changed:
+                    raise _ProfileChangedConcurrently(
+                        "protocol profile changed concurrently"
+                    )
                 self._append_transition_event(
                     row,
                     event_type="compromise_reissue_completed",

@@ -584,6 +584,85 @@ def test_compromise_reissue_revokes_old_before_new_issue(
     assert result.local_device_id == harness.replacement_device_id
 
 
+def test_compromise_completion_rejects_post_factory_state_and_identity_change(
+    harness: ProfileHarness,
+):
+    original_device = harness.repo.get_device(harness.awg3_device_id)
+    factory_device_id = _create_local_device(
+        harness.repo,
+        user_id=int(original_device["user_id"]),
+        server_id=int(original_device["server_id"]),
+        sequence=9,
+        protocol=ProtocolVersion.AWG3,
+    )
+    service = _service(harness.repo)
+    old = service.attach_active(
+        harness.passport_device_id,
+        ProtocolVersion.AWG3,
+        harness.awg3_device_id,
+    )
+
+    def issue_with_interleaving(_protocol: ProtocolVersion) -> int:
+        with harness.repo.transaction():
+            changed = harness.repo.transition_device_protocol_profile(
+                profile_id=old.profile_id,
+                expected_lifecycle_state="revoked",
+                expected_local_device_id=harness.awg3_device_id,
+                expected_replacement_device_id=None,
+                lifecycle_state="review_required",
+                local_device_id=harness.replacement_device_id,
+                replacement_device_id=None,
+            )
+            assert changed is True
+            harness.repo.append_protocol_config_event(
+                event_type="protocol_profile_review_required",
+                actor_kind="system",
+                actor_id=0,
+                reason="interleaving review",
+                passport_device_id=harness.passport_device_id,
+                protocol_version="awg3",
+                local_device_id=harness.replacement_device_id,
+                metadata={
+                    "profile_id": old.profile_id,
+                    "lifecycle_state": "review_required",
+                    "replacement_device_id": None,
+                },
+            )
+        return factory_device_id
+
+    conflict: RuntimeError | None = None
+    try:
+        service.compromise_reissue(
+            old.profile_id,
+            replacement_factory=issue_with_interleaving,
+            actor_id=700,
+            reason="suspected config leak",
+        )
+    except RuntimeError as exc:
+        conflict = exc
+
+    after = service.get(old.profile_id)
+    event_types = [
+        str(row["event_type"])
+        for row in harness.conn.execute(
+            "SELECT event_type FROM protocol_config_events ORDER BY id"
+        ).fetchall()
+    ]
+    assert conflict is not None, (
+        "completion overwrote interleaving: "
+        f"state={after.lifecycle_state}, local_device_id={after.local_device_id}, "
+        f"events={event_types}"
+    )
+    assert str(conflict) == "protocol profile changed concurrently"
+    assert after.lifecycle_state == "review_required"
+    assert after.local_device_id == harness.replacement_device_id
+    assert after.replacement_device_id is None
+    assert "compromise_reissue_completed" not in event_types
+    assert service.by_local_device_id(
+        harness.awg3_device_id
+    ).lifecycle_state == "revoked"
+
+
 def test_compromise_reissue_failure_stays_revoked_and_records_secret_safe_event(
     harness: ProfileHarness,
 ):
