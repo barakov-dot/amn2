@@ -15,6 +15,7 @@ from fastapi import Form
 from fastapi import Request
 from fastapi.responses import PlainTextResponse
 from fastapi.responses import RedirectResponse
+from fastapi.responses import Response
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.staticfiles import StaticFiles
@@ -773,6 +774,46 @@ def create_web_app(
                 **view,
             ),
         )
+
+    @app.get("/device-passports/{device_id}/config")
+    async def device_passport_config_secret(request: Request, device_id: str):
+        if not _is_authenticated(request):
+            return RedirectResponse("/login", status_code=303)
+        try:
+            delivery = _build_and_audit_passport_secret(
+                actual_settings,
+                request,
+                passport_device_id=device_id,
+            )
+        except LookupError:
+            return PlainTextResponse("Device passport not found", status_code=404)
+        except ConfigMaterialUnavailable:
+            return PlainTextResponse("Config material is unavailable", status_code=400)
+        return Response(
+            content=delivery.config_bytes,
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{delivery.config_filename}"'
+                )
+            },
+        )
+
+    @app.get("/device-passports/{device_id}/qr")
+    async def device_passport_qr_secret(request: Request, device_id: str):
+        if not _is_authenticated(request):
+            return RedirectResponse("/login", status_code=303)
+        try:
+            delivery = _build_and_audit_passport_secret(
+                actual_settings,
+                request,
+                passport_device_id=device_id,
+            )
+        except LookupError:
+            return PlainTextResponse("Device passport not found", status_code=404)
+        except ConfigMaterialUnavailable:
+            return PlainTextResponse("Config material is unavailable", status_code=400)
+        return Response(content=delivery.qr_png_bytes, media_type="image/png")
 
     @app.get("/users")
     async def users_index(request: Request):
@@ -3579,6 +3620,46 @@ def _reveal_device_secrets(
                 metadata={"device_id": device_id},
             )
             return secrets
+
+
+def _build_and_audit_passport_secret(
+    settings: Settings,
+    request: Request,
+    *,
+    passport_device_id: str,
+):
+    with _open_repository(settings) as (repo, _conn):
+        with repo.transaction():
+            passport = repo.get_device_passport(passport_device_id)
+            if passport is None or passport["local_device_id"] is None:
+                raise LookupError("Device passport not found")
+            local_device_id = int(passport["local_device_id"])
+            device = repo.get_device(local_device_id)
+            result = build_device_config_delivery(
+                repo=repo,
+                secret_box=SecretBox.from_app_secret(settings.app_secret_key),
+                device=device,
+                client_config_template_dir=settings.client_config_template_dir,
+                client_config_defaults=settings.client_config_defaults,
+            )
+            repo.append_protocol_config_event(
+                event_type="config_secret_viewed",
+                actor_kind="admin",
+                actor_id=_web_admin_actor_id(settings),
+                reason="authenticated admin secret view",
+                passport_device_id=passport_device_id,
+                protocol_version=(
+                    str(device["protocol_version"])
+                    if device["protocol_version"] is not None
+                    else None
+                ),
+                local_device_id=local_device_id,
+                metadata={
+                    "passport_device_id": passport_device_id,
+                    "local_device_id": local_device_id,
+                },
+            )
+            return result.delivery
 
 
 def _device_config_material_status(device: Any) -> str:

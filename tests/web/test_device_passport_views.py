@@ -11,6 +11,8 @@ from app.services.device_passports import (
     create_device_passport,
     record_device_acceptance,
 )
+from app.services.dual_protocol_profiles import DualProtocolProfileService
+from app.vpn.protocol_versions import ProtocolVersion
 from app.web.device_passports import (
     build_device_passport_detail_view,
     build_device_passport_list_view,
@@ -48,6 +50,16 @@ def test_detail_view_contains_lifecycle_and_capability_boundary():
     assert view["passport"]["capability_boundary"]["hardware_fingerprint"] is False
     assert view["passport"]["recommended_next_action"] == "collect_fresh_observation"
     assert view["lifecycle"] == []
+    assert [card["protocol_version"] for card in view["protocol_cards"]] == [
+        "awg2",
+        "awg3",
+    ]
+    awg3 = view["protocol_cards"][1]
+    assert awg3["runtime_instance_id"] == "rt-spain-awg3"
+    assert awg3["client_version"] == "5.0.0.5"
+    assert awg3["client_build"] == "win-5005-stable"
+    assert awg3["lifecycle_state"] == "active"
+    assert awg3["compatibility_evidence_id"] == "compat-win-5005-awg3"
 
 
 def test_passport_owner_uses_operator_label_without_telegram_id():
@@ -112,6 +124,44 @@ def _seed_passport() -> tuple[sqlite3.Connection, Repository, int, int, str]:
         config_schema_version="amneziawg_v2",
         config_text="never-store-projector-secret",
     )
+    profiles = DualProtocolProfileService(repo)
+    profiles.attach_active(passport.device_id, ProtocolVersion.AWG2, local_device_id)
+    attempt = repo.reserve_protocol_issuance_attempt(
+        passport_device_id=passport.device_id,
+        protocol_version="awg3",
+        request_fingerprint="sha256:" + "a" * 64,
+        actor_kind="user",
+        actor_id=18001,
+        client_application="amnezia_vpn",
+        client_platform="windows",
+        client_version="5.0.0.5",
+        client_build="win-5005-stable",
+        runtime_instance_id="rt-spain-awg3",
+        compatibility_evidence_id="compat-win-5005-awg3",
+    )
+    assert attempt is not None
+    awg3_device_id = repo.create_device(
+        user_id=user_id,
+        server_id=server_id,
+        name="operator-phone-awg3",
+        duration_days=30,
+        vpn_ip="10.8.0.23",
+        peer_public_key="projector-awg3-public-key",
+        peer_private_key_encrypted="synthetic-encrypted-awg3-private",
+        preshared_key_encrypted="synthetic-encrypted-awg3-psk",
+        config_version="amneziawg_v3",
+        protocol_version="awg3",
+        runtime_instance_id="rt-spain-awg3",
+        compatibility_evidence_id="compat-win-5005-awg3",
+        client_identity_evidence_status="verified",
+    )
+    with repo.transaction():
+        profiles.attach_active(
+            passport.device_id, ProtocolVersion.AWG3, awg3_device_id
+        )
+        repo.complete_protocol_issuance_attempt(
+            int(attempt["id"]), local_device_id=awg3_device_id
+        )
     now = datetime(2026, 7, 18, 12, 0, tzinfo=timezone.utc)
     record_device_acceptance(
         repo,

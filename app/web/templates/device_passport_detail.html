@@ -81,6 +81,36 @@
     </article>
   </section>
 
+  <section class="detail-grid" aria-label="Профили протоколов">
+    {% for profile in protocol_cards %}
+      <article class="panel" data-protocol="{{ profile.protocol_version }}">
+        <div class="panel-header"><h2>{{ profile.protocol_version|upper }}</h2></div>
+        <dl class="details">
+          <div><dt>Протокол</dt><dd>{{ profile.protocol_version }}</dd></div>
+          <div><dt>Runtime</dt><dd>{{ profile.runtime_instance_id or "-" }}</dd></div>
+          <div><dt>Клиент</dt><dd>{{ profile.client_application }} / {{ profile.client_platform }}</dd></div>
+          <div><dt>Точная версия</dt><dd>{{ profile.client_version or "-" }}</dd></div>
+          <div><dt>Точная сборка</dt><dd>{{ profile.client_build or "-" }}</dd></div>
+          <div><dt>Lifecycle</dt><dd>{{ profile.lifecycle_state }}</dd></div>
+          <div><dt>Evidence</dt><dd class="wrap-text">{{ profile.compatibility_evidence_id or "-" }}</dd></div>
+          <div><dt>Evidence status</dt><dd>{{ profile.client_identity_evidence_status }}</dd></div>
+        </dl>
+      </article>
+    {% endfor %}
+  </section>
+
+  {% if passport.local_device_id %}
+    <section class="panel">
+      <div class="panel-header"><h2>Секретный материал</h2></div>
+      <p class="action-note">Доступно только в аутентифицированной админ-сессии; каждое открытие аудируется.</p>
+      <p>
+        <a href="/device-passports/{{ passport.device_id }}/config">Открыть .conf</a>
+        ·
+        <a href="/device-passports/{{ passport.device_id }}/qr">Открыть QR</a>
+      </p>
+    </section>
+  {% endif %}
+
   <section class="panel">
     <div class="panel-header"><h2>Жизненный цикл</h2></div>
     {% if lifecycle %}

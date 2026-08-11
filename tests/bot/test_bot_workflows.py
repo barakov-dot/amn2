@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.bot.delivery import ConfigDeliveryPackage
 from app.bot.workflows import AdminConfigHandoff, BotWorkflow
 from app.db.connection import connect
 from app.db.repositories import Repository
@@ -13,7 +14,10 @@ from app.services.access import AccessService, RemoteOperationPartialFailure
 from app.services.config_delivery import ConfigMaterialUnavailable
 from app.services.device_lifecycle import list_device_lifecycle_events
 from app.services.device_passports import create_device_passport
+from app.services.client_compatibility import ClientIdentity
+from app.services.self_service_issuance import SelfServiceIssuanceResult
 from app.services.traffic import PeerTraffic, TrafficService
+from app.vpn.protocol_versions import ProtocolVersion
 
 SECRET = "bot-workflow-secret-value-with-more-than-32-chars"
 
@@ -1305,6 +1309,198 @@ def test_default_bot_issuance_fails_closed_without_exact_client_version(tmp_path
 
     assert peer_applier.calls == []
     assert repo.list_users_for_admin() == []
+
+
+def test_awg3_choices_are_structured_exact_and_filtered_to_passport_owner(tmp_path):
+    repo = _repo(tmp_path)
+    user_id = repo.upsert_user(
+        telegram_id=700,
+        username="awg3-owner",
+        first_name="AWG3",
+        last_name="Owner",
+    )
+    passport = create_device_passport(
+        repo,
+        owner_user_id=user_id,
+        local_device_id=None,
+        platform="windows",
+        official_client_type="amnezia_vpn",
+        client_version="5.0.0.5",
+        import_method="standard_conf",
+        config_schema_version="amneziawg_v2",
+        config_text="synthetic-choice-fingerprint-source",
+    )
+    service = RecordingSelfServiceIssuanceService()
+    workflow = BotWorkflow(
+        repo=repo,
+        admin_telegram_ids=set(),
+        self_service_issuance_service=service,
+        awg3_client_choices=(
+            ClientIdentity(
+                "amnezia_vpn", "windows", "5.0.0.5", build_id="win-5005-stable"
+            ),
+            ClientIdentity(
+                "amnezia_vpn", "android", "4.8.19.0", build_id="android-48190"
+            ),
+        ),
+    )
+
+    choices = workflow.list_awg3_client_choices(
+        telegram_id=700,
+        passport_device_id=passport.device_id,
+    )
+
+    assert [choice.safe_metadata() for choice in choices] == [
+        {
+            "application": "amnezia_vpn",
+            "platform": "windows",
+            "version": "5.0.0.5",
+            "build_id": "win-5005-stable",
+        }
+    ]
+    assert workflow.list_awg3_client_choices(
+        telegram_id=701,
+        passport_device_id=passport.device_id,
+    ) == ()
+
+
+def test_awg3_request_and_confirm_delegate_without_admin_approval(tmp_path):
+    repo = _repo(tmp_path)
+    user_id = repo.upsert_user(
+        telegram_id=700,
+        username="awg3-owner",
+        first_name="AWG3",
+        last_name="Owner",
+    )
+    passport = create_device_passport(
+        repo,
+        owner_user_id=user_id,
+        local_device_id=None,
+        platform="windows",
+        official_client_type="amnezia_vpn",
+        client_version="5.0.0.5",
+        import_method="standard_conf",
+        config_schema_version="amneziawg_v2",
+        config_text="synthetic-request-fingerprint-source",
+    )
+    service = RecordingSelfServiceIssuanceService()
+    delivery = _synthetic_awg3_delivery()
+    delivery_calls = []
+    workflow = BotWorkflow(
+        repo=repo,
+        admin_telegram_ids=set(),
+        self_service_issuance_service=service,
+        awg3_client_choices=(
+            ClientIdentity(
+                "amnezia_vpn", "windows", "5.0.0.5", build_id="win-5005-stable"
+            ),
+        ),
+        awg3_delivery_builder=lambda device_id: delivery_calls.append(device_id)
+        or delivery,
+    )
+
+    requested = workflow.request_awg3(
+        telegram_id=700,
+        passport_device_id=passport.device_id,
+        build_id="win-5005-stable",
+    )
+    confirmed = workflow.confirm_awg3(telegram_id=700, confirmation_token="token-1")
+
+    assert requested.status == "confirmation_required"
+    assert requested.token == "token-1"
+    assert len(service.decide_calls) == 1
+    assert len(service.confirm_calls) == 1
+    assert service.confirm_calls[0][0] == service.decide_calls[0]
+    assert service.confirm_calls[0][1] == "token-1"
+    assert confirmed.delivery is delivery
+    assert delivery_calls == [42]
+
+
+def test_awg3_confirm_rejects_wrong_owner_before_issuance_or_secret_loading(tmp_path):
+    repo = _repo(tmp_path)
+    user_id = repo.upsert_user(
+        telegram_id=700,
+        username="awg3-owner",
+        first_name="AWG3",
+        last_name="Owner",
+    )
+    passport = create_device_passport(
+        repo,
+        owner_user_id=user_id,
+        local_device_id=None,
+        platform="windows",
+        official_client_type="amnezia_vpn",
+        client_version="5.0.0.5",
+        import_method="standard_conf",
+        config_schema_version="amneziawg_v2",
+        config_text="synthetic-owner-fingerprint-source",
+    )
+    service = RecordingSelfServiceIssuanceService()
+    delivery_calls = []
+    workflow = BotWorkflow(
+        repo=repo,
+        admin_telegram_ids=set(),
+        self_service_issuance_service=service,
+        awg3_client_choices=(
+            ClientIdentity(
+                "amnezia_vpn", "windows", "5.0.0.5", build_id="win-5005-stable"
+            ),
+        ),
+        awg3_delivery_builder=lambda device_id: delivery_calls.append(device_id),
+    )
+    workflow.request_awg3(
+        telegram_id=700,
+        passport_device_id=passport.device_id,
+        build_id="win-5005-stable",
+    )
+
+    result = workflow.confirm_awg3(telegram_id=701, confirmation_token="token-1")
+
+    assert result is None
+    assert service.confirm_calls == []
+    assert delivery_calls == []
+
+
+class RecordingSelfServiceIssuanceService:
+    def __init__(self):
+        self.decide_calls = []
+        self.confirm_calls = []
+
+    def decide(self, request):
+        self.decide_calls.append(request)
+        return SelfServiceIssuanceResult(
+            status="confirmation_required",
+            protocol_version=ProtocolVersion.AWG3,
+            reason_code="confirmation_required",
+            offer_awg2=False,
+            issued_device_id=None,
+            token="token-1",
+        )
+
+    def issue_after_confirmation(self, request, *, confirmation_token):
+        self.confirm_calls.append((request, confirmation_token))
+        return SelfServiceIssuanceResult(
+            status="issued",
+            protocol_version=ProtocolVersion.AWG3,
+            reason_code="issued",
+            offer_awg2=False,
+            issued_device_id=42,
+            token=None,
+        )
+
+
+def _synthetic_awg3_delivery() -> ConfigDeliveryPackage:
+    return ConfigDeliveryPackage(
+        template_key="config_ready",
+        message_text="synthetic ready",
+        config_filename="synthetic-awg3.conf",
+        config_bytes=b"[Interface]\nPrivateKey = synthetic-test-only",
+        qr_filename="synthetic-awg3.qr.png",
+        qr_png_bytes=b"\x89PNG\r\n\x1a\nsynthetic-test-only",
+        vpn_import_link="vpn://synthetic-test-only",
+        config_caption="synthetic config",
+        qr_caption="synthetic qr",
+    )
 
 
 def _repo(tmp_path):

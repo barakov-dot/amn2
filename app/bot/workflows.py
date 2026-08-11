@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -20,6 +21,7 @@ from app.services.config_delivery import (
     build_device_config_delivery,
 )
 from app.services.device_lifecycle import LifecycleEvidence, record_device_lifecycle_stage
+from app.services.client_compatibility import ClientIdentity
 from app.services.device_revoke import cascade_revoke_physical_device
 from app.services.access import (
     AccessService,
@@ -35,8 +37,13 @@ from app.services.operator_server_status import (
 )
 from app.services.operator_status import OperatorStatusSummary, build_operator_status
 from app.services.traffic import DeviceTrafficView, build_device_traffic_view
+from app.services.self_service_issuance import (
+    SelfServiceIssuanceRequest,
+    SelfServiceIssuanceResult,
+)
 from app.vpn.amneziawg_v2.config import ClientConfigDefaults
 from app.vpn.config_versions import validate_config_version
+from app.vpn.protocol_versions import ProtocolVersion
 
 
 @dataclass(frozen=True)
@@ -72,9 +79,37 @@ class AdminConfigHandoff:
     config_bytes: bytes
 
 
+@dataclass(frozen=True)
+class Awg3ClientChoice:
+    application: str
+    platform: str
+    version: str
+    build_id: str
+
+    def safe_metadata(self) -> dict[str, str]:
+        return {
+            "application": self.application,
+            "platform": self.platform,
+            "version": self.version,
+            "build_id": self.build_id,
+        }
+
+
+@dataclass(frozen=True)
+class Awg3Confirmation:
+    result: SelfServiceIssuanceResult
+    delivery: ConfigDeliveryPackage | None
+
+
 class PeerRemover:
     def remove_peer(self, *, server, peer_public_key: str) -> None:
         pass
+
+
+def _token_digest(token: str) -> str:
+    if not isinstance(token, str) or not token:
+        return ""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 class BotWorkflow:
@@ -93,6 +128,9 @@ class BotWorkflow:
         device_name_sequence_seed: int = 4,
         vps_writes_enabled: bool = False,
         admin_config_issuance_factory=None,
+        self_service_issuance_service=None,
+        awg3_client_choices: tuple[ClientIdentity, ...] = (),
+        awg3_delivery_builder=None,
     ) -> None:
         self._repo = repo
         self._admin_telegram_ids = admin_telegram_ids
@@ -106,6 +144,15 @@ class BotWorkflow:
         self._device_name_sequence_seed = max(0, int(device_name_sequence_seed))
         self._vps_writes_enabled = bool(vps_writes_enabled)
         self._admin_config_issuance_factory = admin_config_issuance_factory
+        self._self_service_issuance_service = self_service_issuance_service
+        self._awg3_client_choices = tuple(awg3_client_choices)
+        self._awg3_delivery_builder = awg3_delivery_builder
+        self._awg3_pending_requests: dict[str, SelfServiceIssuanceRequest] = {}
+        build_ids = [choice.build_id for choice in self._awg3_client_choices]
+        if any(build_id is None for build_id in build_ids) or len(build_ids) != len(
+            set(build_ids)
+        ):
+            raise ValueError("AWG3 client choices require unique exact build IDs")
         if not self._device_name_prefix:
             raise ValueError("device_name_prefix must be non-blank")
 
@@ -117,6 +164,116 @@ class BotWorkflow:
 
     def is_configured_admin(self, telegram_id: int) -> bool:
         return telegram_id in self._admin_telegram_ids
+
+    def list_awg3_client_choices(
+        self,
+        *,
+        telegram_id: int,
+        passport_device_id: str,
+    ) -> tuple[Awg3ClientChoice, ...]:
+        user = self._repo.get_user_by_telegram_id(telegram_id)
+        passport = self._repo.get_device_passport(passport_device_id)
+        if (
+            user is None
+            or passport is None
+            or int(passport["owner_user_id"]) != int(user["id"])
+            or passport["revoked_at"] is not None
+        ):
+            return ()
+        return tuple(
+            Awg3ClientChoice(
+                application=choice.application,
+                platform=choice.platform,
+                version=choice.version,
+                build_id=str(choice.build_id),
+            )
+            for choice in self._awg3_client_choices
+            if choice.platform == str(passport["platform"])
+            and choice.application == str(passport["official_client_type"])
+        )
+
+    def request_awg3(
+        self,
+        *,
+        telegram_id: int,
+        passport_device_id: str,
+        build_id: str,
+    ) -> SelfServiceIssuanceResult:
+        service = self._require_self_service_issuance_service()
+        choices = self.list_awg3_client_choices(
+            telegram_id=telegram_id,
+            passport_device_id=passport_device_id,
+        )
+        choice = next((item for item in choices if item.build_id == build_id), None)
+        if choice is None:
+            raise ValueError("AWG3 client build is not allowlisted for this passport")
+        user = self._repo.get_user_by_telegram_id(telegram_id)
+        assert user is not None
+        request = SelfServiceIssuanceRequest(
+            user_id=int(user["id"]),
+            telegram_id=telegram_id,
+            passport_device_id=passport_device_id,
+            protocol_version=ProtocolVersion.AWG3,
+            client=ClientIdentity(
+                choice.application,
+                choice.platform,
+                choice.version,
+                build_id=choice.build_id,
+            ),
+        )
+        result = service.decide(request)
+        if result.status == "confirmation_required" and result.token:
+            self._awg3_pending_requests[_token_digest(result.token)] = request
+        return result
+
+    def confirm_awg3(
+        self,
+        *,
+        telegram_id: int,
+        confirmation_token: str,
+    ) -> Awg3Confirmation | None:
+        request = self._awg3_pending_requests.get(_token_digest(confirmation_token))
+        if request is None or request.telegram_id != telegram_id:
+            return None
+        service = self._require_self_service_issuance_service()
+        result = service.issue_after_confirmation(
+            request,
+            confirmation_token=confirmation_token,
+        )
+        if result.status != "issued" or result.issued_device_id is None:
+            return Awg3Confirmation(result=result, delivery=None)
+        if self._awg3_delivery_builder is None:
+            device = self._repo.get_user_device(
+                user_id=request.user_id,
+                device_id=result.issued_device_id,
+            )
+            if device is None:
+                raise RuntimeError("issued AWG3 device does not belong to the requester")
+        delivery = self._build_awg3_delivery(result.issued_device_id)
+        self._awg3_pending_requests.pop(_token_digest(confirmation_token), None)
+        return Awg3Confirmation(result=result, delivery=delivery)
+
+    def _require_self_service_issuance_service(self):
+        if self._self_service_issuance_service is None:
+            raise RuntimeError("AWG3 self-service issuance is not configured")
+        return self._self_service_issuance_service
+
+    def _build_awg3_delivery(self, device_id: int) -> ConfigDeliveryPackage:
+        if self._awg3_delivery_builder is not None:
+            delivery = self._awg3_delivery_builder(device_id)
+            if not isinstance(delivery, ConfigDeliveryPackage):
+                raise ValueError("AWG3 delivery builder returned an invalid package")
+            return delivery
+        if self._secret_box is None:
+            raise RuntimeError("AWG3 config delivery is not configured")
+        result = build_device_config_delivery(
+            repo=self._repo,
+            secret_box=self._secret_box,
+            device=self._repo.get_device(device_id),
+            client_config_template_dir=self._client_config_template_dir,
+            client_config_defaults=self._client_config_defaults,
+        )
+        return result.delivery
 
     def issue_admin_config(
         self,

@@ -1,6 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
+import app.bot.handlers as bot_handlers
 from app.bot.handlers import (
     handle_admin_issue_config,
     handle_admin_resend_issued_config,
@@ -31,6 +32,7 @@ from app.bot.handlers import (
     handle_user_revoke_device,
     handle_user_revoke_device_confirm,
 )
+from app.bot.delivery import ConfigDeliveryPackage
 from app.bot.workflows import AdminConfigHandoff
 from app.bot.ux import (
     LANGUAGE_CALLBACK_PREFIX,
@@ -1055,6 +1057,56 @@ def test_handle_admin_resend_issued_config_returns_safe_unavailable_response():
     assert "secret-bearing" not in message.answers[0]["text"]
 
 
+def test_awg3_select_rejects_malformed_callback_ids_before_workflow():
+    callback = FakeCallback(data="awg3:select:dev_bad:build:extra", user_id=700)
+    workflow = FakeWorkflow(admin_ids=set())
+
+    asyncio.run(bot_handlers.handle_awg3_select(callback, workflow=workflow))
+
+    assert workflow.awg3_requests == []
+    assert callback.message.answers[0]["text"] == "Invalid AWG3 selection."
+    assert callback.answered is True
+
+
+def test_awg3_select_rejects_noncanonical_passport_id_before_workflow():
+    callback = FakeCallback(data="awg3:select:dev_bad:build-1", user_id=700)
+    workflow = FakeWorkflow(admin_ids=set())
+
+    asyncio.run(bot_handlers.handle_awg3_select(callback, workflow=workflow))
+
+    assert workflow.awg3_requests == []
+    assert callback.message.answers[0]["text"] == "Invalid AWG3 selection."
+
+
+def test_awg3_confirm_rejects_non_private_chat_before_workflow_or_secret_media():
+    callback = FakeCallback(
+        data="awg3:confirm:token-1",
+        user_id=700,
+        chat_type="group",
+    )
+    workflow = FakeWorkflow(admin_ids=set())
+
+    asyncio.run(bot_handlers.handle_awg3_confirm(callback, workflow=workflow))
+
+    assert workflow.awg3_confirmations == []
+    assert callback.bot.sent_documents == []
+    assert callback.bot.sent_photos == []
+    assert callback.answered is True
+
+
+def test_awg3_confirm_delivers_exactly_document_then_photo_to_private_owner():
+    callback = FakeCallback(data="awg3:confirm:token-1", user_id=700)
+    workflow = FakeWorkflow(admin_ids=set())
+
+    asyncio.run(bot_handlers.handle_awg3_confirm(callback, workflow=workflow))
+
+    assert [call["kind"] for call in callback.bot.calls] == ["document", "photo"]
+    assert [call["chat_id"] for call in callback.bot.calls] == [700, 700]
+    assert callback.bot.sent_messages == []
+    assert callback.bot.delete_message_calls == []
+    assert callback.answered is True
+
+
 class FakeMessage:
     def __init__(
         self,
@@ -1064,6 +1116,7 @@ class FakeMessage:
         first_name=None,
         last_name=None,
         message_id=77,
+        chat_type="private",
     ):
         self.from_user = SimpleNamespace(
             id=user_id,
@@ -1073,7 +1126,7 @@ class FakeMessage:
         )
         self.answers = []
         self.message_id = message_id
-        self.chat = SimpleNamespace(id=user_id)
+        self.chat = SimpleNamespace(id=user_id, type=chat_type)
         self.photos = []
         self.text = ""
         self.bot = FakeBot()
@@ -1088,19 +1141,30 @@ class FakeMessage:
 
 
 class FakeCallback:
-    def __init__(self, *, data, user_id, username=None, first_name=None, last_name=None):
+    def __init__(
+        self,
+        *,
+        data,
+        user_id,
+        username=None,
+        first_name=None,
+        last_name=None,
+        chat_type="private",
+    ):
         self.data = data
         self.from_user = SimpleNamespace(
             id=user_id,
             username=username,
             first_name=first_name,
             last_name=last_name,
+            chat_type=chat_type,
         )
         self.message = FakeMessage(
             user_id=user_id,
             username=username,
             first_name=first_name,
             last_name=last_name,
+            chat_type=chat_type,
         )
         self.bot = FakeBot()
         self.answered = False
@@ -1146,6 +1210,8 @@ class FakeWorkflow:
         self.admin_config_request_ids = []
         self.admin_config_deliveries = []
         self.admin_config_resends = []
+        self.awg3_requests = []
+        self.awg3_confirmations = []
 
     def is_admin(self, telegram_id):
         return telegram_id in self._admin_ids or telegram_id in getattr(
@@ -1154,6 +1220,36 @@ class FakeWorkflow:
 
     def is_configured_admin(self, telegram_id):
         return telegram_id in self._admin_ids
+
+    def request_awg3(self, *, telegram_id, passport_device_id, build_id):
+        self.awg3_requests.append((telegram_id, passport_device_id, build_id))
+        return SimpleNamespace(
+            status="confirmation_required",
+            reason_code="confirmation_required",
+            offer_awg2=False,
+            token="token-1",
+        )
+
+    def confirm_awg3(self, *, telegram_id, confirmation_token):
+        self.awg3_confirmations.append((telegram_id, confirmation_token))
+        return SimpleNamespace(
+            result=SimpleNamespace(
+                status="issued",
+                reason_code="issued",
+                offer_awg2=False,
+            ),
+            delivery=ConfigDeliveryPackage(
+                template_key="config_ready",
+                message_text="synthetic ready",
+                config_filename="synthetic-awg3.conf",
+                config_bytes=b"[Interface]\nPrivateKey = synthetic-test-only",
+                qr_filename="synthetic-awg3.qr.png",
+                qr_png_bytes=b"\x89PNG\r\n\x1a\nsynthetic-test-only",
+                vpn_import_link="vpn://synthetic-test-only",
+                config_caption="synthetic config",
+                qr_caption="synthetic qr",
+            ),
+        )
 
     def issue_admin_config(
         self,
@@ -1502,6 +1598,8 @@ class FakeBot:
         self.sent_documents = []
         self.sent_photos = []
         self.document_error = document_error
+        self.calls = []
+        self.delete_message_calls = []
 
     async def send_message(self, chat_id, text, reply_markup=None):
         self.sent_messages.append(
@@ -1514,12 +1612,14 @@ class FakeBot:
         self.sent_documents.append(
             {"chat_id": chat_id, "document": document, "caption": caption}
         )
+        self.calls.append({"kind": "document", "chat_id": chat_id})
         return SimpleNamespace(message_id=55)
 
     async def send_photo(self, chat_id, photo, caption=None):
         self.sent_photos.append(
             {"chat_id": chat_id, "photo": photo, "caption": caption}
         )
+        self.calls.append({"kind": "photo", "chat_id": chat_id})
 
 
 def _button_texts(markup):

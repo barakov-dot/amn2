@@ -20,6 +20,8 @@ REQUIRED_POLICY_IDS = {
     "web.config_templates.reset",
     "web.device_passports.index",
     "web.device_passports.detail",
+    "web.device_passports.config_secret",
+    "web.device_passports.qr_secret",
     "web.integration_status.index",
     "web.api_tokens.index",
     "web.api_tokens.issue",
@@ -101,6 +103,10 @@ DEVICE_PASSPORT_READ_ONLY_POLICY_IDS = {
     "web.device_passports.index",
     "web.device_passports.detail",
 }
+DEVICE_PASSPORT_SECRET_DELIVERY_POLICY_IDS = {
+    "web.device_passports.config_secret",
+    "web.device_passports.qr_secret",
+}
 
 SECRET_RISKS = {"secret-read", "public-token-secret-read"}
 PUBLIC_TOKEN_RISKS = {
@@ -171,6 +177,7 @@ def test_enabled_behavior_is_limited_to_approved_product_contours():
         | P7_WRITE_CONTOUR_POLICY_IDS
         | PHASE10_PLAN_QUOTA_WRITE_CONTOUR_POLICY_IDS
         | DEVICE_PASSPORT_READ_ONLY_POLICY_IDS
+        | DEVICE_PASSPORT_SECRET_DELIVERY_POLICY_IDS
     )
 
 
@@ -197,6 +204,34 @@ def test_device_passport_web_surfaces_are_read_only_and_secret_safe():
         assert "no db mutation" in gates
         assert "no remote observation" in gates
         assert "no raw config" in gates
+
+
+def test_device_passport_secret_delivery_surfaces_are_explicit_and_audited():
+    expected = {
+        "web.device_passports.config_secret": (
+            "/device-passports/{device_id}/config"
+        ),
+        "web.device_passports.qr_secret": "/device-passports/{device_id}/qr",
+    }
+    for policy_id, path in expected.items():
+        policy = get_surface_policy(policy_id)
+        assert policy.surface == "web"
+        assert policy.method == "GET"
+        assert policy.path == path
+        assert policy.actor == "web-admin"
+        assert policy.auth_method == "session"
+        assert policy.risk_class == "secret-read"
+        assert policy.secret_class == "client-config-secret"
+        assert policy.audit_required is True
+        assert policy.live_retest_required is False
+        assert policy.implementation_mode == "implemented"
+        assert policy.enables_new_behavior is True
+        gates = _gate_text(policy)
+        assert "session required" in gates
+        assert "device-passport/local-device boundary" in gates
+        assert "audit" in gates
+        assert "redaction" in gates
+        assert "no raw secret" in gates
 
 
 def test_local_agent_first_slice_matches_existing_agent_policy():

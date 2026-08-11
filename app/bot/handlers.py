@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from aiogram.types import (
     BufferedInputFile,
     CopyTextButton,
@@ -67,6 +69,14 @@ from app.server.peer_apply import PeerApplyError
 from app.services.config_material import ConfigMaterialUnavailable
 
 
+AWG3_SELECT_PREFIX = "awg3:select"
+AWG3_CONFIRM_PREFIX = "awg3:confirm"
+_AWG3_SELECT_RE = re.compile(
+    r"^awg3:select:(dev_[0-9a-f]{32}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})$"
+)
+_AWG3_CONFIRM_RE = re.compile(r"^awg3:confirm:([A-Za-z0-9_-]{1,128})$")
+
+
 async def handle_start(message, *, workflow) -> None:
     user = message.from_user
     workflow.register_user(
@@ -121,6 +131,82 @@ async def handle_request_config_prompt(callback) -> None:
     await callback.message.answer(
         render_config_version_prompt(),
         reply_markup=build_config_version_keyboard(prefix=REQUEST_CONFIG_PREFIX),
+    )
+    await callback.answer()
+
+
+async def handle_awg3_select(callback, *, workflow) -> None:
+    if not _is_private_callback(callback):
+        await callback.answer()
+        return
+    parsed = _parse_awg3_select_callback(str(callback.data))
+    if parsed is None:
+        await callback.message.answer(text("handler.awg3_invalid_selection"))
+        await callback.answer()
+        return
+    passport_device_id, build_id = parsed
+    try:
+        result = workflow.request_awg3(
+            telegram_id=int(callback.from_user.id),
+            passport_device_id=passport_device_id,
+            build_id=build_id,
+        )
+    except (LookupError, ValueError):
+        await callback.message.answer(text("handler.awg3_invalid_selection"))
+        await callback.answer()
+        return
+    if result.status == "confirmation_required" and result.token:
+        await callback.message.answer(
+            text("handler.awg3_confirm_prompt"),
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [
+                        InlineKeyboardButton(
+                            text=text("button.awg3_confirm"),
+                            callback_data=f"{AWG3_CONFIRM_PREFIX}:{result.token}",
+                        )
+                    ]
+                ]
+            ),
+        )
+    else:
+        await callback.message.answer(
+            text("handler.awg3_blocked"),
+            reply_markup=_awg2_offer_markup() if result.offer_awg2 else None,
+        )
+    await callback.answer()
+
+
+async def handle_awg3_confirm(callback, *, workflow) -> None:
+    if not _is_private_callback(callback):
+        await callback.answer()
+        return
+    confirmation_token = _parse_awg3_confirm_callback(str(callback.data))
+    if confirmation_token is None:
+        await callback.message.answer(text("handler.awg3_invalid_confirmation"))
+        await callback.answer()
+        return
+    confirmed = workflow.confirm_awg3(
+        telegram_id=int(callback.from_user.id),
+        confirmation_token=confirmation_token,
+    )
+    if confirmed is None:
+        await callback.message.answer(text("handler.awg3_invalid_confirmation"))
+        await callback.answer()
+        return
+    if confirmed.result.status != "issued" or confirmed.delivery is None:
+        await callback.message.answer(
+            text("handler.awg3_blocked"),
+            reply_markup=(
+                _awg2_offer_markup() if confirmed.result.offer_awg2 else None
+            ),
+        )
+        await callback.answer()
+        return
+    await _send_awg3_delivery(
+        callback.bot,
+        chat_id=int(callback.from_user.id),
+        delivery=confirmed.delivery,
     )
     await callback.answer()
 
@@ -695,6 +781,14 @@ def is_request_config_callback(data: str) -> bool:
     return data == REQUEST_CONFIG_PREFIX
 
 
+def is_awg3_select_callback(data: str) -> bool:
+    return data.startswith(f"{AWG3_SELECT_PREFIX}:")
+
+
+def is_awg3_confirm_callback(data: str) -> bool:
+    return data.startswith(f"{AWG3_CONFIRM_PREFIX}:")
+
+
 def is_language_callback(data: str) -> bool:
     return data.startswith(f"{LANGUAGE_CALLBACK_PREFIX}:")
 
@@ -798,6 +892,52 @@ async def _send_delivery(bot, result) -> None:
             filename=result.delivery.qr_filename,
         ),
         caption=result.delivery.qr_caption,
+    )
+
+
+async def _send_awg3_delivery(bot, *, chat_id: int, delivery) -> None:
+    await bot.send_document(
+        chat_id=chat_id,
+        document=BufferedInputFile(
+            delivery.config_bytes,
+            filename=delivery.config_filename,
+        ),
+        caption=delivery.config_caption,
+    )
+    await bot.send_photo(
+        chat_id=chat_id,
+        photo=BufferedInputFile(
+            delivery.qr_png_bytes,
+            filename=delivery.qr_filename,
+        ),
+        caption=delivery.qr_caption,
+    )
+
+
+def _parse_awg3_select_callback(data: str) -> tuple[str, str] | None:
+    match = _AWG3_SELECT_RE.fullmatch(data)
+    return (match.group(1), match.group(2)) if match is not None else None
+
+
+def _parse_awg3_confirm_callback(data: str) -> str | None:
+    match = _AWG3_CONFIRM_RE.fullmatch(data)
+    return match.group(1) if match is not None else None
+
+
+def _is_private_callback(callback) -> bool:
+    return getattr(getattr(callback.message, "chat", None), "type", None) == "private"
+
+
+def _awg2_offer_markup() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(
+                    text=text("button.awg2_choose"),
+                    callback_data=f"{REQUEST_CONFIG_PREFIX}:amneziawg_v2",
+                )
+            ]
+        ]
     )
 
 

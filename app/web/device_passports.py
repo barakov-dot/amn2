@@ -46,7 +46,75 @@ def build_device_passport_detail_view(
             else "pending"
         ),
         "lifecycle": lifecycle,
+        "protocol_cards": _protocol_cards(repo, passport),
     }
+
+
+def _protocol_cards(
+    repo: Repository,
+    passport: DevicePassport,
+) -> list[dict[str, object]]:
+    cards: list[dict[str, object]] = []
+    for profile in passport.protocol_profiles:
+        device = repo.get_device(profile.local_device_id)
+        attempts = repo.list_protocol_issuance_attempts(
+            passport_device_id=passport.device_id,
+            protocol_version=profile.protocol_version.value,
+        )
+        issuance = next(
+            (
+                row
+                for row in reversed(attempts)
+                if str(row["state"]) == "completed"
+                and row["local_device_id"] is not None
+                and int(row["local_device_id"]) == profile.local_device_id
+            ),
+            None,
+        )
+        cards.append(
+            {
+                "profile_id": profile.profile_id,
+                "protocol_version": profile.protocol_version.value,
+                "local_device_id": profile.local_device_id,
+                "runtime_instance_id": (
+                    str(device["runtime_instance_id"])
+                    if device["runtime_instance_id"] is not None
+                    else None
+                ),
+                "client_application": (
+                    str(issuance["client_application"])
+                    if issuance is not None
+                    else passport.official_client_type
+                ),
+                "client_platform": (
+                    str(issuance["client_platform"])
+                    if issuance is not None
+                    else passport.platform
+                ),
+                "client_version": (
+                    str(issuance["client_version"])
+                    if issuance is not None
+                    else passport.client_version
+                ),
+                "client_build": (
+                    str(issuance["client_build"])
+                    if issuance is not None and issuance["client_build"] is not None
+                    else None
+                ),
+                "lifecycle_state": profile.lifecycle_state,
+                "compatibility_evidence_id": (
+                    str(device["compatibility_evidence_id"])
+                    if device["compatibility_evidence_id"] is not None
+                    else None
+                ),
+                "client_identity_evidence_status": (
+                    str(device["client_identity_evidence_status"])
+                    if device["client_identity_evidence_status"] is not None
+                    else "unknown"
+                ),
+            }
+        )
+    return cards
 
 
 def _list_item(repo: Repository, passport: DevicePassport) -> dict[str, Any]:
