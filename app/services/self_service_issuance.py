@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Literal, Protocol
 
-from app.db.repositories import Repository
+from app.db.repositories import ProtocolIssuanceExecutionBlocked, Repository
 from app.services.awg3_control import Awg3ControlState
 from app.services.client_compatibility import ClientIdentity
 from app.services.dual_protocol_profiles import DualProtocolProfileService
@@ -400,8 +400,52 @@ class SelfServiceIssuanceService:
         actor_id: int,
         reason_code: str,
     ) -> SelfServiceIssuanceResult:
+        attempt, execution_lease, reservation_block = (
+            self._prepare_execution_marker(
+                request,
+                admission,
+                actor_kind=actor_kind,
+                actor_id=actor_id,
+            )
+        )
+        if reservation_block is not None:
+            return reservation_block
+        assert attempt is not None and execution_lease is not None
         failure: Exception | None = None
         result: SelfServiceIssuanceResult | None = None
+        try:
+            with self._repo.transaction():
+                self._repo.bind_protocol_issuance_execution_lease(
+                    int(attempt["id"]), execution_lease
+                )
+                try:
+                    result = self._issue_reserved(
+                        request,
+                        admission,
+                        attempt_id=int(attempt["id"]),
+                        execution_lease=execution_lease,
+                        event_type=event_type,
+                        actor_kind=actor_kind,
+                        actor_id=actor_id,
+                        reason_code=reason_code,
+                    )
+                except Exception as exc:
+                    failure = exc
+        except ProtocolIssuanceExecutionBlocked as exc:
+            return self._blocked(request, exc.reason_code)
+        if failure is not None:
+            raise failure
+        assert result is not None
+        return result
+
+    def _prepare_execution_marker(
+        self,
+        request: SelfServiceIssuanceRequest,
+        admission: AdmissionResult,
+        *,
+        actor_kind: str,
+        actor_id: int,
+    ):
         with self._repo.transaction():
             attempt, reservation_block = self._reserve(
                 request,
@@ -410,29 +454,19 @@ class SelfServiceIssuanceService:
                 actor_id=actor_id,
             )
             if reservation_block is not None:
-                return reservation_block
+                return None, None, reservation_block
             assert attempt is not None
             self._repo.mark_protocol_issuance_attempt_recovery_required(
                 int(attempt["id"]),
                 local_device_id=None,
                 reason_code="issuer_in_progress",
             )
-            try:
-                result = self._issue_reserved(
-                    request,
-                    admission,
-                    attempt_id=int(attempt["id"]),
-                    event_type=event_type,
-                    actor_kind=actor_kind,
-                    actor_id=actor_id,
-                    reason_code=reason_code,
+            execution_lease = (
+                self._repo.create_protocol_issuance_execution_lease(
+                    int(attempt["id"])
                 )
-            except Exception as exc:
-                failure = exc
-        if failure is not None:
-            raise failure
-        assert result is not None
-        return result
+            )
+            return attempt, execution_lease, None
 
     def _issue_reserved(
         self,
@@ -440,6 +474,7 @@ class SelfServiceIssuanceService:
         admission: AdmissionResult,
         *,
         attempt_id: int,
+        execution_lease: object,
         event_type: str,
         actor_kind: str,
         actor_id: int,
@@ -501,7 +536,9 @@ class SelfServiceIssuanceService:
                     },
                 )
                 self._repo.complete_protocol_issuance_attempt(
-                    attempt_id, local_device_id=local_device_id
+                    attempt_id,
+                    local_device_id=local_device_id,
+                    execution_lease=execution_lease,
                 )
         except Exception:
             self._record_recovery_required(

@@ -133,6 +133,25 @@ class SyntheticAwg3AccessService:
         )
 
 
+class FailNextCommitConnection:
+    def __init__(self, delegate):
+        self._delegate = delegate
+        self._fail_next_commit = True
+
+    def commit(self):
+        marker_exists = self._delegate.execute(
+            "SELECT EXISTS(SELECT 1 FROM protocol_issuance_attempts "
+            "WHERE state = 'recovery_required' AND reason_code = 'issuer_in_progress')"
+        ).fetchone()[0]
+        if self._fail_next_commit and marker_exists:
+            self._fail_next_commit = False
+            raise RuntimeError("synthetic phase-a commit failed")
+        return self._delegate.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._delegate, name)
+
+
 def _admission(decision: str = "admitted_awg2") -> StaticAdmissionService:
     protocol = ProtocolVersion.AWG3 if decision.endswith("awg3") else ProtocolVersion.AWG2
     return StaticAdmissionService(
@@ -1186,3 +1205,123 @@ def test_admin_awg3_batch_rechecks_fresh_admission_inside_each_serialized_slot(
     ).fetchall()
     assert [tuple(row) for row in attempts] == [("completed", "compat-exact")]
     assert conn.execute("SELECT COUNT(*) FROM device_protocol_profiles").fetchone()[0] == 1
+
+
+def test_admin_phase_a_marker_is_visible_before_remote_baseexception_and_restart(
+    tmp_path,
+):
+    database_path = tmp_path / "issuance.sqlite3"
+    conn, repo = _repo(tmp_path)
+    observed_markers = []
+    remote_side_effects = []
+
+    class CrashingRemoteAccess:
+        def create_operator_device(self, **kwargs):
+            visibility_conn = connect(database_path)
+            observed_markers.extend(
+                tuple(row)
+                for row in visibility_conn.execute(
+                    "SELECT state, reason_code FROM protocol_issuance_attempts"
+                ).fetchall()
+            )
+            visibility_conn.close()
+            remote_side_effects.append(kwargs["passport_device_id"])
+            raise SystemExit("synthetic admin remote crash")
+
+    manifest = _manifest(_phase13_item())
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=CrashingRemoteAccess(),
+        admission_service=_admission("admitted_awg3"),
+        admin_telegram_id=7001,
+        attachment_builder=lambda _filename, _content: None,
+    )
+
+    with pytest.raises(SystemExit, match="synthetic admin remote crash"):
+        service.issue_manifest(manifest)
+    conn.close()
+
+    assert observed_markers == [("recovery_required", "issuer_in_progress")]
+    assert len(remote_side_effects) == 1
+    retry_conn = connect(database_path)
+    retry_repo = Repository(retry_conn)
+    retry_access = SpyAccessService()
+    retry = AdminConfigIssuanceService(
+        repo=retry_repo,
+        access_service=retry_access,
+        admission_service=_admission("admitted_awg3"),
+        admin_telegram_id=7001,
+        attachment_builder=lambda _filename, _content: None,
+    ).issue_manifest(manifest)
+    assert retry.status == "partial_failure"
+    assert retry_access.calls == []
+    retry_conn.close()
+
+
+def test_admin_phase_a_commit_failure_prevents_remote_issuer(tmp_path):
+    conn, repo = _repo(tmp_path)
+    access = SpyAccessService()
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=access,
+        admission_service=_admission("admitted_awg3"),
+        admin_telegram_id=7001,
+        attachment_builder=lambda _filename, _content: None,
+    )
+    delegate = conn
+    repo._conn = FailNextCommitConnection(delegate)
+
+    try:
+        with pytest.raises(RuntimeError, match="synthetic phase-a commit failed"):
+            service.issue_manifest(_manifest(_phase13_item()))
+        assert access.calls == []
+        assert delegate.in_transaction is False
+        assert delegate.execute(
+            "SELECT COUNT(*) FROM protocol_issuance_attempts"
+        ).fetchone()[0] == 0
+    finally:
+        repo._conn = delegate
+        delegate.rollback()
+
+
+def test_admin_block_in_phase_gap_prevents_remote_issuer_and_keeps_marker(
+    tmp_path,
+    monkeypatch,
+):
+    conn, repo = _repo(tmp_path)
+    peer_applier = FakePeerApplier()
+    access = SyntheticAwg3AccessService(repo, peer_applier)
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=access,
+        admission_service=_admission("admitted_awg3"),
+        admin_telegram_id=7001,
+        attachment_builder=lambda _filename, _content: None,
+    )
+    original_prepare = getattr(
+        service,
+        "_prepare_awg3_execution_marker",
+        lambda **_kwargs: None,
+    )
+
+    def block_after_phase_a(**kwargs):
+        prepared = original_prepare(**kwargs)
+        recipient = repo.get_user_by_operator_label("SooL")
+        ProtocolIssuanceBarrierService(repo).begin_block(int(recipient["id"]))
+        return prepared
+
+    monkeypatch.setattr(
+        service,
+        "_prepare_awg3_execution_marker",
+        block_after_phase_a,
+        raising=False,
+    )
+
+    result = service.issue_manifest(_manifest(_phase13_item()))
+
+    assert result.status == "partial_failure"
+    assert result.receipts[0].error_code == "user_issuance_blocked"
+    assert access.calls == []
+    attempt = conn.execute("SELECT * FROM protocol_issuance_attempts").fetchone()
+    assert attempt["state"] == "recovery_required"
+    assert attempt["reason_code"] == "issuer_in_progress"

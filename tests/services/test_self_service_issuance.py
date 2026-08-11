@@ -129,6 +129,25 @@ class RaisingIssuer:
         raise RuntimeError("synthetic issuer boundary failed")
 
 
+class FailNextCommitConnection:
+    def __init__(self, delegate):
+        self._delegate = delegate
+        self._fail_next_commit = True
+
+    def commit(self):
+        marker_exists = self._delegate.execute(
+            "SELECT EXISTS(SELECT 1 FROM protocol_issuance_attempts "
+            "WHERE state = 'recovery_required' AND reason_code = 'issuer_in_progress')"
+        ).fetchone()[0]
+        if self._fail_next_commit and marker_exists:
+            self._fail_next_commit = False
+            raise RuntimeError("synthetic phase-a commit failed")
+        return self._delegate.commit()
+
+    def __getattr__(self, name):
+        return getattr(self._delegate, name)
+
+
 @dataclass
 class Harness:
     conn: sqlite3.Connection
@@ -1220,3 +1239,245 @@ def test_user_barrier_blocks_before_reservation_or_issuer(harness):
     assert result.reason_code == "user_issuance_blocked"
     assert service.issuer.calls == []
     assert _attempts(harness) == []
+
+
+def test_self_service_phase_a_marker_is_visible_before_remote_baseexception_and_restart(
+    tmp_path,
+):
+    database_path = tmp_path / "self-service-crash.sqlite3"
+    user_id, telegram_id, server_id, passport_device_id = (
+        _seed_file_backed_harness(database_path)
+    )
+    conn = connect(database_path)
+    repo = Repository(conn)
+    thread_harness = Harness(
+        conn=conn,
+        repo=repo,
+        user_id=user_id,
+        telegram_id=telegram_id,
+        server_id=server_id,
+        passport_device_id=passport_device_id,
+    )
+    observed_markers = []
+    remote_side_effects = []
+
+    class CrashingRemoteIssuer:
+        def issue(self, *, request, admission):
+            visibility_conn = connect(database_path)
+            observed_markers.extend(
+                tuple(row)
+                for row in visibility_conn.execute(
+                    "SELECT state, reason_code FROM protocol_issuance_attempts"
+                ).fetchall()
+            )
+            visibility_conn.close()
+            remote_side_effects.append(request.passport_device_id)
+            raise SystemExit("synthetic remote crash")
+
+    service = _service(thread_harness, issuer=CrashingRemoteIssuer())
+    request = _request(thread_harness)
+    token = service.decide(request).token
+
+    with pytest.raises(SystemExit, match="synthetic remote crash"):
+        service.issue_after_confirmation(request, confirmation_token=token)
+    conn.close()
+
+    assert observed_markers == [("recovery_required", "issuer_in_progress")]
+    assert remote_side_effects == [passport_device_id]
+    retry_conn = connect(database_path)
+    retry_repo = Repository(retry_conn)
+    retry_harness = Harness(
+        conn=retry_conn,
+        repo=retry_repo,
+        user_id=user_id,
+        telegram_id=telegram_id,
+        server_id=server_id,
+        passport_device_id=passport_device_id,
+    )
+    retry_issuer = SyntheticIssuer(
+        retry_repo,
+        user_id=user_id,
+        server_id=server_id,
+    )
+    retry_service = _service(retry_harness, issuer=retry_issuer)
+    retry_request = _request(retry_harness)
+    retry_token = retry_service.decide(retry_request).token
+    retry = retry_service.issue_after_confirmation(
+        retry_request,
+        confirmation_token=retry_token,
+    )
+    assert retry.status == "blocked"
+    assert retry.reason_code == "issuance_recovery_required"
+    assert retry_issuer.calls == []
+    retry_conn.close()
+
+
+def test_self_service_phase_a_commit_failure_prevents_remote_issuer(harness):
+    issuer = SyntheticIssuer(
+        harness.repo,
+        user_id=harness.user_id,
+        server_id=harness.server_id,
+    )
+    service = _service(harness, issuer=issuer)
+    request = _request(harness)
+    token = service.decide(request).token
+    delegate = harness.conn
+    harness.repo._conn = FailNextCommitConnection(delegate)
+
+    try:
+        with pytest.raises(RuntimeError, match="synthetic phase-a commit failed"):
+            service.issue_after_confirmation(request, confirmation_token=token)
+        assert issuer.calls == []
+        assert delegate.in_transaction is False
+        assert delegate.execute(
+            "SELECT COUNT(*) FROM protocol_issuance_attempts"
+        ).fetchone()[0] == 0
+    finally:
+        harness.repo._conn = delegate
+        delegate.rollback()
+
+
+def _phase_a_lease(harness):
+    request = _request(harness)
+    admission = _admitted()
+    with harness.repo.transaction():
+        attempt = harness.repo.reserve_protocol_issuance_attempt(
+            owner_user_id=harness.user_id,
+            intended_passport_device_id=harness.passport_device_id,
+            passport_device_id=harness.passport_device_id,
+            protocol_version="awg3",
+            request_fingerprint="sha256:" + "1" * 64,
+            actor_kind="user",
+            actor_id=harness.telegram_id,
+            client_application=request.client.application,
+            client_platform=request.client.platform,
+            client_version=request.client.version,
+            client_build=request.client.build_id,
+            runtime_instance_id=admission.runtime_instance_id,
+            compatibility_evidence_id=admission.compatibility_evidence_id,
+        )
+        assert attempt is not None
+        harness.repo.mark_protocol_issuance_attempt_recovery_required(
+            int(attempt["id"]),
+            local_device_id=None,
+            reason_code="issuer_in_progress",
+        )
+        lease = harness.repo.create_protocol_issuance_execution_lease(
+            int(attempt["id"])
+        )
+    issued = SyntheticIssuer(
+        harness.repo,
+        user_id=harness.user_id,
+        server_id=harness.server_id,
+    ).issue(request=request, admission=admission)
+    return int(attempt["id"]), lease, int(issued.local_device_id)
+
+
+def test_issuer_marker_completion_without_execution_lease_is_rejected(harness):
+    request = _request(harness)
+    admission = _admitted()
+    with harness.repo.transaction():
+        attempt = harness.repo.reserve_protocol_issuance_attempt(
+            owner_user_id=harness.user_id,
+            intended_passport_device_id=harness.passport_device_id,
+            passport_device_id=harness.passport_device_id,
+            protocol_version="awg3",
+            request_fingerprint="sha256:" + "2" * 64,
+            actor_kind="user",
+            actor_id=harness.telegram_id,
+            client_application=request.client.application,
+            client_platform=request.client.platform,
+            client_version=request.client.version,
+            client_build=request.client.build_id,
+            runtime_instance_id=admission.runtime_instance_id,
+            compatibility_evidence_id=admission.compatibility_evidence_id,
+        )
+        assert attempt is not None
+        harness.repo.mark_protocol_issuance_attempt_recovery_required(
+            int(attempt["id"]),
+            local_device_id=None,
+            reason_code="issuer_in_progress",
+        )
+    issued = SyntheticIssuer(
+        harness.repo,
+        user_id=harness.user_id,
+        server_id=harness.server_id,
+    ).issue(request=request, admission=admission)
+
+    with pytest.raises(ValueError, match="execution lease"):
+        with harness.repo.transaction():
+            harness.repo.complete_protocol_issuance_attempt(
+                int(attempt["id"]),
+                local_device_id=int(issued.local_device_id),
+            )
+
+
+def test_execution_lease_bound_to_prior_transaction_is_rejected(harness):
+    attempt_id, lease, local_device_id = _phase_a_lease(harness)
+    with harness.repo.transaction():
+        harness.repo.bind_protocol_issuance_execution_lease(attempt_id, lease)
+
+    with pytest.raises(ValueError, match="current outer transaction"):
+        with harness.repo.transaction():
+            harness.repo.complete_protocol_issuance_attempt(
+                attempt_id,
+                local_device_id=local_device_id,
+                execution_lease=lease,
+            )
+
+
+def test_execution_lease_cannot_complete_twice_in_same_transaction(harness):
+    attempt_id, lease, local_device_id = _phase_a_lease(harness)
+    with harness.repo.transaction():
+        harness.repo.bind_protocol_issuance_execution_lease(attempt_id, lease)
+        harness.repo.complete_protocol_issuance_attempt(
+            attempt_id,
+            local_device_id=local_device_id,
+            execution_lease=lease,
+        )
+        with pytest.raises(ValueError, match="already used"):
+            harness.repo.complete_protocol_issuance_attempt(
+                attempt_id,
+                local_device_id=local_device_id,
+                execution_lease=lease,
+            )
+
+
+def test_self_service_block_in_phase_gap_prevents_remote_issuer_and_keeps_marker(
+    harness,
+    monkeypatch,
+):
+    issuer = SyntheticIssuer(
+        harness.repo,
+        user_id=harness.user_id,
+        server_id=harness.server_id,
+    )
+    service = _service(harness, issuer=issuer)
+    original_prepare = getattr(
+        service,
+        "_prepare_execution_marker",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def block_after_phase_a(*args, **kwargs):
+        prepared = original_prepare(*args, **kwargs)
+        ProtocolIssuanceBarrierService(harness.repo).begin_block(harness.user_id)
+        return prepared
+
+    monkeypatch.setattr(
+        service,
+        "_prepare_execution_marker",
+        block_after_phase_a,
+        raising=False,
+    )
+    request = _request(harness)
+    token = service.decide(request).token
+
+    result = service.issue_after_confirmation(request, confirmation_token=token)
+
+    assert result.status == "blocked"
+    assert result.reason_code == "user_issuance_blocked"
+    assert issuer.calls == []
+    attempt = _attempts(harness)[0]
+    assert attempt["state"] == "recovery_required"
+    assert attempt["reason_code"] == "issuer_in_progress"

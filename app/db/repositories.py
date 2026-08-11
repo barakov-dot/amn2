@@ -28,6 +28,12 @@ RUNTIME_LIFECYCLE_STATES = {
 COMPATIBILITY_EVIDENCE_STATUSES = {"claimed", "passed", "failed", "superseded"}
 
 
+class ProtocolIssuanceExecutionBlocked(ValueError):
+    def __init__(self, reason_code: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
+
 def user_display_label(row: Mapping[str, Any]) -> str:
     operator_label = str(_mapping_value(row, "operator_label") or "").strip()
     if operator_label:
@@ -67,13 +73,18 @@ class Repository:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
         self._transaction_depth = 0
+        self._active_outer_transaction_identity: object | None = None
+        self._protocol_issuance_execution_leases: dict[object, dict[str, Any]] = {}
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
         is_outermost = self._transaction_depth == 0
         savepoint: str | None = None
+        transaction_identity = self._active_outer_transaction_identity
         if is_outermost:
             self._conn.execute("BEGIN IMMEDIATE")
+            transaction_identity = object()
+            self._active_outer_transaction_identity = transaction_identity
         else:
             sequence = getattr(self, "_transaction_savepoint_sequence", 0)
             self._transaction_savepoint_sequence = sequence + 1
@@ -83,10 +94,14 @@ class Repository:
         self._transaction_depth += 1
         try:
             yield
-        except Exception:
+        except BaseException:
             self._transaction_depth -= 1
             if is_outermost:
-                self._conn.rollback()
+                try:
+                    self._conn.rollback()
+                finally:
+                    self._discard_leases_created_in_transaction(transaction_identity)
+                    self._active_outer_transaction_identity = None
             else:
                 assert savepoint is not None
                 self._conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
@@ -95,10 +110,34 @@ class Repository:
         else:
             self._transaction_depth -= 1
             if is_outermost:
-                self._conn.commit()
+                try:
+                    self._conn.commit()
+                except BaseException:
+                    try:
+                        self._conn.rollback()
+                    finally:
+                        self._discard_leases_created_in_transaction(
+                            transaction_identity
+                        )
+                        self._active_outer_transaction_identity = None
+                    raise
+                self._active_outer_transaction_identity = None
             else:
                 assert savepoint is not None
                 self._conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+
+    def _discard_leases_created_in_transaction(
+        self, transaction_identity: object | None
+    ) -> None:
+        if transaction_identity is None:
+            return
+        stale = [
+            lease
+            for lease, state in self._protocol_issuance_execution_leases.items()
+            if state["created_transaction"] is transaction_identity
+        ]
+        for lease in stale:
+            self._protocol_issuance_execution_leases.pop(lease, None)
 
     def upsert_user(
         self,
@@ -967,24 +1006,123 @@ class Repository:
         self._commit()
         return cursor.rowcount == 1
 
+    def create_protocol_issuance_execution_lease(self, attempt_id: int) -> object:
+        if (
+            self._transaction_depth != 1
+            or self._active_outer_transaction_identity is None
+        ):
+            raise ValueError("execution lease requires phase-a outer transaction")
+        attempt = self.get_protocol_issuance_attempt(attempt_id)
+        if (
+            attempt is None
+            or str(attempt["state"]) != "recovery_required"
+            or str(attempt["reason_code"]) != "issuer_in_progress"
+        ):
+            raise ValueError("execution lease requires issuer marker")
+        lease = object()
+        self._protocol_issuance_execution_leases[lease] = {
+            "attempt_id": attempt_id,
+            "owner_user_id": int(attempt["owner_user_id"]),
+            "intended_passport_device_id": str(
+                attempt["intended_passport_device_id"]
+            ),
+            "passport_device_id": attempt["passport_device_id"],
+            "protocol_version": str(attempt["protocol_version"]),
+            "created_transaction": self._active_outer_transaction_identity,
+            "bound_transaction": None,
+            "used": False,
+        }
+        return lease
+
+    def bind_protocol_issuance_execution_lease(
+        self, attempt_id: int, execution_lease: object
+    ) -> sqlite3.Row:
+        if (
+            self._transaction_depth != 1
+            or self._active_outer_transaction_identity is None
+        ):
+            raise ValueError("execution lease binding requires outer transaction")
+        state = self._protocol_issuance_execution_leases.get(execution_lease)
+        if state is None or int(state["attempt_id"]) != attempt_id:
+            raise ValueError("invalid execution lease")
+        if bool(state["used"]):
+            raise ValueError("execution lease already used")
+        if state["bound_transaction"] is not None:
+            raise ValueError("execution lease is already bound")
+        attempt = self.get_protocol_issuance_attempt(attempt_id)
+        if attempt is None:
+            raise LookupError("issuance attempt not found")
+        if (
+            str(attempt["state"]) != "recovery_required"
+            or str(attempt["reason_code"]) != "issuer_in_progress"
+            or int(attempt["owner_user_id"]) != int(state["owner_user_id"])
+            or str(attempt["intended_passport_device_id"])
+            != str(state["intended_passport_device_id"])
+            or attempt["passport_device_id"] != state["passport_device_id"]
+            or str(attempt["protocol_version"]) != str(state["protocol_version"])
+        ):
+            raise ValueError("issuance execution marker changed")
+        owner = self.get_user(int(state["owner_user_id"]))
+        if (
+            str(owner["status"]) != "active"
+            or self.get_protocol_issuance_user_barrier(int(state["owner_user_id"]))
+            is not None
+        ):
+            raise ProtocolIssuanceExecutionBlocked("user_issuance_blocked")
+        passport_device_id = state["passport_device_id"]
+        intended_passport_device_id = str(state["intended_passport_device_id"])
+        if passport_device_id is None:
+            if self.get_device_passport(intended_passport_device_id) is not None:
+                raise ProtocolIssuanceExecutionBlocked("passport_inactive")
+        else:
+            passport = self.get_device_passport(str(passport_device_id))
+            if (
+                str(passport_device_id) != intended_passport_device_id
+                or passport is None
+                or int(passport["owner_user_id"]) != int(state["owner_user_id"])
+                or passport["revoked_at"] is not None
+            ):
+                raise ProtocolIssuanceExecutionBlocked("passport_inactive")
+        state["bound_transaction"] = self._active_outer_transaction_identity
+        return attempt
+
     def complete_protocol_issuance_attempt(
         self,
         attempt_id: int,
         *,
         local_device_id: int,
         passport_device_id: str | None = None,
+        execution_lease: object | None = None,
     ) -> sqlite3.Row:
-        has_serialized_outer_transaction = self._transaction_depth > 0
         with self.transaction():
             current = self.get_protocol_issuance_attempt(attempt_id)
             if current is None:
                 raise LookupError("issuance attempt not found")
+            lease_state = (
+                self._protocol_issuance_execution_leases.get(execution_lease)
+                if execution_lease is not None
+                else None
+            )
+            if lease_state is not None and bool(lease_state["used"]):
+                raise ValueError("execution lease already used")
             completing_issuer_marker = (
                 str(current["state"]) == "recovery_required"
                 and str(current["reason_code"]) == "issuer_in_progress"
             )
-            if completing_issuer_marker and not has_serialized_outer_transaction:
-                raise ValueError("issuer marker completion requires outer transaction")
+            if completing_issuer_marker:
+                if (
+                    lease_state is None
+                    or int(lease_state["attempt_id"]) != attempt_id
+                ):
+                    raise ValueError("issuer marker completion requires execution lease")
+                if (
+                    self._active_outer_transaction_identity is None
+                    or lease_state["bound_transaction"]
+                    is not self._active_outer_transaction_identity
+                ):
+                    raise ValueError(
+                        "execution lease is not bound to current outer transaction"
+                    )
             actual_passport = passport_device_id or current["passport_device_id"]
             if actual_passport is None:
                 raise ValueError("completed issuance requires an actual passport")
@@ -1019,6 +1157,9 @@ class Repository:
             )
             if cursor.rowcount != 1:
                 raise ValueError("issuance attempt is not reserved")
+            if completing_issuer_marker:
+                assert lease_state is not None
+                lease_state["used"] = True
             attempt = self.get_protocol_issuance_attempt(attempt_id)
             assert attempt is not None
             return attempt

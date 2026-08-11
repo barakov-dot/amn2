@@ -11,7 +11,7 @@ from typing import Protocol
 
 from app.access_expiry import AccessExpiry, parse_access_expiry
 from app.config_assignment import DEDICATED_DEVICE, RECIPIENT_UNASSIGNED
-from app.db.repositories import Repository
+from app.db.repositories import ProtocolIssuanceExecutionBlocked, Repository
 from app.services.access import OperatorDeviceContext
 from app.services.device_passports import (
     generate_device_passport_id,
@@ -163,6 +163,15 @@ class AdminConfigIssuanceResult:
             "status": self.status,
             "receipts": [receipt.to_safe_dict() for receipt in self.receipts],
         }
+
+
+@dataclass(frozen=True)
+class _Awg3ExecutionPreparation:
+    admission: AdmissionResult
+    intended_passport_device_id: str
+    attempt_id: int
+    execution_lease: object
+    started_row: object
 
 
 class AdminConfigIssuanceService:
@@ -367,8 +376,171 @@ class AdminConfigIssuanceService:
         recipient_user_id: int,
         receipt_index: int,
     ):
+        row, prepared = self._prepare_awg3_execution_marker(
+            validated=validated,
+            slot=slot,
+            recipient_user_id=recipient_user_id,
+            receipt_index=receipt_index,
+        )
+        if row is not None:
+            return row
+        assert prepared is not None
         failure: Exception | None = None
         row = None
+        try:
+            with self._repo.transaction():
+                self._repo.bind_protocol_issuance_execution_lease(
+                    prepared.attempt_id,
+                    prepared.execution_lease,
+                )
+                device_id = None
+                passport_device_id = None
+                config_filename = None
+                try:
+                    created = self._access_service.create_operator_device(
+                        owner_user_id=recipient_user_id,
+                        server_id=int(server["id"]),
+                        device_name=slot.device_label,
+                        duration_days=None,
+                        expiry=slot.expiry,
+                        admin_telegram_id=self._admin_telegram_id,
+                        config_version=config_version_for_protocol(
+                            slot.protocol_version
+                        ),
+                        assignment_mode=slot.assignment_mode,
+                        passport_device_id=prepared.intended_passport_device_id,
+                        device_context=OperatorDeviceContext(
+                            platform=slot.client_platform,
+                            official_client_type=slot.client_application,
+                            client_version=slot.client_version,
+                            protocol_version="awg3",
+                            runtime_instance_id=prepared.admission.runtime_instance_id,
+                            client_identity_evidence_status="verified",
+                            compatibility_evidence_id=(
+                                prepared.admission.compatibility_evidence_id
+                            ),
+                        ),
+                    )
+                    device_id = int(created.device_id)
+                    passport_device_id = created.passport_device_id
+                    config_filename = str(created.config_filename)
+                    if passport_device_id != prepared.intended_passport_device_id:
+                        raise RuntimeError("issuer did not bind the intended passport")
+                    self._attachment_builder(
+                        config_filename,
+                        str(created.config_text),
+                    )
+                    profile = DualProtocolProfileService(self._repo).attach_active(
+                        prepared.intended_passport_device_id,
+                        ProtocolVersion.AWG3,
+                        device_id,
+                        actor_kind="admin",
+                        actor_id=self._admin_telegram_id,
+                        reason="admin_config_issued",
+                    )
+                    self._repo.append_protocol_config_event(
+                        event_type="admin_config_issued",
+                        actor_kind="admin",
+                        actor_id=self._admin_telegram_id,
+                        reason="issued",
+                        passport_device_id=prepared.intended_passport_device_id,
+                        protocol_version="awg3",
+                        local_device_id=device_id,
+                        metadata={
+                            "attempt_id": prepared.attempt_id,
+                            "receipt_id": int(prepared.started_row["id"]),
+                            "profile_id": profile.profile_id,
+                            "client_application": slot.client_application,
+                            "client_platform": slot.client_platform,
+                            "client_version": slot.client_version,
+                            "client_build": slot.client_build,
+                        },
+                    )
+                    self._repo.complete_protocol_issuance_attempt(
+                        prepared.attempt_id,
+                        local_device_id=device_id,
+                        passport_device_id=prepared.intended_passport_device_id,
+                        execution_lease=prepared.execution_lease,
+                    )
+                    self._repo.record_admin_action(
+                        admin_telegram_id=self._admin_telegram_id,
+                        action="admin_config.issue_manifest",
+                        target_user_id=recipient_user_id,
+                        target_device_id=device_id,
+                        metadata={
+                            "request_id": validated.request_id,
+                            "item_index": receipt_index,
+                            "receipt_id": int(prepared.started_row["id"]),
+                            "assignment_mode": slot.assignment_mode,
+                            "slot_sequence": slot.slot_sequence,
+                            "expiry_policy": slot.expiry.policy,
+                            "passport_device_id": prepared.intended_passport_device_id,
+                            "status": "completed",
+                            "config_filename": config_filename,
+                            "config_version": config_version_for_protocol(
+                                slot.protocol_version
+                            ),
+                            "protocol_version": "awg3",
+                            "runtime_instance_id": (
+                                prepared.admission.runtime_instance_id
+                            ),
+                            "compatibility_evidence_id": (
+                                prepared.admission.compatibility_evidence_id
+                            ),
+                            "client_application": slot.client_application,
+                            "client_platform": slot.client_platform,
+                            "client_version": slot.client_version,
+                            "client_build": slot.client_build,
+                        },
+                    )
+                    row = self._repo.complete_admin_config_issuance_receipt(
+                        request_id=validated.request_id,
+                        item_index=receipt_index,
+                        device_id=device_id,
+                        passport_device_id=prepared.intended_passport_device_id,
+                        config_filename=config_filename,
+                    )
+                except Exception as exc:
+                    try:
+                        self._repo.mark_protocol_issuance_attempt_recovery_required(
+                            prepared.attempt_id,
+                            local_device_id=device_id,
+                            reason_code="admin_issuer_or_finalization_failed",
+                            passport_device_id=passport_device_id,
+                        )
+                    except Exception as recovery_exc:
+                        failure = recovery_exc
+                    else:
+                        try:
+                            row = self._repo.fail_admin_config_issuance_receipt(
+                                request_id=validated.request_id,
+                                item_index=receipt_index,
+                                error_code=_safe_error_code(exc),
+                                device_id=device_id,
+                                passport_device_id=passport_device_id,
+                                config_filename=config_filename,
+                            )
+                        except Exception as receipt_exc:
+                            failure = receipt_exc
+        except ProtocolIssuanceExecutionBlocked as exc:
+            return self._repo.fail_admin_config_issuance_receipt(
+                request_id=validated.request_id,
+                item_index=receipt_index,
+                error_code=exc.reason_code,
+            )
+        if failure is not None:
+            raise failure
+        assert row is not None
+        return row
+
+    def _prepare_awg3_execution_marker(
+        self,
+        *,
+        validated: ValidatedIssuanceManifest,
+        slot: ExpandedIssuanceSlot,
+        recipient_user_id: int,
+        receipt_index: int,
+    ):
         with self._repo.transaction():
             admission = self._admission.decide(
                 AdmissionRequest(
@@ -393,7 +565,7 @@ class AdminConfigIssuanceService:
             if existing is not None:
                 if str(existing["item_fingerprint"]) != item_fingerprint:
                     raise ValueError("manifest item does not match existing receipt")
-                return existing
+                return existing, None
             if not admission.admitted:
                 self._create_awg3_receipt(
                     validated=validated,
@@ -403,10 +575,13 @@ class AdminConfigIssuanceService:
                     receipt_index=receipt_index,
                     item_fingerprint=item_fingerprint,
                 )
-                return self._repo.fail_admin_config_issuance_receipt(
-                    request_id=validated.request_id,
-                    item_index=receipt_index,
-                    error_code=admission.decision,
+                return (
+                    self._repo.fail_admin_config_issuance_receipt(
+                        request_id=validated.request_id,
+                        item_index=receipt_index,
+                        error_code=admission.decision,
+                    ),
+                    None,
                 )
 
             intended_passport_device_id = generate_device_passport_id()
@@ -432,6 +607,9 @@ class AdminConfigIssuanceService:
                 local_device_id=None,
                 reason_code="issuer_in_progress",
             )
+            execution_lease = self._repo.create_protocol_issuance_execution_lease(
+                int(attempt["id"])
+            )
             started_row = self._create_awg3_receipt(
                 validated=validated,
                 slot=slot,
@@ -440,127 +618,13 @@ class AdminConfigIssuanceService:
                 receipt_index=receipt_index,
                 item_fingerprint=item_fingerprint,
             )
-            device_id = None
-            passport_device_id = None
-            config_filename = None
-            try:
-                created = self._access_service.create_operator_device(
-                    owner_user_id=recipient_user_id,
-                    server_id=int(server["id"]),
-                    device_name=slot.device_label,
-                    duration_days=None,
-                    expiry=slot.expiry,
-                    admin_telegram_id=self._admin_telegram_id,
-                    config_version=config_version_for_protocol(slot.protocol_version),
-                    assignment_mode=slot.assignment_mode,
-                    passport_device_id=intended_passport_device_id,
-                    device_context=OperatorDeviceContext(
-                        platform=slot.client_platform,
-                        official_client_type=slot.client_application,
-                        client_version=slot.client_version,
-                        protocol_version="awg3",
-                        runtime_instance_id=admission.runtime_instance_id,
-                        client_identity_evidence_status="verified",
-                        compatibility_evidence_id=admission.compatibility_evidence_id,
-                    ),
-                )
-                device_id = int(created.device_id)
-                passport_device_id = created.passport_device_id
-                config_filename = str(created.config_filename)
-                if passport_device_id != intended_passport_device_id:
-                    raise RuntimeError("issuer did not bind the intended passport")
-                self._attachment_builder(config_filename, str(created.config_text))
-                profile = DualProtocolProfileService(self._repo).attach_active(
-                    intended_passport_device_id,
-                    ProtocolVersion.AWG3,
-                    device_id,
-                    actor_kind="admin",
-                    actor_id=self._admin_telegram_id,
-                    reason="admin_config_issued",
-                )
-                self._repo.append_protocol_config_event(
-                    event_type="admin_config_issued",
-                    actor_kind="admin",
-                    actor_id=self._admin_telegram_id,
-                    reason="issued",
-                    passport_device_id=intended_passport_device_id,
-                    protocol_version="awg3",
-                    local_device_id=device_id,
-                    metadata={
-                        "attempt_id": int(attempt["id"]),
-                        "receipt_id": int(started_row["id"]),
-                        "profile_id": profile.profile_id,
-                        "client_application": slot.client_application,
-                        "client_platform": slot.client_platform,
-                        "client_version": slot.client_version,
-                        "client_build": slot.client_build,
-                    },
-                )
-                self._repo.complete_protocol_issuance_attempt(
-                    int(attempt["id"]),
-                    local_device_id=device_id,
-                    passport_device_id=intended_passport_device_id,
-                )
-                self._repo.record_admin_action(
-                    admin_telegram_id=self._admin_telegram_id,
-                    action="admin_config.issue_manifest",
-                    target_user_id=recipient_user_id,
-                    target_device_id=device_id,
-                    metadata={
-                        "request_id": validated.request_id,
-                        "item_index": receipt_index,
-                        "receipt_id": int(started_row["id"]),
-                        "assignment_mode": slot.assignment_mode,
-                        "slot_sequence": slot.slot_sequence,
-                        "expiry_policy": slot.expiry.policy,
-                        "passport_device_id": intended_passport_device_id,
-                        "status": "completed",
-                        "config_filename": config_filename,
-                        "config_version": config_version_for_protocol(
-                            slot.protocol_version
-                        ),
-                        "protocol_version": "awg3",
-                        "runtime_instance_id": admission.runtime_instance_id,
-                        "compatibility_evidence_id": admission.compatibility_evidence_id,
-                        "client_application": slot.client_application,
-                        "client_platform": slot.client_platform,
-                        "client_version": slot.client_version,
-                        "client_build": slot.client_build,
-                    },
-                )
-                row = self._repo.complete_admin_config_issuance_receipt(
-                    request_id=validated.request_id,
-                    item_index=receipt_index,
-                    device_id=device_id,
-                    passport_device_id=intended_passport_device_id,
-                    config_filename=config_filename,
-                )
-            except Exception as exc:
-                try:
-                    self._repo.mark_protocol_issuance_attempt_recovery_required(
-                        int(attempt["id"]),
-                        local_device_id=device_id,
-                        reason_code="admin_issuer_or_finalization_failed",
-                        passport_device_id=passport_device_id,
-                    )
-                except Exception as recovery_exc:
-                    failure = recovery_exc
-                else:
-                    try:
-                        row = self._repo.fail_admin_config_issuance_receipt(
-                            request_id=validated.request_id,
-                            item_index=receipt_index,
-                            error_code=_safe_error_code(exc),
-                            device_id=device_id,
-                            passport_device_id=passport_device_id,
-                            config_filename=config_filename,
-                        )
-                    except Exception as receipt_exc:
-                        failure = receipt_exc
-        if failure is not None:
-            raise failure
-        assert row is not None
-        return row
+            return None, _Awg3ExecutionPreparation(
+                admission=admission,
+                intended_passport_device_id=intended_passport_device_id,
+                attempt_id=int(attempt["id"]),
+                execution_lease=execution_lease,
+                started_row=started_row,
+            )
 
     def _create_awg3_receipt(
         self,
