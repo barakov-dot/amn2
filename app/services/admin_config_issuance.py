@@ -44,6 +44,7 @@ _ITEM_FIELDS = frozenset(
         "client_application",
         "client_platform",
         "client_version",
+        "client_build",
         "protocol_version",
         "expiry",
     }
@@ -63,6 +64,7 @@ class IssuanceManifestItem:
     client_application: str
     client_platform: str
     client_version: str
+    client_build: str | None
     protocol_version: ProtocolVersion
     expiry: AccessExpiry
 
@@ -77,6 +79,7 @@ class ExpandedIssuanceSlot:
     client_application: str
     client_platform: str
     client_version: str
+    client_build: str | None
     protocol_version: ProtocolVersion
     expiry: AccessExpiry
 
@@ -111,6 +114,7 @@ class AdminConfigIssuanceReceipt:
     client_application: str | None
     client_platform: str | None
     client_version: str | None
+    client_build: str | None
     created_at: str
     updated_at: str
 
@@ -135,6 +139,7 @@ class AdminConfigIssuanceReceipt:
             "client_application": self.client_application,
             "client_platform": self.client_platform,
             "client_version": self.client_version,
+            "client_build": self.client_build,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -217,7 +222,7 @@ class AdminConfigIssuanceService:
             if existing is not None:
                 if str(existing["item_fingerprint"]) != item_fingerprint:
                     raise ValueError("manifest item does not match existing receipt")
-                receipt = _receipt_from_row(existing)
+                receipt = _receipt_from_row(existing, client_build=slot.client_build)
                 receipts.append(receipt)
                 if receipt.status != "completed":
                     break
@@ -303,6 +308,7 @@ class AdminConfigIssuanceService:
                             "client_application": slot.client_application,
                             "client_platform": slot.client_platform,
                             "client_version": slot.client_version,
+                            "client_build": slot.client_build,
                         },
                     )
                     row = self._repo.complete_admin_config_issuance_receipt(
@@ -321,9 +327,9 @@ class AdminConfigIssuanceService:
                     passport_device_id=passport_device_id,
                     config_filename=config_filename,
                 )
-                receipts.append(_receipt_from_row(row))
+                receipts.append(_receipt_from_row(row, client_build=slot.client_build))
                 break
-            receipts.append(_receipt_from_row(row))
+            receipts.append(_receipt_from_row(row, client_build=slot.client_build))
 
         status = "completed"
         if receipts and receipts[-1].status != "completed":
@@ -361,6 +367,7 @@ class AdminConfigIssuanceService:
                         slot.client_application,
                         slot.client_platform,
                         slot.client_version,
+                        build_id=slot.client_build,
                     ),
                     protocol_version=slot.protocol_version,
                 )
@@ -460,12 +467,19 @@ def validate_admin_config_issuance_manifest(
             raise ValueError("recipient_unassigned requires a separate reservation workflow")
         quantity = 1
         device_label = _required_bounded_text(raw_item, "device_label")
+        protocol_version = normalize_protocol_version(raw_item.get("protocol_version"))
+        raw_client_build = raw_item.get("client_build")
+        client_build = (
+            _required_bounded_text(raw_item, "client_build")
+            if protocol_version is ProtocolVersion.AWG3 or raw_client_build is not None
+            else None
+        )
         client = ClientIdentity(
             _required_bounded_text(raw_item, "client_application"),
             _required_bounded_text(raw_item, "client_platform"),
             _required_bounded_text(raw_item, "client_version"),
+            build_id=client_build,
         )
-        protocol_version = normalize_protocol_version(raw_item.get("protocol_version"))
         validate_device_passport_context(
             platform=client.platform,
             official_client_type=client.application,
@@ -487,6 +501,7 @@ def validate_admin_config_issuance_manifest(
             client_application=client.application,
             client_platform=client.platform,
             client_version=client.version,
+            client_build=client.build_id,
             protocol_version=protocol_version,
             expiry=expiry,
         )
@@ -502,6 +517,7 @@ def validate_admin_config_issuance_manifest(
                     client_application=client.application,
                     client_platform=client.platform,
                     client_version=client.version,
+                    client_build=client.build_id,
                     protocol_version=protocol_version,
                     expiry=expiry,
                 )
@@ -555,6 +571,7 @@ def _slot_dict(
         "client_application": slot.client_application,
         "client_platform": slot.client_platform,
         "client_version": slot.client_version,
+        "client_build": slot.client_build,
         "protocol_version": slot.protocol_version.value,
         "runtime_instance_id": admission.runtime_instance_id if admission else None,
         "compatibility_evidence_id": (
@@ -598,7 +615,9 @@ def _request_fingerprint(
     return f"sha256:{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
 
 
-def _receipt_from_row(row) -> AdminConfigIssuanceReceipt:
+def _receipt_from_row(
+    row, *, client_build: str | None = None
+) -> AdminConfigIssuanceReceipt:
     return AdminConfigIssuanceReceipt(
         receipt_id=int(row["id"]),
         request_id=str(row["request_id"]),
@@ -621,6 +640,7 @@ def _receipt_from_row(row) -> AdminConfigIssuanceReceipt:
         client_application=_optional_row_text(row, "client_application"),
         client_platform=_optional_row_text(row, "client_platform"),
         client_version=_optional_row_text(row, "client_version"),
+        client_build=client_build,
         created_at=str(row["created_at"]),
         updated_at=str(row["updated_at"]),
     )

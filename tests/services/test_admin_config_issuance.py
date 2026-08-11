@@ -13,6 +13,7 @@ from app.services.admin_config_issuance import (
     _request_fingerprint,
     validate_admin_config_issuance_manifest,
 )
+from app.services.device_passports import create_device_passport
 from app.services.protocol_admission import AdmissionResult
 from app.vpn.protocol_versions import ProtocolVersion
 
@@ -46,8 +47,10 @@ class FailOnSecondAccessService:
 class StaticAdmissionService:
     def __init__(self, result: AdmissionResult) -> None:
         self._result = result
+        self.calls = []
 
     def decide(self, request):
+        self.calls.append(request)
         return self._result
 
 
@@ -130,13 +133,19 @@ def _item(recipient, device, platform="android"):
     }
 
 
-def _phase13_item(recipient="SooL", device="NOTEBOOK", version="5.0.0.5"):
+def _phase13_item(
+    recipient="SooL",
+    device="NOTEBOOK",
+    version="5.0.0.5",
+    build="exact-build",
+):
     return {
         "recipient_label": recipient,
         "device_label": device,
         "client_application": "amnezia_vpn",
         "client_platform": "windows",
         "client_version": version,
+        "client_build": build,
         "protocol_version": "awg3",
     }
 
@@ -638,6 +647,100 @@ def test_fingerprint_binds_exact_client_version():
     assert _request_fingerprint(first) != _request_fingerprint(changed)
 
 
+def test_awg3_manifest_requires_exact_client_build():
+    item = _phase13_item()
+    item.pop("client_build")
+
+    with pytest.raises(ValueError, match="client_build"):
+        validate_admin_config_issuance_manifest(_manifest(item))
+
+
+def test_awg3_manifest_and_admission_bind_exact_client_build(tmp_path):
+    validated = validate_admin_config_issuance_manifest(_manifest(_phase13_item()))
+    assert validated.items[0].client_build == "exact-build"
+    assert validated.expanded_slots[0].client_build == "exact-build"
+    changed = validate_admin_config_issuance_manifest(
+        _manifest(_phase13_item(build="changed-build"))
+    )
+    assert _request_fingerprint(validated) != _request_fingerprint(changed)
+
+    conn, repo = _repo(tmp_path)
+    admission = _admission("blocked_unknown_client")
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=SpyAccessService(),
+        admission_service=admission,
+        admin_telegram_id=1,
+        attachment_builder=lambda filename, config: (filename, config),
+    )
+    with pytest.raises(ValueError, match="blocked_unknown_client"):
+        service.issue_manifest(_manifest(_phase13_item()))
+    assert admission.calls[0].client.build_id == "exact-build"
+    conn.close()
+
+
+def test_awg3_safe_receipt_carries_client_build_without_config_material(tmp_path):
+    conn, repo = _repo(tmp_path)
+
+    class SyntheticAwg3AccessService:
+        def create_operator_device(self, **kwargs):
+            device_id = repo.create_device(
+                user_id=kwargs["owner_user_id"],
+                server_id=kwargs["server_id"],
+                name="synthetic-awg3-admin-device",
+                duration_days=30,
+                vpn_ip="10.77.0.19",
+                peer_public_key="synthetic-awg3-public",
+                peer_private_key_encrypted="synthetic-awg3-encrypted-private",
+                preshared_key_encrypted="synthetic-awg3-encrypted-psk",
+                config_version="amneziawg_v3",
+                protocol_version="awg3",
+                runtime_instance_id="rt-spain-awg3",
+                compatibility_evidence_id="compat-exact",
+                client_identity_evidence_status="verified",
+            )
+            passport = create_device_passport(
+                repo,
+                owner_user_id=kwargs["owner_user_id"],
+                local_device_id=device_id,
+                platform="windows",
+                official_client_type="amnezia_vpn",
+                import_method="conf_file",
+                config_schema_version="amneziawg_v3",
+                config_text="synthetic-admin-config-fingerprint-source",
+                protocol_version="awg3",
+                runtime_instance_id="rt-spain-awg3",
+                client_identity_evidence_status="verified",
+                compatibility_evidence_id="compat-exact",
+            )
+            return SimpleNamespace(
+                device_id=device_id,
+                passport_device_id=passport.device_id,
+                config_filename="synthetic-awg3-admin.conf",
+                config_text="synthetic-boundary-config",
+            )
+
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=SyntheticAwg3AccessService(),
+        admission_service=_admission("admitted_awg3"),
+        admin_telegram_id=1,
+        attachment_builder=lambda filename, config: (filename, config),
+    )
+
+    result = service.issue_manifest(_manifest(_phase13_item()))
+
+    assert result.receipts[0].client_build == "exact-build"
+    safe = result.receipts[0].to_safe_dict()
+    assert safe["client_build"] == "exact-build"
+    serialized = json.dumps(safe)
+    assert "synthetic-boundary-config" not in serialized
+    assert "private_key" not in serialized
+    assert "preshared_key" not in serialized
+    assert "qr" not in serialized.casefold()
+    conn.close()
+
+
 class LegacyReplayRepository:
     def __init__(self) -> None:
         self.request_id = "phase12-spain-sool-remaining-20260801-002"
@@ -698,3 +801,4 @@ def test_completed_legacy_receipt_replays_without_reissue_or_forced_backfill():
     assert result.status == "completed"
     assert access.calls == []
     assert result.receipts[0].protocol_version is None
+    assert result.receipts[0].client_build is None
