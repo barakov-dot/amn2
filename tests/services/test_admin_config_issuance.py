@@ -1325,3 +1325,73 @@ def test_admin_block_in_phase_gap_prevents_remote_issuer_and_keeps_marker(
     attempt = conn.execute("SELECT * FROM protocol_issuance_attempts").fetchone()
     assert attempt["state"] == "recovery_required"
     assert attempt["reason_code"] == "issuer_in_progress"
+
+
+@pytest.mark.parametrize(
+    "failure_stage",
+    [
+        "record_admin_action",
+        "complete_receipt",
+        "complete_attempt",
+    ],
+)
+def test_admin_late_finalization_failure_rolls_back_false_completed_graph(
+    tmp_path,
+    monkeypatch,
+    failure_stage,
+):
+    conn, repo = _repo(tmp_path)
+    peer_applier = FakePeerApplier()
+    access = SyntheticAwg3AccessService(repo, peer_applier)
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=access,
+        admission_service=_admission("admitted_awg3"),
+        admin_telegram_id=7001,
+        attachment_builder=lambda _filename, _content: None,
+    )
+    failure_methods = {
+        "record_admin_action": "record_admin_action",
+        "complete_receipt": "complete_admin_config_issuance_receipt",
+        "complete_attempt": "complete_protocol_issuance_attempt",
+    }
+
+    def fail_late_finalization(*_args, **_kwargs):
+        raise RuntimeError(f"synthetic late {failure_stage} failure")
+
+    monkeypatch.setattr(
+        repo,
+        failure_methods[failure_stage],
+        fail_late_finalization,
+    )
+    manifest = _manifest(_phase13_item())
+
+    first = service.issue_manifest(manifest)
+    retry = service.issue_manifest(manifest)
+
+    receipt = first.receipts[0]
+    attempt = conn.execute("SELECT * FROM protocol_issuance_attempts").fetchone()
+    assert first.status == "partial_failure"
+    assert retry.receipts == first.receipts
+    assert attempt["state"] == "recovery_required"
+    assert attempt["reason_code"] == "admin_issuer_or_finalization_failed"
+    assert attempt["local_device_id"] == receipt.device_id
+    assert attempt["passport_device_id"] == receipt.passport_device_id
+    assert receipt.status == "partial_failure"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM device_protocol_profiles WHERE lifecycle_state = 'active'"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM protocol_config_events "
+        "WHERE event_type = 'admin_config_issued'"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM admin_actions "
+        "WHERE action = 'admin_config.issue_manifest'"
+    ).fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM admin_config_issuance_receipts "
+        "WHERE status = 'completed'"
+    ).fetchone()[0] == 0
+    assert len(access.calls) == 1
+    assert len(peer_applier.applied) == 1
