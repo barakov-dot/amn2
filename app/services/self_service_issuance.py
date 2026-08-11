@@ -157,25 +157,12 @@ class SelfServiceIssuanceService:
             if blocked is not None:
                 return blocked
             assert admission is not None
-            attempt, reservation_block = self._reserve(
-                request,
-                admission,
-                actor_kind="user",
-                actor_id=request.telegram_id,
-            )
-            if reservation_block is not None:
-                return reservation_block
-            assert attempt is not None
             consumed = self._pending.pop(token_digest, None)
             if consumed is not pending:
-                self._repo.cancel_protocol_issuance_attempt(
-                    int(attempt["id"]), reason_code="confirmation_not_consumed"
-                )
                 return self._blocked(request, "invalid_confirmation")
-        return self._issue_reserved(
+        return self._reserve_and_issue_serialized(
             request,
             admission,
-            attempt_id=int(attempt["id"]),
             event_type="self_service_issued",
             actor_kind="user",
             actor_id=request.telegram_id,
@@ -217,19 +204,9 @@ class SelfServiceIssuanceService:
             return self._blocked(request, admission.decision)
         if not isinstance(state, Awg3ControlState) or state.emergency_suspended:
             return self._blocked(request, "blocked_runtime_suspended")
-        attempt, reservation_block = self._reserve(
+        return self._reserve_and_issue_serialized(
             request,
             admission,
-            actor_kind="admin",
-            actor_id=admin_telegram_id,
-        )
-        if reservation_block is not None:
-            return reservation_block
-        assert attempt is not None
-        return self._issue_reserved(
-            request,
-            admission,
-            attempt_id=int(attempt["id"]),
             event_type="admin_pilot_issued",
             actor_kind="admin",
             actor_id=admin_telegram_id,
@@ -263,6 +240,8 @@ class SelfServiceIssuanceService:
             user = self._repo.get_user(request.user_id)
         except LookupError:
             return self._blocked(request, "user_not_found")
+        if self._repo.get_protocol_issuance_user_barrier(request.user_id) is not None:
+            return self._blocked(request, "user_issuance_blocked")
         if str(user["status"]) != "active":
             return self._blocked(request, "user_not_active")
         passport = self._repo.get_device_passport(request.passport_device_id)
@@ -373,6 +352,8 @@ class SelfServiceIssuanceService:
         actor_id: int,
     ):
         attempt = self._repo.reserve_protocol_issuance_attempt(
+            owner_user_id=request.user_id,
+            intended_passport_device_id=request.passport_device_id,
             passport_device_id=request.passport_device_id,
             protocol_version=request.protocol_version.value,
             request_fingerprint=_request_fingerprint(request),
@@ -388,7 +369,7 @@ class SelfServiceIssuanceService:
         if attempt is not None:
             return attempt, None
         blocking = self._repo.get_blocking_protocol_issuance_attempt(
-            passport_device_id=request.passport_device_id,
+            intended_passport_device_id=request.passport_device_id,
             protocol_version=request.protocol_version.value,
         )
         if blocking is not None:
@@ -404,6 +385,45 @@ class SelfServiceIssuanceService:
         ) is not None:
             return None, self._blocked(request, "profile_already_exists")
         return None, self._blocked(request, "issuance_in_progress")
+
+    def _reserve_and_issue_serialized(
+        self,
+        request: SelfServiceIssuanceRequest,
+        admission: AdmissionResult,
+        *,
+        event_type: str,
+        actor_kind: str,
+        actor_id: int,
+        reason_code: str,
+    ) -> SelfServiceIssuanceResult:
+        failure: Exception | None = None
+        result: SelfServiceIssuanceResult | None = None
+        with self._repo.transaction():
+            attempt, reservation_block = self._reserve(
+                request,
+                admission,
+                actor_kind=actor_kind,
+                actor_id=actor_id,
+            )
+            if reservation_block is not None:
+                return reservation_block
+            assert attempt is not None
+            try:
+                result = self._issue_reserved(
+                    request,
+                    admission,
+                    attempt_id=int(attempt["id"]),
+                    event_type=event_type,
+                    actor_kind=actor_kind,
+                    actor_id=actor_id,
+                    reason_code=reason_code,
+                )
+            except Exception as exc:
+                failure = exc
+        if failure is not None:
+            raise failure
+        assert result is not None
+        return result
 
     def _issue_reserved(
         self,

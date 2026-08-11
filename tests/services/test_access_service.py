@@ -631,6 +631,48 @@ def test_create_operator_device_records_passport_and_config_ready_evidence(tmp_p
     assert all(event.stage != "delivered" for event in lifecycle)
 
 
+def test_create_operator_device_binds_the_preallocated_passport_identity(tmp_path):
+    conn = connect(tmp_path / "test.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    owner_user_id = repo.create_operator_recipient(operator_label="Preallocated")
+    server_id = repo.ensure_default_server(
+        name="local", network_cidr="10.8.0.0/24"
+    )
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=RecordingPeerApplier(),
+    )
+
+    result = service.create_operator_device(
+        owner_user_id=owner_user_id,
+        server_id=server_id,
+        device_name="AWG3 laptop",
+        duration_days=30,
+        admin_telegram_id=999,
+        config_version="amneziawg_v2",
+        passport_device_id="dev_0123456789abcdef0123456789abcdef",
+        device_context=OperatorDeviceContext(
+            platform="windows",
+            official_client_type="amnezia_vpn",
+            client_version="5.0.0.5",
+            protocol_version="awg2",
+            runtime_instance_id="runtime-awg3",
+            client_identity_evidence_status="verified",
+            compatibility_evidence_id="compat-awg3",
+        ),
+    )
+
+    assert result.passport_device_id == "dev_0123456789abcdef0123456789abcdef"
+    passport = repo.get_device_passport("dev_0123456789abcdef0123456789abcdef")
+    assert passport is not None
+    assert passport["owner_user_id"] == owner_user_id
+    assert passport["local_device_id"] == result.device_id
+
+
 def test_create_operator_unassigned_indefinite_slot_has_no_fake_passport(tmp_path):
     conn = connect(tmp_path / "test.sqlite3")
     initialize_schema(conn)

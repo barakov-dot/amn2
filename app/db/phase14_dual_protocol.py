@@ -68,7 +68,9 @@ CREATE TABLE IF NOT EXISTS protocol_config_events (
 
 CREATE TABLE IF NOT EXISTS protocol_issuance_attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    passport_device_id TEXT NOT NULL,
+    owner_user_id INTEGER NOT NULL,
+    intended_passport_device_id TEXT NOT NULL,
+    passport_device_id TEXT,
     protocol_version TEXT NOT NULL CHECK (protocol_version IN ('awg2','awg3')),
     request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) = 71),
     actor_kind TEXT NOT NULL CHECK (actor_kind IN ('user','admin','system')),
@@ -90,12 +92,21 @@ CREATE TABLE IF NOT EXISTS protocol_issuance_attempts (
     recovery_required_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(owner_user_id) REFERENCES users(id),
     FOREIGN KEY(passport_device_id) REFERENCES device_passports(device_id),
     FOREIGN KEY(local_device_id) REFERENCES devices(id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uq_protocol_issuance_blocking_attempt
-    ON protocol_issuance_attempts(passport_device_id, protocol_version)
+    ON protocol_issuance_attempts(intended_passport_device_id, protocol_version)
     WHERE state IN ('reserved','recovery_required');
+
+CREATE TABLE IF NOT EXISTS protocol_issuance_user_barriers (
+    user_id INTEGER PRIMARY KEY,
+    state TEXT NOT NULL CHECK (state IN ('blocking','blocked')),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
 """
 
 
@@ -125,4 +136,111 @@ def ensure_phase14_dual_protocol_schema(conn: sqlite3.Connection) -> None:
             "ALTER TABLE admin_config_issuance_receipts "
             "ADD COLUMN client_build TEXT"
         )
+    _migrate_protocol_issuance_attempts(conn)
     conn.executescript(PHASE14_DUAL_PROTOCOL_SQL)
+
+
+def _migrate_protocol_issuance_attempts(conn: sqlite3.Connection) -> None:
+    columns = {
+        str(row[1]): int(row[3])
+        for row in conn.execute("PRAGMA table_info(protocol_issuance_attempts)")
+    }
+    if not columns:
+        return
+    if (
+        "owner_user_id" in columns
+        and "intended_passport_device_id" in columns
+        and columns.get("passport_device_id") == 0
+    ):
+        return
+
+    conn.execute("DROP INDEX IF EXISTS uq_protocol_issuance_blocking_attempt")
+    conn.execute(
+        "ALTER TABLE protocol_issuance_attempts "
+        "RENAME TO protocol_issuance_attempts_legacy"
+    )
+    conn.executescript(
+        """
+        CREATE TABLE protocol_issuance_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            owner_user_id INTEGER NOT NULL,
+            intended_passport_device_id TEXT NOT NULL,
+            passport_device_id TEXT,
+            protocol_version TEXT NOT NULL CHECK (protocol_version IN ('awg2','awg3')),
+            request_fingerprint TEXT NOT NULL CHECK (length(request_fingerprint) = 71),
+            actor_kind TEXT NOT NULL CHECK (actor_kind IN ('user','admin','system')),
+            actor_id INTEGER NOT NULL,
+            client_application TEXT NOT NULL,
+            client_platform TEXT NOT NULL,
+            client_version TEXT NOT NULL,
+            client_build TEXT,
+            runtime_instance_id TEXT,
+            compatibility_evidence_id TEXT,
+            state TEXT NOT NULL DEFAULT 'reserved' CHECK (state IN (
+                'reserved','completed','cancelled','recovery_required'
+            )),
+            local_device_id INTEGER,
+            reason_code TEXT,
+            reserved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT,
+            cancelled_at TEXT,
+            recovery_required_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(owner_user_id) REFERENCES users(id),
+            FOREIGN KEY(passport_device_id) REFERENCES device_passports(device_id),
+            FOREIGN KEY(local_device_id) REFERENCES devices(id)
+        );
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO protocol_issuance_attempts (
+            id, owner_user_id, intended_passport_device_id, passport_device_id,
+            protocol_version, request_fingerprint, actor_kind, actor_id,
+            client_application, client_platform, client_version, client_build,
+            runtime_instance_id, compatibility_evidence_id, state,
+            local_device_id, reason_code, reserved_at, completed_at,
+            cancelled_at, recovery_required_at, created_at, updated_at
+        )
+        SELECT
+            legacy.id,
+            passports.owner_user_id,
+            legacy.passport_device_id,
+            legacy.passport_device_id,
+            legacy.protocol_version,
+            legacy.request_fingerprint,
+            legacy.actor_kind,
+            legacy.actor_id,
+            legacy.client_application,
+            legacy.client_platform,
+            legacy.client_version,
+            legacy.client_build,
+            legacy.runtime_instance_id,
+            legacy.compatibility_evidence_id,
+            legacy.state,
+            legacy.local_device_id,
+            legacy.reason_code,
+            legacy.reserved_at,
+            legacy.completed_at,
+            legacy.cancelled_at,
+            legacy.recovery_required_at,
+            legacy.created_at,
+            legacy.updated_at
+        FROM protocol_issuance_attempts_legacy AS legacy
+        JOIN device_passports AS passports
+          ON passports.device_id = legacy.passport_device_id
+        ORDER BY legacy.id
+        """
+    )
+    migrated = int(
+        conn.execute("SELECT COUNT(*) FROM protocol_issuance_attempts").fetchone()[0]
+    )
+    legacy = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM protocol_issuance_attempts_legacy"
+        ).fetchone()[0]
+    )
+    if migrated != legacy:
+        raise RuntimeError("protocol issuance attempt migration lost legacy rows")
+    conn.execute("DROP TABLE protocol_issuance_attempts_legacy")

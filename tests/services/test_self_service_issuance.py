@@ -823,3 +823,43 @@ def test_finalization_failure_requires_recovery_and_blocks_retry(
     )
     assert blocked.reason_code == "issuance_recovery_required"
     assert len(issuer.calls) == 1
+
+
+def test_winning_issuance_holds_one_outer_transaction_through_issuer_and_completion(
+    harness,
+):
+    class TransactionCheckingIssuer(SyntheticIssuer):
+        def issue(self, *, request, admission):
+            assert self.repo._transaction_depth == 1
+            return super().issue(request=request, admission=admission)
+
+    issuer = TransactionCheckingIssuer(
+        harness.repo, user_id=harness.user_id, server_id=harness.server_id
+    )
+    service = _service(harness, issuer=issuer)
+    request = _request(harness)
+    token = service.decide(request).token
+
+    result = service.issue_after_confirmation(request, confirmation_token=token)
+
+    assert result.status == "issued"
+    attempt = _attempts(harness)[0]
+    assert attempt["state"] == "completed"
+    assert attempt["owner_user_id"] == harness.user_id
+    assert attempt["intended_passport_device_id"] == harness.passport_device_id
+
+
+def test_user_barrier_blocks_before_reservation_or_issuer(harness):
+    harness.conn.execute(
+        "INSERT INTO protocol_issuance_user_barriers(user_id, state) VALUES (?, 'blocking')",
+        (harness.user_id,),
+    )
+    harness.conn.commit()
+    service = _service(harness)
+
+    result = service.decide(_request(harness))
+
+    assert result.status == "blocked"
+    assert result.reason_code == "user_issuance_blocked"
+    assert service.issuer.calls == []
+    assert _attempts(harness) == []

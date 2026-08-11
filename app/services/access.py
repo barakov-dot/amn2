@@ -209,6 +209,7 @@ class AccessService:
         config_version: str = "amneziawg_v2",
         assignment_mode: str = DEDICATED_DEVICE,
         config_artifact_writer: Callable[[str], str | Path] | None = None,
+        passport_device_id: str | None = None,
         device_context: OperatorDeviceContext = OperatorDeviceContext(
             platform="unknown"
         ),
@@ -231,6 +232,7 @@ class AccessService:
                     config_version=config_version,
                     assignment_mode=assignment_mode,
                     config_artifact_writer=config_artifact_writer,
+                    passport_device_id=passport_device_id,
                     device_context=device_context,
                     remote_mutation_observer=record_remote_mutation,
                 )
@@ -257,6 +259,7 @@ class AccessService:
         config_version: str,
         assignment_mode: str,
         config_artifact_writer: Callable[[str], str | Path] | None,
+        passport_device_id: str | None,
         device_context: OperatorDeviceContext,
         remote_mutation_observer: Callable[[RemoteMutationResult], None] | None,
     ) -> OperatorDeviceCreateResult:
@@ -269,6 +272,8 @@ class AccessService:
         config_version = validate_config_version(config_version)
         assignment_mode = validate_config_assignment_mode(assignment_mode)
         assignment_policy = config_assignment_policy(assignment_mode)
+        if passport_device_id is not None and not assignment_policy.passport_required:
+            raise ValueError("preallocated passport requires a passport-bound assignment")
         if assignment_policy.passport_required:
             validate_device_passport_context(
                 platform=device_context.platform,
@@ -359,9 +364,8 @@ class AccessService:
         artifact_path = None
         if config_artifact_writer is not None:
             artifact_path = str(config_artifact_writer(config_text))
-        passport_device_id = None
         if assignment_policy.passport_required:
-            passport_device_id = generate_device_passport_id()
+            passport_device_id = passport_device_id or generate_device_passport_id()
             create_device_passport(
                 self._repo,
                 device_id=passport_device_id,

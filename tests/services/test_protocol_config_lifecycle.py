@@ -340,6 +340,61 @@ def test_build_projection_finds_matching_awg3_profile_after_first_global_page():
     ).lifecycle_state == "review_required"
 
 
+def test_compatibility_rejected_projects_admin_issued_exact_build_profile():
+    conn, repo, user_id, server_id = _empty_harness()
+    local_device_id = _create_device(
+        repo,
+        user_id=user_id,
+        server_id=server_id,
+        sequence=40,
+        protocol="awg3",
+    )
+    _create_passport(repo, "admin-issued-passport", user_id, local_device_id)
+    attempt = repo.reserve_protocol_issuance_attempt(
+        owner_user_id=user_id,
+        intended_passport_device_id="admin-issued-passport",
+        passport_device_id="admin-issued-passport",
+        protocol_version="awg3",
+        request_fingerprint="sha256:" + "4" * 64,
+        actor_kind="admin",
+        actor_id=7001,
+        client_application="amnezia_vpn",
+        client_platform="windows",
+        client_version="5.0.0.5",
+        client_build="build-14",
+        runtime_instance_id="runtime-awg3",
+        compatibility_evidence_id="compat-build-14",
+    )
+    assert attempt is not None
+    profile = DualProtocolProfileService(repo).attach_active(
+        "admin-issued-passport", ProtocolVersion.AWG3, local_device_id
+    )
+    repo.complete_protocol_issuance_attempt(
+        int(attempt["id"]),
+        local_device_id=local_device_id,
+        passport_device_id="admin-issued-passport",
+    )
+    repo.upsert_client_build_acceptance(
+        application="amnezia_vpn",
+        platform="windows",
+        client_version="5.0.0.5",
+        client_build="build-14",
+        state="accepted",
+        evidence_ids=("compat-build-14",),
+        actor_id=1,
+        reason="accepted fixture",
+    )
+
+    result = ProtocolConfigLifecycleService(repo).apply_build_state(
+        _exact_build(), "compatibility_rejected"
+    )
+
+    assert [item.profile_id for item in result.affected_profiles] == [profile.profile_id]
+    assert DualProtocolProfileService(repo).get(
+        profile.profile_id
+    ).lifecycle_state == "review_required"
+
+
 def test_passport_pagination_rejects_negative_offsets_with_value_error():
     _, repo, user_id, _ = _empty_harness()
     calls = (

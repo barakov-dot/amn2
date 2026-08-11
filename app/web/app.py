@@ -45,6 +45,7 @@ from app.services.device_revoke import (
     cascade_revoke_protocol_config,
 )
 from app.services.protocol_config_lifecycle import ProtocolConfigLifecycleService
+from app.services.protocol_issuance_barrier import ProtocolIssuanceBarrierService
 from app.config_assignment import (
     CONFIG_ASSIGNMENT_MODES,
     DEDICATED_DEVICE,
@@ -3391,7 +3392,9 @@ def _set_user_status_with_action(
 def _disable_user_vpn(settings: Settings, request: Request, user_id: int) -> int:
     with _open_repository(settings) as (repo, _conn):
         user = _row_to_dict(repo.get_user(user_id))
-        devices = [_row_to_dict(row) for row in repo.list_user_devices_for_vpn_removal(user_id)]
+        barrier = ProtocolIssuanceBarrierService(repo)
+        block_plan = barrier.begin_block(user_id)
+        devices = [_row_to_dict(row) for row in block_plan.devices]
         protocol_targets = ProtocolConfigLifecycleService(repo).disable_user(
             user_id=user_id,
             actor_id=_web_admin_actor_id(settings),
@@ -3407,7 +3410,14 @@ def _disable_user_vpn(settings: Settings, request: Request, user_id: int) -> int
                 reason="web_disable_vpn",
                 disabled_at=disabled_at,
             )
-            repo.set_user_status_for_admin(user_id, "blocked")
+            barrier_complete = ProtocolIssuanceBarrierService(repo).complete_block(
+                user_id,
+                removed_local_device_ids=(
+                    {int(device["id"]) for device in devices}
+                    if vps_apply == "applied"
+                    else set()
+                ),
+            )
             _record_web_user_action(
                 repo,
                 settings,
@@ -3421,6 +3431,9 @@ def _disable_user_vpn(settings: Settings, request: Request, user_id: int) -> int
                     "device_names": [str(device["name"]) for device in devices],
                     "disabled_device_count": disabled_count,
                     "vps_apply": vps_apply,
+                    "issuance_barrier": (
+                        "blocked" if barrier_complete else "blocking"
+                    ),
                     "protocol_targets": [
                         target.safe_metadata() for target in protocol_targets
                     ],
@@ -3432,13 +3445,13 @@ def _disable_user_vpn(settings: Settings, request: Request, user_id: int) -> int
 def _enable_user_vpn(settings: Settings, request: Request, user_id: int) -> int:
     with _open_repository(settings) as (repo, _conn):
         user = _row_to_dict(repo.get_user(user_id))
+        ProtocolIssuanceBarrierService(repo).begin_enable(user_id)
         devices = [_row_to_dict(row) for row in repo.list_user_devices_for_vpn_enable(user_id)]
 
     _apply_devices_to_vpn(settings, devices)
     with _open_repository(settings) as (repo, _conn):
         with repo.transaction():
-            enabled_count = repo.enable_user_devices(user_id)
-            repo.set_user_status_for_admin(user_id, "active")
+            enabled_count = ProtocolIssuanceBarrierService(repo).complete_enable(user_id)
             _record_web_user_action(
                 repo,
                 settings,

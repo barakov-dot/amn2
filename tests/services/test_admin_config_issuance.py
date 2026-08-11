@@ -68,6 +68,57 @@ class SpyAccessService:
         )
 
 
+class SyntheticAwg3AccessService:
+    def __init__(self, repo, peer_applier):
+        self.repo = repo
+        self.peer_applier = peer_applier
+        self.calls = []
+
+    def create_operator_device(self, **kwargs):
+        self.calls.append(kwargs)
+        passport_device_id = kwargs["passport_device_id"]
+        device_id = self.repo.create_device(
+            user_id=kwargs["owner_user_id"],
+            server_id=kwargs["server_id"],
+            name="synthetic-awg3-admin-device",
+            duration_days=30,
+            vpn_ip="10.77.0.19",
+            peer_public_key="synthetic-awg3-public",
+            peer_private_key_encrypted="synthetic-awg3-encrypted-private",
+            preshared_key_encrypted="synthetic-awg3-encrypted-psk",
+            config_version="amneziawg_v3",
+            protocol_version="awg3",
+            runtime_instance_id="rt-spain-awg3",
+            compatibility_evidence_id="compat-exact",
+            client_identity_evidence_status="verified",
+        )
+        passport = create_device_passport(
+            self.repo,
+            device_id=passport_device_id,
+            owner_user_id=kwargs["owner_user_id"],
+            local_device_id=device_id,
+            platform="windows",
+            official_client_type="amnezia_vpn",
+            client_version="5.0.0.5",
+            import_method="conf_file",
+            config_schema_version="amneziawg_v3",
+            config_text="synthetic-admin-config-fingerprint-source",
+            protocol_version="awg3",
+            runtime_instance_id="rt-spain-awg3",
+            client_identity_evidence_status="verified",
+            compatibility_evidence_id="compat-exact",
+        )
+        self.peer_applier.applied.append(
+            (kwargs["server_id"], "synthetic-awg3-public", "10.77.0.19")
+        )
+        return SimpleNamespace(
+            device_id=device_id,
+            passport_device_id=passport.device_id,
+            config_filename="synthetic-awg3-admin.conf",
+            config_text="synthetic-boundary-config",
+        )
+
+
 def _admission(decision: str = "admitted_awg2") -> StaticAdmissionService:
     protocol = ProtocolVersion.AWG3 if decision.endswith("awg3") else ProtocolVersion.AWG2
     return StaticAdmissionService(
@@ -701,10 +752,12 @@ def test_awg3_safe_receipt_carries_client_build_without_config_material(tmp_path
             )
             passport = create_device_passport(
                 repo,
+                device_id=kwargs["passport_device_id"],
                 owner_user_id=kwargs["owner_user_id"],
                 local_device_id=device_id,
                 platform="windows",
                 official_client_type="amnezia_vpn",
+                client_version="5.0.0.5",
                 import_method="conf_file",
                 config_schema_version="amneziawg_v3",
                 config_text="synthetic-admin-config-fingerprint-source",
@@ -810,3 +863,83 @@ def test_completed_legacy_receipt_replays_without_reissue_or_forced_backfill():
     assert access.calls == []
     assert result.receipts[0].protocol_version is None
     assert result.receipts[0].client_build is None
+
+
+def test_admin_awg3_persists_one_completed_attempt_profile_event_and_receipt_graph(
+    tmp_path,
+):
+    conn, repo = _repo(tmp_path)
+    peer_applier = FakePeerApplier()
+    access = SyntheticAwg3AccessService(repo, peer_applier)
+
+    class TransactionCheckingAccess:
+        def create_operator_device(self, **kwargs):
+            assert repo._transaction_depth == 1
+            return access.create_operator_device(**kwargs)
+
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=TransactionCheckingAccess(),
+        admission_service=_admission("admitted_awg3"),
+        admin_telegram_id=7001,
+        attachment_builder=lambda _filename, _content: None,
+    )
+
+    result = service.issue_manifest(_manifest(_phase13_item()))
+
+    receipt = result.receipts[0]
+    attempt = conn.execute("SELECT * FROM protocol_issuance_attempts").fetchone()
+    profile = conn.execute("SELECT * FROM device_protocol_profiles").fetchone()
+    event = conn.execute(
+        "SELECT * FROM protocol_config_events WHERE event_type = 'admin_config_issued'"
+    ).fetchone()
+    assert result.status == "completed", receipt.error_code
+    assert attempt["state"] == "completed"
+    assert attempt["owner_user_id"] == receipt.recipient_user_id
+    assert attempt["intended_passport_device_id"] == receipt.passport_device_id
+    assert attempt["passport_device_id"] == receipt.passport_device_id
+    assert attempt["local_device_id"] == receipt.device_id
+    assert attempt["client_build"] == "exact-build"
+    assert profile["passport_device_id"] == receipt.passport_device_id
+    assert profile["local_device_id"] == receipt.device_id
+    assert profile["lifecycle_state"] == "active"
+    assert event["passport_device_id"] == receipt.passport_device_id
+    assert event["local_device_id"] == receipt.device_id
+    assert json.loads(event["metadata_json"]) == {
+        "attempt_id": int(attempt["id"]),
+        "client_application": "amnezia_vpn",
+        "client_build": "exact-build",
+        "client_platform": "windows",
+        "client_version": "5.0.0.5",
+        "profile_id": int(profile["id"]),
+        "receipt_id": receipt.receipt_id,
+    }
+    assert len(peer_applier.applied) == 1
+
+
+def test_admin_awg3_failure_after_issuer_persists_recovery_and_never_reissues(
+    tmp_path,
+):
+    conn, repo = _repo(tmp_path)
+    peer_applier = FakePeerApplier()
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=SyntheticAwg3AccessService(repo, peer_applier),
+        admission_service=_admission("admitted_awg3"),
+        admin_telegram_id=7001,
+        attachment_builder=lambda _filename, _content: (_ for _ in ()).throw(
+            RuntimeError("synthetic attachment failure")
+        ),
+    )
+    manifest = _manifest(_phase13_item())
+
+    first = service.issue_manifest(manifest)
+    replay = service.issue_manifest(manifest)
+
+    attempt = conn.execute("SELECT * FROM protocol_issuance_attempts").fetchone()
+    assert first.status == "partial_failure"
+    assert replay.receipts == first.receipts
+    assert attempt["state"] == "recovery_required"
+    assert attempt["local_device_id"] == first.receipts[0].device_id
+    assert attempt["passport_device_id"] == first.receipts[0].passport_device_id
+    assert len(peer_applier.applied) == 1

@@ -652,6 +652,7 @@ def test_disable_user_vpn_revokes_remote_peers_and_keeps_user_row(
         user = repo.get_user(user_id)
         devices = repo.list_user_devices_for_admin(user_id)
         assert user["status"] == "blocked"
+        assert repo.get_protocol_issuance_user_barrier(user_id)["state"] == "blocked"
         assert [device["status"] for device in devices] == ["revoked", "disabled"]
         latest_action = repo.list_admin_actions_for_target_user(user_id)[0]
         assert latest_action["action"] == "web_user_disable_vpn"
@@ -838,7 +839,8 @@ def test_disable_user_vpn_returns_redacted_peer_apply_error(
         devices = repo.list_user_devices_for_admin(user_id)
         actions = repo.list_admin_actions_for_target_user(user_id)
         metadata = json.loads(actions[0]["metadata_json"])
-        assert user["status"] == "active"
+        assert user["status"] == "blocked"
+        assert repo.get_protocol_issuance_user_barrier(user_id)["state"] == "blocking"
         assert sorted(device["status"] for device in devices) == ["active", "revoked"]
         assert actions[0]["action"] == "web_user_disable_vpn_failed"
         assert metadata["operation"] == "disable_user_vpn"
@@ -879,6 +881,8 @@ def test_enable_user_vpn_reapplies_disabled_device_with_stored_key_and_ip(
         preshared_key="stored-psk",
         status="disabled",
     )
+    with _repo(Path(settings.database_path)) as repo:
+        repo.set_protocol_issuance_user_barrier(user_id, "blocked")
     client = _authenticated_client(settings)
 
     detail = client.get(f"/users/{user_id}")
@@ -895,6 +899,7 @@ def test_enable_user_vpn_reapplies_disabled_device_with_stored_key_and_ip(
         user = repo.get_user(user_id)
         device = repo.get_device(device_id)
         assert user["status"] == "active"
+        assert repo.get_protocol_issuance_user_barrier(user_id) is None
         assert device["status"] == "active"
         assert device["vpn_ip"] == "10.8.0.44"
         latest_action = repo.list_admin_actions_for_target_user(user_id)[0]

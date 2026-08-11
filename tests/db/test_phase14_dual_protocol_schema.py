@@ -104,6 +104,8 @@ def test_one_protocol_profile_per_passport_is_enforced(conn):
 def test_only_one_blocking_issuance_attempt_per_passport_protocol(conn):
     seed_user_server_device_and_passport(conn)
     values = (
+        1,
+        "device-1",
         "device-1",
         "awg3",
         "sha256:" + "b" * 64,
@@ -118,10 +120,11 @@ def test_only_one_blocking_issuance_attempt_per_passport_protocol(conn):
     )
     sql = (
         "INSERT INTO protocol_issuance_attempts ("
-        "passport_device_id, protocol_version, request_fingerprint, "
+        "owner_user_id, intended_passport_device_id, passport_device_id, "
+        "protocol_version, request_fingerprint, "
         "actor_kind, actor_id, client_application, client_platform, "
         "client_version, client_build, runtime_instance_id, "
-        "compatibility_evidence_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "compatibility_evidence_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     )
 
     conn.execute(sql, values)
@@ -171,7 +174,6 @@ def test_repository_reservation_transitions_are_atomic_and_profile_aware(conn):
         runtime_instance_id="rt-phase14-awg3",
         compatibility_evidence_id="compat-phase14-awg3",
     ) is None
-
     cancelled = repo.cancel_protocol_issuance_attempt(
         int(reserved["id"]), reason_code="pre_issuer_cancelled"
     )
@@ -222,4 +224,105 @@ def test_repository_reservation_transitions_are_atomic_and_profile_aware(conn):
         client_build="exact-build",
         runtime_instance_id="rt-phase14-awg3",
         compatibility_evidence_id="compat-phase14-awg3",
+    ) is None
+
+
+def test_phase14_migration_preserves_legacy_attempt_state_and_adds_owner_lineage(conn):
+    seed_user_server_device_and_passport(conn)
+    conn.execute("DROP INDEX uq_protocol_issuance_blocking_attempt")
+    conn.execute("DROP TABLE protocol_issuance_attempts")
+    conn.executescript(
+        """
+        CREATE TABLE protocol_issuance_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            passport_device_id TEXT NOT NULL,
+            protocol_version TEXT NOT NULL,
+            request_fingerprint TEXT NOT NULL,
+            actor_kind TEXT NOT NULL,
+            actor_id INTEGER NOT NULL,
+            client_application TEXT NOT NULL,
+            client_platform TEXT NOT NULL,
+            client_version TEXT NOT NULL,
+            client_build TEXT,
+            runtime_instance_id TEXT,
+            compatibility_evidence_id TEXT,
+            state TEXT NOT NULL DEFAULT 'reserved',
+            local_device_id INTEGER,
+            reason_code TEXT,
+            reserved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT,
+            cancelled_at TEXT,
+            recovery_required_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX uq_protocol_issuance_blocking_attempt
+        ON protocol_issuance_attempts(passport_device_id, protocol_version)
+        WHERE state IN ('reserved','recovery_required');
+        """
+    )
+    conn.execute(
+        "INSERT INTO protocol_issuance_attempts ("
+        "passport_device_id, protocol_version, request_fingerprint, actor_kind, "
+        "actor_id, client_application, client_platform, client_version, state, "
+        "reason_code) VALUES (?, 'awg3', ?, 'user', 14001, 'amnezia_vpn', "
+        "'windows', '5.0.0.5', 'recovery_required', 'legacy_recovery')",
+        ("device-1", "sha256:" + "9" * 64),
+    )
+    conn.commit()
+
+    initialize_schema(conn)
+    initialize_schema(conn)
+
+    attempt = conn.execute(
+        "SELECT * FROM protocol_issuance_attempts WHERE reason_code = 'legacy_recovery'"
+    ).fetchone()
+    assert attempt["state"] == "recovery_required"
+    assert attempt["owner_user_id"] == 1
+    assert attempt["intended_passport_device_id"] == "device-1"
+    assert attempt["passport_device_id"] == "device-1"
+    columns = {
+        row[1]: row[3]
+        for row in conn.execute("PRAGMA table_info(protocol_issuance_attempts)")
+    }
+    assert columns["passport_device_id"] == 0
+
+
+def test_reservation_requires_active_exact_owner_without_barrier(conn):
+    seed_user_server_device_and_passport(conn)
+    repo = Repository(conn)
+    other_user_id = repo.upsert_user(
+        telegram_id=14002,
+        username="other",
+        first_name="Other",
+        last_name="Owner",
+    )
+    base = {
+        "owner_user_id": 1,
+        "intended_passport_device_id": "device-1",
+        "passport_device_id": "device-1",
+        "protocol_version": "awg3",
+        "request_fingerprint": "sha256:" + "8" * 64,
+        "actor_kind": "user",
+        "actor_id": 14001,
+        "client_application": "amnezia_vpn",
+        "client_platform": "windows",
+        "client_version": "5.0.0.5",
+        "client_build": "exact-build",
+        "runtime_instance_id": "rt-phase14-awg3",
+        "compatibility_evidence_id": "compat-phase14-awg3",
+    }
+    conn.execute("UPDATE users SET status = 'blocked' WHERE id = 1")
+    conn.commit()
+    assert repo.reserve_protocol_issuance_attempt(**base) is None
+    conn.execute("UPDATE users SET status = 'active' WHERE id = 1")
+    conn.execute(
+        "INSERT INTO protocol_issuance_user_barriers(user_id, state) VALUES (1, 'blocking')"
+    )
+    conn.commit()
+    assert repo.reserve_protocol_issuance_attempt(**base) is None
+    conn.execute("DELETE FROM protocol_issuance_user_barriers WHERE user_id = 1")
+    conn.commit()
+    assert repo.reserve_protocol_issuance_attempt(
+        **{**base, "owner_user_id": other_user_id}
     ) is None
