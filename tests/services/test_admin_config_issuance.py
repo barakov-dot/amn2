@@ -1,4 +1,5 @@
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -15,6 +16,7 @@ from app.services.admin_config_issuance import (
 )
 from app.services.device_passports import create_device_passport
 from app.services.protocol_admission import AdmissionResult
+from app.services.protocol_issuance_barrier import ProtocolIssuanceBarrierService
 from app.vpn.protocol_versions import ProtocolVersion
 
 
@@ -915,6 +917,105 @@ def test_admin_awg3_persists_one_completed_attempt_profile_event_and_receipt_gra
         "receipt_id": receipt.receipt_id,
     }
     assert len(peer_applier.applied) == 1
+
+
+def test_admin_awg3_issuance_wins_real_sqlite_race_and_block_removes_exact_peer(
+    tmp_path,
+):
+    database_path = tmp_path / "issuance.sqlite3"
+    setup_conn, setup_repo = _repo(tmp_path)
+    user_id = setup_repo.create_operator_recipient(operator_label="SooL")
+    setup_conn.close()
+    issuer_entered = threading.Event()
+    allow_issuer = threading.Event()
+    block_begin_seen = threading.Event()
+    block_finished = threading.Event()
+    peer_applier = FakePeerApplier()
+    known_peer_ids = set()
+    removed_peer_ids = set()
+    results = {}
+    errors = []
+
+    def issue_in_thread():
+        conn = connect(database_path)
+        repo = Repository(conn)
+        delegate = SyntheticAwg3AccessService(repo, peer_applier)
+
+        class PausingAccessService:
+            def create_operator_device(self, **kwargs):
+                issuer_entered.set()
+                if not allow_issuer.wait(timeout=3):
+                    raise AssertionError("block did not reach the admin issuance lock")
+                issued = delegate.create_operator_device(**kwargs)
+                known_peer_ids.add(int(issued.device_id))
+                return issued
+
+        try:
+            service = AdminConfigIssuanceService(
+                repo=repo,
+                access_service=PausingAccessService(),
+                admission_service=_admission("admitted_awg3"),
+                admin_telegram_id=7001,
+                attachment_builder=lambda _filename, _content: None,
+            )
+            results["issuance"] = service.issue_manifest(
+                _manifest(_phase13_item())
+            )
+            results["issuer_calls"] = len(delegate.calls)
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            conn.close()
+
+    def block_in_thread():
+        conn = connect(database_path)
+        conn.set_trace_callback(
+            lambda statement: block_begin_seen.set()
+            if statement.strip().upper() == "BEGIN IMMEDIATE"
+            else None
+        )
+        repo = Repository(conn)
+        try:
+            barrier = ProtocolIssuanceBarrierService(repo)
+            plan = barrier.begin_block(user_id)
+            removed = {int(row["id"]) for row in plan.devices}
+            removed_peer_ids.update(removed)
+            known_peer_ids.difference_update(removed)
+            results["block_complete"] = barrier.complete_block(
+                user_id,
+                removed_local_device_ids=removed,
+            )
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            block_finished.set()
+            conn.close()
+
+    issuance_thread = threading.Thread(target=issue_in_thread)
+    issuance_thread.start()
+    assert issuer_entered.wait(timeout=3)
+    block_thread = threading.Thread(target=block_in_thread)
+    block_thread.start()
+    assert block_begin_seen.wait(timeout=3)
+    assert not block_finished.is_set()
+    allow_issuer.set()
+    issuance_thread.join(timeout=3)
+    block_thread.join(timeout=3)
+
+    assert not issuance_thread.is_alive()
+    assert not block_thread.is_alive()
+    assert errors == []
+    receipt = results["issuance"].receipts[0]
+    assert results["issuance"].status == "completed"
+    assert results["issuer_calls"] == 1
+    assert int(receipt.device_id) in removed_peer_ids
+    assert known_peer_ids == set()
+    assert results["block_complete"] is True
+    verification_conn = connect(database_path)
+    verification_repo = Repository(verification_conn)
+    barrier = verification_repo.get_protocol_issuance_user_barrier(user_id)
+    assert barrier["state"] == "blocked"
+    verification_conn.close()
 
 
 def test_admin_awg3_failure_after_issuer_persists_recovery_and_never_reissues(

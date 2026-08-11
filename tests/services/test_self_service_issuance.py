@@ -3,12 +3,14 @@ from __future__ import annotations
 import importlib
 import json
 import sqlite3
+import threading
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
+from app.db.connection import connect
 from app.db.repositories import Repository
 from app.db.schema import initialize_schema
 from app.services.awg3_control import Awg3ControlState
@@ -16,6 +18,7 @@ from app.services.client_compatibility import ClientIdentity
 from app.services.device_passports import create_device_passport
 from app.services.dual_protocol_profiles import DualProtocolProfileService
 from app.services.protocol_admission import AdmissionResult
+from app.services.protocol_issuance_barrier import ProtocolIssuanceBarrierService
 from app.vpn.protocol_versions import ProtocolVersion
 
 
@@ -269,6 +272,48 @@ def _attempts(harness: Harness):
     return harness.conn.execute(
         "SELECT * FROM protocol_issuance_attempts ORDER BY id"
     ).fetchall()
+
+
+def _seed_file_backed_harness(database_path):
+    conn = connect(database_path)
+    initialize_schema(conn)
+    repo = Repository(conn)
+    telegram_id = 9317
+    user_id = repo.upsert_user(
+        telegram_id=telegram_id,
+        username="self-service-race-user",
+        first_name="Self",
+        last_name="Race",
+    )
+    server_id = repo.ensure_default_server(
+        name="self-service-race-server",
+        network_cidr="10.217.0.0/24",
+    )
+    awg2_device_id = repo.create_device(
+        user_id=user_id,
+        server_id=server_id,
+        name="synthetic-race-awg2",
+        duration_days=30,
+        vpn_ip="10.217.0.2",
+        peer_public_key="synthetic-race-existing-public",
+        peer_private_key_encrypted="synthetic-race-encrypted-private",
+        preshared_key_encrypted="synthetic-race-encrypted-psk",
+        config_version="amneziawg_v2",
+        protocol_version="awg2",
+    )
+    passport = create_device_passport(
+        repo,
+        owner_user_id=user_id,
+        local_device_id=awg2_device_id,
+        platform="windows",
+        official_client_type="amnezia_vpn",
+        import_method="conf_file",
+        config_schema_version="amneziawg_v2",
+        config_text="synthetic-race-config-fingerprint-source",
+        protocol_version="awg2",
+    )
+    conn.close()
+    return user_id, telegram_id, server_id, passport.device_id
 
 
 def test_decide_checks_owner_user_device_profile_admission_and_gates_in_order(
@@ -769,6 +814,61 @@ def test_issuer_exception_requires_recovery_and_blocks_fresh_token(harness):
     assert len(issuer.calls) == 1
 
 
+@pytest.mark.parametrize(
+    ("failure_stage", "expected_attempt_state", "error_message"),
+    [
+        ("state", None, "synthetic recovery state write failed"),
+        ("event", "recovery_required", "synthetic recovery event write failed"),
+    ],
+)
+def test_recovery_persistence_failure_never_commits_a_preissuer_reserved_attempt(
+    harness,
+    monkeypatch,
+    failure_stage,
+    expected_attempt_state,
+    error_message,
+):
+    issuer = RaisingIssuer()
+    service = _service(harness, issuer=issuer)
+    request = _request(harness)
+    token = service.decide(request).token
+
+    if failure_stage == "state":
+        def fail_recovery_state(*_args, **_kwargs):
+            raise RuntimeError(error_message)
+
+        monkeypatch.setattr(
+            harness.repo,
+            "mark_protocol_issuance_attempt_recovery_required",
+            fail_recovery_state,
+        )
+    else:
+        original_append = harness.repo.append_protocol_config_event
+
+        def fail_recovery_event(**kwargs):
+            if kwargs["event_type"] == "protocol_issuance_recovery_required":
+                raise RuntimeError(error_message)
+            return original_append(**kwargs)
+
+        monkeypatch.setattr(
+            harness.repo,
+            "append_protocol_config_event",
+            fail_recovery_event,
+        )
+
+    with pytest.raises(RuntimeError, match=error_message):
+        service.issue_after_confirmation(request, confirmation_token=token)
+
+    attempts = _attempts(harness)
+    assert all(row["state"] != "reserved" for row in attempts)
+    if expected_attempt_state is None:
+        assert attempts == []
+    else:
+        assert [row["state"] for row in attempts] == [expected_attempt_state]
+        assert attempts[0]["reason_code"] == "issuer_failed"
+    assert len(issuer.calls) == 1
+
+
 def test_finalization_failure_requires_recovery_and_blocks_retry(
     harness, monkeypatch
 ):
@@ -847,6 +947,108 @@ def test_winning_issuance_holds_one_outer_transaction_through_issuer_and_complet
     assert attempt["state"] == "completed"
     assert attempt["owner_user_id"] == harness.user_id
     assert attempt["intended_passport_device_id"] == harness.passport_device_id
+
+
+def test_self_service_issuance_wins_real_sqlite_race_and_block_removes_exact_peer(
+    tmp_path,
+):
+    database_path = tmp_path / "self-service-race.sqlite3"
+    user_id, telegram_id, server_id, passport_device_id = (
+        _seed_file_backed_harness(database_path)
+    )
+    issuer_entered = threading.Event()
+    allow_issuer = threading.Event()
+    block_begin_seen = threading.Event()
+    block_finished = threading.Event()
+    known_peer_ids = set()
+    removed_peer_ids = set()
+    results = {}
+    errors = []
+
+    def issue_in_thread():
+        conn = connect(database_path)
+        repo = Repository(conn)
+        thread_harness = Harness(
+            conn=conn,
+            repo=repo,
+            user_id=user_id,
+            telegram_id=telegram_id,
+            server_id=server_id,
+            passport_device_id=passport_device_id,
+        )
+
+        class PausingIssuer(SyntheticIssuer):
+            def issue(self, *, request, admission):
+                issuer_entered.set()
+                if not allow_issuer.wait(timeout=3):
+                    raise AssertionError("block did not reach the issuance lock")
+                issued = super().issue(request=request, admission=admission)
+                known_peer_ids.add(int(issued.local_device_id))
+                return issued
+
+        issuer = PausingIssuer(repo, user_id=user_id, server_id=server_id)
+        try:
+            service = _service(thread_harness, issuer=issuer)
+            request = _request(thread_harness)
+            token = service.decide(request).token
+            results["issuance"] = service.issue_after_confirmation(
+                request,
+                confirmation_token=token,
+            )
+            results["issuer_calls"] = len(issuer.calls)
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            conn.close()
+
+    def block_in_thread():
+        conn = connect(database_path)
+        conn.set_trace_callback(
+            lambda statement: block_begin_seen.set()
+            if statement.strip().upper() == "BEGIN IMMEDIATE"
+            else None
+        )
+        repo = Repository(conn)
+        try:
+            barrier = ProtocolIssuanceBarrierService(repo)
+            plan = barrier.begin_block(user_id)
+            removed = {int(row["id"]) for row in plan.devices}
+            removed_peer_ids.update(removed)
+            known_peer_ids.difference_update(removed)
+            results["block_complete"] = barrier.complete_block(
+                user_id,
+                removed_local_device_ids=removed,
+            )
+        except Exception as exc:
+            errors.append(exc)
+        finally:
+            block_finished.set()
+            conn.close()
+
+    issuance_thread = threading.Thread(target=issue_in_thread)
+    issuance_thread.start()
+    assert issuer_entered.wait(timeout=3)
+    block_thread = threading.Thread(target=block_in_thread)
+    block_thread.start()
+    assert block_begin_seen.wait(timeout=3)
+    assert not block_finished.is_set()
+    allow_issuer.set()
+    issuance_thread.join(timeout=3)
+    block_thread.join(timeout=3)
+
+    assert not issuance_thread.is_alive()
+    assert not block_thread.is_alive()
+    assert errors == []
+    issued_device_id = int(results["issuance"].issued_device_id)
+    assert results["issuer_calls"] == 1
+    assert issued_device_id in removed_peer_ids
+    assert known_peer_ids == set()
+    assert results["block_complete"] is True
+    verification_conn = connect(database_path)
+    verification_repo = Repository(verification_conn)
+    barrier = verification_repo.get_protocol_issuance_user_barrier(user_id)
+    assert barrier["state"] == "blocked"
+    verification_conn.close()
 
 
 def test_user_barrier_blocks_before_reservation_or_issuer(harness):

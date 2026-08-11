@@ -32,6 +32,10 @@ _AWG3_COMPATIBILITY_BLOCKS = frozenset(
 )
 
 
+class _UnsafeRecoveryPersistenceError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class SelfServiceIssuanceRequest:
     user_id: int
@@ -418,6 +422,8 @@ class SelfServiceIssuanceService:
                     actor_id=actor_id,
                     reason_code=reason_code,
                 )
+            except _UnsafeRecoveryPersistenceError:
+                raise
             except Exception as exc:
                 failure = exc
         if failure is not None:
@@ -524,27 +530,27 @@ class SelfServiceIssuanceService:
         reason_code: str,
     ) -> None:
         try:
-            with self._repo.transaction():
-                self._repo.mark_protocol_issuance_attempt_recovery_required(
-                    attempt_id,
-                    local_device_id=local_device_id,
-                    reason_code=reason_code,
-                )
-                self._repo.append_protocol_config_event(
-                    event_type="protocol_issuance_recovery_required",
-                    actor_kind=actor_kind,
-                    actor_id=actor_id,
-                    reason=reason_code,
-                    passport_device_id=request.passport_device_id,
-                    protocol_version=request.protocol_version.value,
-                    local_device_id=local_device_id,
-                    metadata={
-                        "attempt_id": attempt_id,
-                        "reason_code": reason_code,
-                    },
-                )
-        except Exception:
-            return
+            self._repo.mark_protocol_issuance_attempt_recovery_required(
+                attempt_id,
+                local_device_id=local_device_id,
+                reason_code=reason_code,
+            )
+        except Exception as exc:
+            raise _UnsafeRecoveryPersistenceError(str(exc)) from exc
+        with self._repo.transaction():
+            self._repo.append_protocol_config_event(
+                event_type="protocol_issuance_recovery_required",
+                actor_kind=actor_kind,
+                actor_id=actor_id,
+                reason=reason_code,
+                passport_device_id=request.passport_device_id,
+                protocol_version=request.protocol_version.value,
+                local_device_id=local_device_id,
+                metadata={
+                    "attempt_id": attempt_id,
+                    "reason_code": reason_code,
+                },
+            )
 
     @staticmethod
     def _blocked(

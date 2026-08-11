@@ -288,6 +288,105 @@ def test_phase14_migration_preserves_legacy_attempt_state_and_adds_owner_lineage
     assert columns["passport_device_id"] == 0
 
 
+@pytest.mark.parametrize("copied_legacy_rows", [0, 1])
+def test_phase14_migration_resumes_interrupted_legacy_copy_without_row_or_state_loss(
+    conn,
+    copied_legacy_rows,
+):
+    seed_user_server_device_and_passport(conn)
+    conn.execute(
+        """
+        CREATE TABLE protocol_issuance_attempts_legacy AS
+        SELECT
+            id, passport_device_id, protocol_version, request_fingerprint,
+            actor_kind, actor_id, client_application, client_platform,
+            client_version, client_build, runtime_instance_id,
+            compatibility_evidence_id, state, local_device_id, reason_code,
+            reserved_at, completed_at, cancelled_at, recovery_required_at,
+            created_at, updated_at
+        FROM protocol_issuance_attempts
+        WHERE 0
+        """
+    )
+    legacy_rows = (
+        (41, "cancelled", "interrupted_cancelled", "2026-08-10 10:01:00"),
+        (42, "recovery_required", "interrupted_recovery", "2026-08-10 10:02:00"),
+    )
+    for attempt_id, state, reason_code, timestamp in legacy_rows:
+        conn.execute(
+            """
+            INSERT INTO protocol_issuance_attempts_legacy (
+                id, passport_device_id, protocol_version, request_fingerprint,
+                actor_kind, actor_id, client_application, client_platform,
+                client_version, client_build, runtime_instance_id,
+                compatibility_evidence_id, state, local_device_id, reason_code,
+                reserved_at, completed_at, cancelled_at, recovery_required_at,
+                created_at, updated_at
+            ) VALUES (
+                ?, 'device-1', 'awg3', ?, 'user', 14001, 'amnezia_vpn',
+                'windows', '5.0.0.5', 'exact-build', 'rt-phase14-awg3',
+                'compat-phase14-awg3', ?, NULL, ?, ?, NULL,
+                CASE WHEN ? = 'cancelled' THEN ? END,
+                CASE WHEN ? = 'recovery_required' THEN ? END,
+                ?, ?
+            )
+            """,
+            (
+                attempt_id,
+                "sha256:" + str(attempt_id)[-1] * 64,
+                state,
+                reason_code,
+                timestamp,
+                state,
+                timestamp,
+                state,
+                timestamp,
+                timestamp,
+                timestamp,
+            ),
+        )
+    if copied_legacy_rows:
+        conn.execute(
+            """
+            INSERT INTO protocol_issuance_attempts (
+                id, owner_user_id, intended_passport_device_id,
+                passport_device_id, protocol_version, request_fingerprint,
+                actor_kind, actor_id, client_application, client_platform,
+                client_version, client_build, runtime_instance_id,
+                compatibility_evidence_id, state, local_device_id, reason_code,
+                reserved_at, completed_at, cancelled_at, recovery_required_at,
+                created_at, updated_at
+            )
+            SELECT
+                id, 1, passport_device_id, passport_device_id,
+                protocol_version, request_fingerprint, actor_kind, actor_id,
+                client_application, client_platform, client_version,
+                client_build, runtime_instance_id, compatibility_evidence_id,
+                state, local_device_id, reason_code, reserved_at, completed_at,
+                cancelled_at, recovery_required_at, created_at, updated_at
+            FROM protocol_issuance_attempts_legacy
+            WHERE id = 41
+            """
+        )
+    conn.commit()
+
+    initialize_schema(conn)
+    initialize_schema(conn)
+
+    attempts = conn.execute(
+        "SELECT id, owner_user_id, intended_passport_device_id, state, reason_code "
+        "FROM protocol_issuance_attempts ORDER BY id"
+    ).fetchall()
+    assert [tuple(row) for row in attempts] == [
+        (41, 1, "device-1", "cancelled", "interrupted_cancelled"),
+        (42, 1, "device-1", "recovery_required", "interrupted_recovery"),
+    ]
+    assert conn.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type = 'table' AND name = 'protocol_issuance_attempts_legacy'"
+    ).fetchone() is None
+
+
 def test_reservation_requires_active_exact_owner_without_barrier(conn):
     seed_user_server_device_and_passport(conn)
     repo = Repository(conn)

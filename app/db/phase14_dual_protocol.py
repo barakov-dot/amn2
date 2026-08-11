@@ -145,23 +145,31 @@ def _migrate_protocol_issuance_attempts(conn: sqlite3.Connection) -> None:
         str(row[1]): int(row[3])
         for row in conn.execute("PRAGMA table_info(protocol_issuance_attempts)")
     }
-    if not columns:
-        return
-    if (
+    legacy_exists = conn.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type = 'table' AND name = 'protocol_issuance_attempts_legacy'"
+    ).fetchone() is not None
+    canonical_exists = bool(columns) and (
         "owner_user_id" in columns
         and "intended_passport_device_id" in columns
         and columns.get("passport_device_id") == 0
-    ):
-        return
-
-    conn.execute("DROP INDEX IF EXISTS uq_protocol_issuance_blocking_attempt")
-    conn.execute(
-        "ALTER TABLE protocol_issuance_attempts "
-        "RENAME TO protocol_issuance_attempts_legacy"
     )
+    if canonical_exists and not legacy_exists:
+        return
+    if columns and not canonical_exists:
+        if legacy_exists:
+            raise RuntimeError("protocol issuance attempt migration is ambiguous")
+        conn.execute("DROP INDEX IF EXISTS uq_protocol_issuance_blocking_attempt")
+        conn.execute(
+            "ALTER TABLE protocol_issuance_attempts "
+            "RENAME TO protocol_issuance_attempts_legacy"
+        )
+        legacy_exists = True
+    if not legacy_exists:
+        return
     conn.executescript(
         """
-        CREATE TABLE protocol_issuance_attempts (
+        CREATE TABLE IF NOT EXISTS protocol_issuance_attempts (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             owner_user_id INTEGER NOT NULL,
             intended_passport_device_id TEXT NOT NULL,
@@ -193,9 +201,26 @@ def _migrate_protocol_issuance_attempts(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    legacy = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM protocol_issuance_attempts_legacy"
+        ).fetchone()[0]
+    )
+    mappable = int(
+        conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM protocol_issuance_attempts_legacy AS legacy
+            JOIN device_passports AS passports
+              ON passports.device_id = legacy.passport_device_id
+            """
+        ).fetchone()[0]
+    )
+    if mappable != legacy:
+        raise RuntimeError("protocol issuance attempt migration lost legacy rows")
     conn.execute(
         """
-        INSERT INTO protocol_issuance_attempts (
+        INSERT OR IGNORE INTO protocol_issuance_attempts (
             id, owner_user_id, intended_passport_device_id, passport_device_id,
             protocol_version, request_fingerprint, actor_kind, actor_id,
             client_application, client_platform, client_version, client_build,
@@ -233,14 +258,51 @@ def _migrate_protocol_issuance_attempts(conn: sqlite3.Connection) -> None:
         ORDER BY legacy.id
         """
     )
-    migrated = int(
-        conn.execute("SELECT COUNT(*) FROM protocol_issuance_attempts").fetchone()[0]
-    )
-    legacy = int(
+    mismatched = int(
         conn.execute(
-            "SELECT COUNT(*) FROM protocol_issuance_attempts_legacy"
+            """
+            SELECT COUNT(*) FROM (
+                SELECT
+                    legacy.id,
+                    passports.owner_user_id,
+                    legacy.passport_device_id,
+                    legacy.passport_device_id,
+                    legacy.protocol_version,
+                    legacy.request_fingerprint,
+                    legacy.actor_kind,
+                    legacy.actor_id,
+                    legacy.client_application,
+                    legacy.client_platform,
+                    legacy.client_version,
+                    legacy.client_build,
+                    legacy.runtime_instance_id,
+                    legacy.compatibility_evidence_id,
+                    legacy.state,
+                    legacy.local_device_id,
+                    legacy.reason_code,
+                    legacy.reserved_at,
+                    legacy.completed_at,
+                    legacy.cancelled_at,
+                    legacy.recovery_required_at,
+                    legacy.created_at,
+                    legacy.updated_at
+                FROM protocol_issuance_attempts_legacy AS legacy
+                JOIN device_passports AS passports
+                  ON passports.device_id = legacy.passport_device_id
+                EXCEPT
+                SELECT
+                    id, owner_user_id, intended_passport_device_id,
+                    passport_device_id, protocol_version, request_fingerprint,
+                    actor_kind, actor_id, client_application, client_platform,
+                    client_version, client_build, runtime_instance_id,
+                    compatibility_evidence_id, state, local_device_id,
+                    reason_code, reserved_at, completed_at, cancelled_at,
+                    recovery_required_at, created_at, updated_at
+                FROM protocol_issuance_attempts
+            )
+            """
         ).fetchone()[0]
     )
-    if migrated != legacy:
-        raise RuntimeError("protocol issuance attempt migration lost legacy rows")
+    if mismatched:
+        raise RuntimeError("protocol issuance attempt migration mismatched legacy rows")
     conn.execute("DROP TABLE protocol_issuance_attempts_legacy")
