@@ -1802,7 +1802,10 @@ class Repository:
         owner_user_id: int,
         *,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[sqlite3.Row]:
+        if offset < 0:
+            raise ValueError("device passport offset must not be negative")
         return self._conn.execute(
             """
             SELECT
@@ -1828,18 +1831,21 @@ class Repository:
             FROM device_passports
             WHERE owner_user_id = ?
             ORDER BY created_at DESC, device_id DESC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            (owner_user_id, limit),
+            (owner_user_id, limit, offset),
         ).fetchall()
 
     def list_device_passports(
         self,
         *,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[sqlite3.Row]:
         if not 1 <= limit <= 100:
             raise ValueError("device passport limit must be between 1 and 100")
+        if offset < 0:
+            raise ValueError("device passport offset must not be negative")
         return self._conn.execute(
             """
             SELECT
@@ -1864,9 +1870,9 @@ class Repository:
                 updated_at
             FROM device_passports
             ORDER BY updated_at DESC, device_id ASC
-            LIMIT ?
+            LIMIT ? OFFSET ?
             """,
-            (limit,),
+            (limit, offset),
         ).fetchall()
 
     def update_device_passport_observation(

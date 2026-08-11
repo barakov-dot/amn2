@@ -27,6 +27,8 @@ BUILD_STATE_EFFECTS = {
     ),
 }
 
+_PASSPORT_PAGE_SIZE = 100
+
 
 @dataclass(frozen=True)
 class ProtocolLifecycleTarget:
@@ -72,9 +74,7 @@ class ProtocolConfigLifecycleService:
         self._validate_actor_reason(actor_id, reason)
         self._repo.get_user(user_id)
         targets: list[ProtocolLifecycleTarget] = []
-        for passport in self._repo.list_device_passports_for_owner(
-            user_id, limit=10_000
-        ):
+        for passport in self._passport_rows(owner_user_id=user_id):
             targets.extend(self._targets_for_passport(str(passport["device_id"])))
         return tuple(
             sorted(
@@ -165,7 +165,7 @@ class ProtocolConfigLifecycleService:
     ) -> tuple[ProtocolProfile, ...]:
         self._validate_actor_reason(actor_id, reason)
         projected: list[ProtocolProfile] = []
-        for passport in self._repo.list_device_passports(limit=100):
+        for passport in self._passport_rows():
             row = self._repo.get_device_protocol_profile(
                 passport_device_id=str(passport["device_id"]),
                 protocol_version=ProtocolVersion.AWG3.value,
@@ -217,7 +217,7 @@ class ProtocolConfigLifecycleService:
     ) -> tuple[ProtocolProfile, ...]:
         projected: list[ProtocolProfile] = []
         seen: set[int] = set()
-        for passport in self._repo.list_device_passports(limit=100):
+        for passport in self._passport_rows():
             passport_device_id = str(passport["device_id"])
             for attempt in self._repo.list_protocol_issuance_attempts(
                 passport_device_id=passport_device_id,
@@ -245,6 +245,25 @@ class ProtocolConfigLifecycleService:
                     )
                 )
         return tuple(projected)
+
+    def _passport_rows(self, *, owner_user_id: int | None = None):
+        offset = 0
+        while True:
+            if owner_user_id is None:
+                rows = self._repo.list_device_passports(
+                    limit=_PASSPORT_PAGE_SIZE,
+                    offset=offset,
+                )
+            else:
+                rows = self._repo.list_device_passports_for_owner(
+                    owner_user_id,
+                    limit=_PASSPORT_PAGE_SIZE,
+                    offset=offset,
+                )
+            if not rows:
+                return
+            yield from rows
+            offset += len(rows)
 
     @staticmethod
     def _validate_actor_reason(actor_id: int, reason: str) -> None:

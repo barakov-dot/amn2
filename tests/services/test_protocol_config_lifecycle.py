@@ -219,6 +219,143 @@ def test_emergency_projection_changes_only_awg3_state_and_keeps_material_rows(
     assert "psk-awg" not in serialized
 
 
+def test_user_disable_pages_beyond_old_owner_limit_without_duplicates():
+    conn, repo, user_id, server_id = _empty_harness()
+    passport_ids = [f"owner-page-{index:05d}" for index in range(10_001)]
+    _bulk_insert_passports(conn, user_id=user_id, passport_ids=passport_ids)
+    profiles = DualProtocolProfileService(repo)
+    expected: set[tuple[str, int]] = set()
+    for sequence, passport_id in enumerate(
+        (passport_ids[10_000], passport_ids[1], passport_ids[0]),
+        start=10,
+    ):
+        local_device_id = _create_device(
+            repo,
+            user_id=user_id,
+            server_id=server_id,
+            sequence=sequence,
+            protocol="awg2",
+        )
+        profiles.attach_active(
+            passport_id,
+            ProtocolVersion.AWG2,
+            local_device_id,
+        )
+        expected.add((passport_id, local_device_id))
+
+    result = ProtocolConfigLifecycleService(repo).disable_user(
+        user_id=user_id,
+        actor_id=1,
+        reason="operator block",
+    )
+
+    actual = [(item.passport_device_id, item.local_device_id) for item in result]
+    assert len(actual) == len(set(actual))
+    assert set(actual) == expected
+
+
+def test_emergency_projection_pages_all_global_profiles_without_duplicates():
+    conn, repo, user_id, server_id = _empty_harness()
+    passport_ids = [f"global-page-{index:03d}" for index in range(201)]
+    _bulk_insert_passports(conn, user_id=user_id, passport_ids=passport_ids)
+    profiles = DualProtocolProfileService(repo)
+    expected = {passport_ids[index] for index in (0, 99, 100, 199, 200)}
+    for sequence, passport_id in enumerate(sorted(expected), start=20):
+        local_device_id = _create_device(
+            repo,
+            user_id=user_id,
+            server_id=server_id,
+            sequence=sequence,
+            protocol="awg3",
+        )
+        profiles.attach_active(
+            passport_id,
+            ProtocolVersion.AWG3,
+            local_device_id,
+        )
+
+    result = ProtocolConfigLifecycleService(repo).project_emergency_suspend(
+        actor_id=1,
+        reason="emergency runtime suspension",
+    )
+
+    actual = [item.passport_device_id for item in result]
+    assert len(actual) == len(set(actual))
+    assert set(actual) == expected
+    assert all(item.lifecycle_state == "temporarily_unavailable" for item in result)
+
+
+def test_build_projection_finds_matching_awg3_profile_after_first_global_page():
+    conn, repo, user_id, server_id = _empty_harness()
+    passport_ids = [f"build-page-{index:03d}" for index in range(101)]
+    _bulk_insert_passports(conn, user_id=user_id, passport_ids=passport_ids)
+    target_passport_id = passport_ids[100]
+    local_device_id = _create_device(
+        repo,
+        user_id=user_id,
+        server_id=server_id,
+        sequence=30,
+        protocol="awg3",
+    )
+    attempt = repo.reserve_protocol_issuance_attempt(
+        passport_device_id=target_passport_id,
+        protocol_version="awg3",
+        request_fingerprint="sha256:" + "3" * 64,
+        actor_kind="user",
+        actor_id=user_id,
+        client_application="amnezia_vpn",
+        client_platform="windows",
+        client_version="5.0.0.5",
+        client_build="build-14",
+        runtime_instance_id="runtime-awg3",
+        compatibility_evidence_id="compat-build-14",
+    )
+    assert attempt is not None
+    profile = DualProtocolProfileService(repo).attach_active(
+        target_passport_id,
+        ProtocolVersion.AWG3,
+        local_device_id,
+    )
+    repo.complete_protocol_issuance_attempt(
+        int(attempt["id"]), local_device_id=local_device_id
+    )
+    repo.upsert_client_build_acceptance(
+        application="amnezia_vpn",
+        platform="windows",
+        client_version="5.0.0.5",
+        client_build="build-14",
+        state="accepted",
+        evidence_ids=("compat-build-14",),
+        actor_id=1,
+        reason="accepted fixture",
+    )
+
+    result = ProtocolConfigLifecycleService(repo).apply_build_state(
+        _exact_build(), "compatibility_rejected"
+    )
+
+    assert [item.profile_id for item in result.affected_profiles] == [profile.profile_id]
+    assert DualProtocolProfileService(repo).get(
+        profile.profile_id
+    ).lifecycle_state == "review_required"
+
+
+def test_passport_pagination_rejects_negative_offsets_with_value_error():
+    _, repo, user_id, _ = _empty_harness()
+    calls = (
+        lambda: repo.list_device_passports_for_owner(user_id, offset=-1),
+        lambda: repo.list_device_passports(offset=-1),
+    )
+
+    for call in calls:
+        try:
+            call()
+        except Exception as exc:
+            assert type(exc) is ValueError
+        else:
+            raise AssertionError("negative offset must fail")
+
+
 def _exact_build() -> ClientIdentity:
     return ClientIdentity(
         "amnezia_vpn",
@@ -226,6 +363,61 @@ def _exact_build() -> ClientIdentity:
         "5.0.0.5",
         build_id="build-14",
     )
+
+
+def _empty_harness() -> tuple[sqlite3.Connection, Repository, int, int]:
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    initialize_schema(conn)
+    repo = Repository(conn)
+    user_id = repo.upsert_user(
+        telegram_id=14007,
+        username="pagination-user",
+        first_name="Pagination",
+        last_name="User",
+    )
+    server_id = repo.ensure_default_server(
+        name="pagination-server",
+        network_cidr="10.215.0.0/16",
+    )
+    return conn, repo, user_id, server_id
+
+
+def _bulk_insert_passports(
+    conn: sqlite3.Connection,
+    *,
+    user_id: int,
+    passport_ids: list[str],
+) -> None:
+    conn.executemany(
+        """
+        INSERT INTO device_passports (
+            device_id,
+            owner_user_id,
+            local_device_id,
+            platform,
+            official_client_type,
+            client_version,
+            import_method,
+            config_schema_version,
+            config_fingerprint,
+            created_at,
+            updated_at
+        ) VALUES (?, ?, NULL, 'windows', 'amnezia_vpn', '5.0.0.5',
+                  'conf_file', 'amneziawg_v2', ?, ?, ?)
+        """,
+        [
+            (
+                passport_id,
+                user_id,
+                "sha256:" + f"{index:x}".ljust(64, "0")[:64],
+                "2026-08-11 00:00:00",
+                "2026-08-11 00:00:00",
+            )
+            for index, passport_id in enumerate(passport_ids)
+        ],
+    )
+    conn.commit()
 
 
 def _create_device(
