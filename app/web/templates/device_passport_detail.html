@@ -95,21 +95,15 @@
           <div><dt>Evidence</dt><dd class="wrap-text">{{ profile.compatibility_evidence_id or "-" }}</dd></div>
           <div><dt>Evidence status</dt><dd>{{ profile.client_identity_evidence_status }}</dd></div>
         </dl>
+        <p class="action-note">Доступно только в аутентифицированной админ-сессии; каждое открытие аудируется.</p>
+        <p>
+          <a href="/device-passports/{{ passport.device_id }}/config?protocol={{ profile.protocol_version }}">Открыть .conf</a>
+          ·
+          <a href="/device-passports/{{ passport.device_id }}/qr?protocol={{ profile.protocol_version }}">Открыть QR</a>
+        </p>
       </article>
     {% endfor %}
   </section>
-
-  {% if passport.local_device_id %}
-    <section class="panel">
-      <div class="panel-header"><h2>Секретный материал</h2></div>
-      <p class="action-note">Доступно только в аутентифицированной админ-сессии; каждое открытие аудируется.</p>
-      <p>
-        <a href="/device-passports/{{ passport.device_id }}/config">Открыть .conf</a>
-        ·
-        <a href="/device-passports/{{ passport.device_id }}/qr">Открыть QR</a>
-      </p>
-    </section>
-  {% endif %}
 
   <section class="panel">
     <div class="panel-header"><h2>Жизненный цикл</h2></div>

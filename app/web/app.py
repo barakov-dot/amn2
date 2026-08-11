@@ -776,7 +776,11 @@ def create_web_app(
         )
 
     @app.get("/device-passports/{device_id}/config")
-    async def device_passport_config_secret(request: Request, device_id: str):
+    async def device_passport_config_secret(
+        request: Request,
+        device_id: str,
+        protocol: str | None = None,
+    ):
         if not _is_authenticated(request):
             return RedirectResponse("/login", status_code=303)
         try:
@@ -784,6 +788,7 @@ def create_web_app(
                 actual_settings,
                 request,
                 passport_device_id=device_id,
+                protocol_version=protocol,
             )
         except LookupError:
             return PlainTextResponse("Device passport not found", status_code=404)
@@ -800,7 +805,11 @@ def create_web_app(
         )
 
     @app.get("/device-passports/{device_id}/qr")
-    async def device_passport_qr_secret(request: Request, device_id: str):
+    async def device_passport_qr_secret(
+        request: Request,
+        device_id: str,
+        protocol: str | None = None,
+    ):
         if not _is_authenticated(request):
             return RedirectResponse("/login", status_code=303)
         try:
@@ -808,6 +817,7 @@ def create_web_app(
                 actual_settings,
                 request,
                 passport_device_id=device_id,
+                protocol_version=protocol,
             )
         except LookupError:
             return PlainTextResponse("Device passport not found", status_code=404)
@@ -3627,14 +3637,30 @@ def _build_and_audit_passport_secret(
     request: Request,
     *,
     passport_device_id: str,
+    protocol_version: str | None,
 ):
+    selected_protocol = "awg2" if protocol_version is None else protocol_version
+    if selected_protocol not in {"awg2", "awg3"}:
+        raise ConfigMaterialUnavailable("Unsupported device protocol profile")
     with _open_repository(settings) as (repo, _conn):
         with repo.transaction():
             passport = repo.get_device_passport(passport_device_id)
-            if passport is None or passport["local_device_id"] is None:
+            if passport is None:
                 raise LookupError("Device passport not found")
-            local_device_id = int(passport["local_device_id"])
+            profile = repo.get_device_protocol_profile(
+                passport_device_id=passport_device_id,
+                protocol_version=selected_protocol,
+            )
+            if profile is None or str(profile["lifecycle_state"]) != "active":
+                raise ConfigMaterialUnavailable("Device protocol profile is unavailable")
+            local_device_id = int(profile["local_device_id"])
             device = repo.get_device(local_device_id)
+            if (
+                device is None
+                or int(device["user_id"]) != int(passport["owner_user_id"])
+                or str(device["protocol_version"]) != selected_protocol
+            ):
+                raise ConfigMaterialUnavailable("Device protocol profile is unavailable")
             result = build_device_config_delivery(
                 repo=repo,
                 secret_box=SecretBox.from_app_secret(settings.app_secret_key),
@@ -3648,11 +3674,7 @@ def _build_and_audit_passport_secret(
                 actor_id=_web_admin_actor_id(settings),
                 reason="authenticated admin secret view",
                 passport_device_id=passport_device_id,
-                protocol_version=(
-                    str(device["protocol_version"])
-                    if device["protocol_version"] is not None
-                    else None
-                ),
+                protocol_version=selected_protocol,
                 local_device_id=local_device_id,
                 metadata={
                     "passport_device_id": passport_device_id,

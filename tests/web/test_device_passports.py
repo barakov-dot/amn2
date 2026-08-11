@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
 from app.config.settings import Settings
+from app.bot.delivery import ConfigDeliveryPackage
 from app.db.connection import connect
 from app.db.repositories import Repository
 from app.db.schema import initialize_schema
@@ -62,6 +64,14 @@ def test_device_passport_list_and_detail_render_safe_read_only_metadata(
     assert "5.0.0.5" in detail.text
     assert "win-5005-stable" in detail.text
     assert "compat-win-5005-awg3" in detail.text
+    assert re.search(
+        rf'data-protocol="awg2"[\s\S]*?href="/device-passports/{passport_id}/config\?protocol=awg2"',
+        detail.text,
+    )
+    assert re.search(
+        rf'data-protocol="awg3"[\s\S]*?href="/device-passports/{passport_id}/config\?protocol=awg3"',
+        detail.text,
+    )
     for forbidden in (
         "never-render-this-private-config",
         "encrypted-web-private-key",
@@ -89,19 +99,171 @@ def test_device_passport_secret_config_and_qr_are_admin_only_and_audited(tmp_pat
     conn = connect(Path(settings.database_path))
     try:
         rows = conn.execute(
-            "SELECT event_type, metadata_json FROM protocol_config_events "
+            "SELECT event_type, protocol_version, local_device_id, metadata_json "
+            "FROM protocol_config_events "
             "WHERE event_type = 'config_secret_viewed' ORDER BY id"
         ).fetchall()
+        awg2_profile = conn.execute(
+            "SELECT local_device_id FROM device_protocol_profiles "
+            "WHERE passport_device_id = ? AND protocol_version = 'awg2'",
+            (passport_id,),
+        ).fetchone()
     finally:
         conn.close()
     assert [row["event_type"] for row in rows] == [
         "config_secret_viewed",
         "config_secret_viewed",
     ]
+    assert [(row["protocol_version"], row["local_device_id"]) for row in rows] == [
+        ("awg2", int(awg2_profile["local_device_id"])),
+        ("awg2", int(awg2_profile["local_device_id"])),
+    ]
     assert [set(json.loads(row["metadata_json"])) for row in rows] == [
         {"passport_device_id", "local_device_id"},
         {"passport_device_id", "local_device_id"},
     ]
+
+
+def test_device_passport_secret_routes_select_exact_protocol_profiles(
+    tmp_path: Path,
+    monkeypatch,
+):
+    settings, passport_id = _seed_database(tmp_path)
+    conn = connect(Path(settings.database_path))
+    try:
+        profiles = {
+            str(row["protocol_version"]): int(row["local_device_id"])
+            for row in conn.execute(
+                "SELECT protocol_version, local_device_id "
+                "FROM device_protocol_profiles WHERE passport_device_id = ?",
+                (passport_id,),
+            ).fetchall()
+        }
+    finally:
+        conn.close()
+    selected_device_ids = []
+
+    def synthetic_delivery(**kwargs):
+        device_id = int(kwargs["device"]["id"])
+        selected_device_ids.append(device_id)
+        return SimpleNamespace(
+            delivery=ConfigDeliveryPackage(
+                template_key="config_ready",
+                message_text="synthetic profile delivery",
+                config_filename=f"synthetic-{device_id}.conf",
+                config_bytes=f"synthetic-config-{device_id}".encode(),
+                qr_filename=f"synthetic-{device_id}.qr.png",
+                qr_png_bytes=b"\x89PNG\r\n\x1a\n" + str(device_id).encode(),
+                vpn_import_link="vpn://synthetic-profile-only",
+            )
+        )
+
+    monkeypatch.setattr("app.web.app.build_device_config_delivery", synthetic_delivery)
+    client = _authenticated_client(settings)
+
+    awg2_default = client.get(f"/device-passports/{passport_id}/config")
+    awg3_config = client.get(
+        f"/device-passports/{passport_id}/config?protocol=awg3"
+    )
+    awg2_qr = client.get(f"/device-passports/{passport_id}/qr?protocol=awg2")
+    awg3_qr = client.get(f"/device-passports/{passport_id}/qr?protocol=awg3")
+
+    assert awg2_default.content == f"synthetic-config-{profiles['awg2']}".encode()
+    assert awg3_config.content == f"synthetic-config-{profiles['awg3']}".encode()
+    assert awg2_qr.content.endswith(str(profiles["awg2"]).encode())
+    assert awg3_qr.content.endswith(str(profiles["awg3"]).encode())
+    assert selected_device_ids == [
+        profiles["awg2"],
+        profiles["awg3"],
+        profiles["awg2"],
+        profiles["awg3"],
+    ]
+    conn = connect(Path(settings.database_path))
+    try:
+        audited = conn.execute(
+            "SELECT protocol_version, local_device_id, metadata_json "
+            "FROM protocol_config_events WHERE event_type = 'config_secret_viewed' "
+            "ORDER BY id"
+        ).fetchall()
+    finally:
+        conn.close()
+    assert [(row["protocol_version"], row["local_device_id"]) for row in audited] == [
+        ("awg2", profiles["awg2"]),
+        ("awg3", profiles["awg3"]),
+        ("awg2", profiles["awg2"]),
+        ("awg3", profiles["awg3"]),
+    ]
+    assert all(
+        set(json.loads(row["metadata_json"]))
+        == {"passport_device_id", "local_device_id"}
+        for row in audited
+    )
+
+
+def test_device_passport_secret_routes_fail_closed_without_exact_active_profile(
+    tmp_path: Path,
+    monkeypatch,
+):
+    settings, passport_id = _seed_database(tmp_path)
+    delivery_calls = []
+
+    def unexpected_delivery(**kwargs):
+        device_id = int(kwargs["device"]["id"])
+        delivery_calls.append(device_id)
+        return SimpleNamespace(delivery=ConfigDeliveryPackage(
+            template_key="config_ready",
+            message_text="synthetic unexpected delivery",
+            config_filename="synthetic-unexpected.conf",
+            config_bytes=b"synthetic-unexpected-config",
+            qr_filename="synthetic-unexpected.qr.png",
+            qr_png_bytes=b"\x89PNG\r\n\x1a\nsynthetic-unexpected",
+            vpn_import_link="vpn://synthetic-unexpected-only",
+        ))
+
+    monkeypatch.setattr(
+        "app.web.app.build_device_config_delivery",
+        unexpected_delivery,
+    )
+    client = _authenticated_client(settings)
+
+    invalid = client.get(
+        f"/device-passports/{passport_id}/config?protocol=not-a-protocol"
+    )
+    conn = connect(Path(settings.database_path))
+    try:
+        awg3_profile = conn.execute(
+            "SELECT id FROM device_protocol_profiles "
+            "WHERE passport_device_id = ? AND protocol_version = 'awg3'",
+            (passport_id,),
+        ).fetchone()
+        Repository(conn).update_device_protocol_profile(
+            profile_id=int(awg3_profile["id"]),
+            lifecycle_state="review_required",
+            replacement_device_id=None,
+        )
+    finally:
+        conn.close()
+    inactive = client.get(
+        f"/device-passports/{passport_id}/config?protocol=awg3"
+    )
+    conn = connect(Path(settings.database_path))
+    try:
+        conn.execute(
+            "DELETE FROM device_protocol_profiles "
+            "WHERE passport_device_id = ? AND protocol_version = 'awg3'",
+            (passport_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    missing = client.get(f"/device-passports/{passport_id}/qr?protocol=awg3")
+
+    assert (invalid.status_code, inactive.status_code, missing.status_code) == (
+        400,
+        400,
+        400,
+    )
+    assert delivery_calls == []
 
 
 def test_device_passport_detail_returns_fixed_not_found(tmp_path: Path):

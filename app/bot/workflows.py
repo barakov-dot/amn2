@@ -112,6 +112,11 @@ def _token_digest(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+_TERMINAL_AWG3_CONFIRMATION_REASONS = frozenset(
+    {"profile_already_exists", "confirmation_expired", "invalid_confirmation"}
+)
+
+
 class BotWorkflow:
     def __init__(
         self,
@@ -241,6 +246,14 @@ class BotWorkflow:
             confirmation_token=confirmation_token,
         )
         if result.status != "issued" or result.issued_device_id is None:
+            if (
+                result.status == "blocked"
+                and result.reason_code in _TERMINAL_AWG3_CONFIRMATION_REASONS
+            ):
+                self._awg3_pending_requests.pop(
+                    _token_digest(confirmation_token),
+                    None,
+                )
             return Awg3Confirmation(result=result, delivery=None)
         if self._awg3_delivery_builder is None:
             device = self._repo.get_user_device(

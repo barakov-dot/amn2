@@ -40,7 +40,7 @@ def test_list_view_contains_safe_owner_and_status_metadata():
 
 
 def test_detail_view_contains_lifecycle_and_capability_boundary():
-    _, repo, user_id, _, passport_id = _seed_passport()
+    _, repo, user_id, awg2_device_id, passport_id = _seed_passport()
 
     view = build_device_passport_detail_view(repo, passport_id)
 
@@ -54,6 +54,8 @@ def test_detail_view_contains_lifecycle_and_capability_boundary():
         "awg2",
         "awg3",
     ]
+    assert view["protocol_cards"][0]["local_device_id"] == awg2_device_id
+    assert view["protocol_cards"][1]["local_device_id"] != awg2_device_id
     awg3 = view["protocol_cards"][1]
     assert awg3["runtime_instance_id"] == "rt-spain-awg3"
     assert awg3["client_version"] == "5.0.0.5"

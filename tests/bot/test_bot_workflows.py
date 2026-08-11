@@ -1437,6 +1437,11 @@ def test_awg3_confirm_rejects_wrong_owner_before_issuance_or_secret_loading(tmp_
     )
     service = RecordingSelfServiceIssuanceService()
     delivery_calls = []
+
+    def build_delivery(device_id):
+        delivery_calls.append(device_id)
+        return _synthetic_awg3_delivery()
+
     workflow = BotWorkflow(
         repo=repo,
         admin_telegram_ids=set(),
@@ -1446,7 +1451,7 @@ def test_awg3_confirm_rejects_wrong_owner_before_issuance_or_secret_loading(tmp_
                 "amnezia_vpn", "windows", "5.0.0.5", build_id="win-5005-stable"
             ),
         ),
-        awg3_delivery_builder=lambda device_id: delivery_calls.append(device_id),
+        awg3_delivery_builder=build_delivery,
     )
     workflow.request_awg3(
         telegram_id=700,
@@ -1455,16 +1460,147 @@ def test_awg3_confirm_rejects_wrong_owner_before_issuance_or_secret_loading(tmp_
     )
 
     result = workflow.confirm_awg3(telegram_id=701, confirmation_token="token-1")
+    owner_result = workflow.confirm_awg3(
+        telegram_id=700,
+        confirmation_token="token-1",
+    )
 
     assert result is None
-    assert service.confirm_calls == []
-    assert delivery_calls == []
+    assert len(service.confirm_calls) == 1
+    assert owner_result.delivery.config_filename == "synthetic-awg3.conf"
+    assert delivery_calls == [42]
+
+
+@pytest.mark.parametrize(
+    "reason_code",
+    ["profile_already_exists", "confirmation_expired", "invalid_confirmation"],
+)
+def test_awg3_terminal_confirmation_result_removes_same_owner_pending_request(
+    tmp_path,
+    reason_code,
+):
+    repo = _repo(tmp_path)
+    user_id = repo.upsert_user(
+        telegram_id=700,
+        username="awg3-owner",
+        first_name="AWG3",
+        last_name="Owner",
+    )
+    passport = create_device_passport(
+        repo,
+        owner_user_id=user_id,
+        local_device_id=None,
+        platform="windows",
+        official_client_type="amnezia_vpn",
+        client_version="5.0.0.5",
+        import_method="standard_conf",
+        config_schema_version="amneziawg_v2",
+        config_text="synthetic-terminal-fingerprint-source",
+    )
+    blocked = SelfServiceIssuanceResult(
+        status="blocked",
+        protocol_version=ProtocolVersion.AWG3,
+        reason_code=reason_code,
+        offer_awg2=False,
+        issued_device_id=None,
+        token=None,
+    )
+    service = RecordingSelfServiceIssuanceService(
+        confirmation_results=[blocked]
+    )
+    workflow = BotWorkflow(
+        repo=repo,
+        admin_telegram_ids=set(),
+        self_service_issuance_service=service,
+        awg3_client_choices=(
+            ClientIdentity(
+                "amnezia_vpn", "windows", "5.0.0.5", build_id="win-5005-stable"
+            ),
+        ),
+        awg3_delivery_builder=lambda _device_id: _synthetic_awg3_delivery(),
+    )
+    workflow.request_awg3(
+        telegram_id=700,
+        passport_device_id=passport.device_id,
+        build_id="win-5005-stable",
+    )
+
+    first = workflow.confirm_awg3(telegram_id=700, confirmation_token="token-1")
+    replay = workflow.confirm_awg3(telegram_id=700, confirmation_token="token-1")
+
+    assert first.result.reason_code == reason_code
+    assert replay is None
+    assert len(service.confirm_calls) == 1
+
+
+def test_awg3_transient_confirmation_block_keeps_same_owner_pending_request(tmp_path):
+    repo = _repo(tmp_path)
+    user_id = repo.upsert_user(
+        telegram_id=700,
+        username="awg3-owner",
+        first_name="AWG3",
+        last_name="Owner",
+    )
+    passport = create_device_passport(
+        repo,
+        owner_user_id=user_id,
+        local_device_id=None,
+        platform="windows",
+        official_client_type="amnezia_vpn",
+        client_version="5.0.0.5",
+        import_method="standard_conf",
+        config_schema_version="amneziawg_v2",
+        config_text="synthetic-transient-fingerprint-source",
+    )
+    transient = SelfServiceIssuanceResult(
+        status="blocked",
+        protocol_version=ProtocolVersion.AWG3,
+        reason_code="blocked_issuance_disabled",
+        offer_awg2=False,
+        issued_device_id=None,
+        token=None,
+    )
+    issued = SelfServiceIssuanceResult(
+        status="issued",
+        protocol_version=ProtocolVersion.AWG3,
+        reason_code="issued",
+        offer_awg2=False,
+        issued_device_id=42,
+        token=None,
+    )
+    service = RecordingSelfServiceIssuanceService(
+        confirmation_results=[transient, issued]
+    )
+    workflow = BotWorkflow(
+        repo=repo,
+        admin_telegram_ids=set(),
+        self_service_issuance_service=service,
+        awg3_client_choices=(
+            ClientIdentity(
+                "amnezia_vpn", "windows", "5.0.0.5", build_id="win-5005-stable"
+            ),
+        ),
+        awg3_delivery_builder=lambda _device_id: _synthetic_awg3_delivery(),
+    )
+    workflow.request_awg3(
+        telegram_id=700,
+        passport_device_id=passport.device_id,
+        build_id="win-5005-stable",
+    )
+
+    first = workflow.confirm_awg3(telegram_id=700, confirmation_token="token-1")
+    second = workflow.confirm_awg3(telegram_id=700, confirmation_token="token-1")
+
+    assert first.result.reason_code == "blocked_issuance_disabled"
+    assert second.delivery.config_filename == "synthetic-awg3.conf"
+    assert len(service.confirm_calls) == 2
 
 
 class RecordingSelfServiceIssuanceService:
-    def __init__(self):
+    def __init__(self, *, confirmation_results=None):
         self.decide_calls = []
         self.confirm_calls = []
+        self.confirmation_results = list(confirmation_results or [])
 
     def decide(self, request):
         self.decide_calls.append(request)
@@ -1479,6 +1615,8 @@ class RecordingSelfServiceIssuanceService:
 
     def issue_after_confirmation(self, request, *, confirmation_token):
         self.confirm_calls.append((request, confirmation_token))
+        if self.confirmation_results:
+            return self.confirmation_results.pop(0)
         return SelfServiceIssuanceResult(
             status="issued",
             protocol_version=ProtocolVersion.AWG3,
