@@ -20,6 +20,8 @@ from app.services.device_passports import (
     attach_passport_to_local_device,
     fingerprint_config,
 )
+from app.services.dual_protocol_profiles import DualProtocolProfileService
+from app.vpn.protocol_versions import ProtocolVersion
 from app.web.app import create_web_app
 from app.web.auth import create_password_hash
 
@@ -654,6 +656,110 @@ def test_disable_user_vpn_revokes_remote_peers_and_keeps_user_row(
         latest_action = repo.list_admin_actions_for_target_user(user_id)[0]
         assert latest_action["action"] == "web_user_disable_vpn"
         assert '"disabled_device_count": 1' in latest_action["metadata_json"]
+
+
+def test_disable_user_vpn_targets_both_protocol_profiles(
+    tmp_path: Path,
+    monkeypatch,
+):
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        web_app,
+        "ServerConfigPeerApplier",
+        _fake_peer_applier(calls),
+    )
+    server_config_path = _write_server_config(tmp_path, server_name="local")
+    settings = _settings(
+        tmp_path,
+        vps_apply_enabled=True,
+        server_config_path=server_config_path,
+    )
+    user_id = _seed_user(
+        Path(settings.database_path),
+        telegram_id=6116,
+        username="dual-disable",
+        first_name="Dual",
+        last_name="Disable",
+    )
+    passport_id, awg2_device_id, awg3_device_id = _seed_dual_protocol_passport(
+        Path(settings.database_path), user_id=user_id
+    )
+    client = _authenticated_client(settings)
+
+    detail = client.get(f"/users/{user_id}")
+    response = client.post(
+        f"/users/{user_id}/disable-vpn",
+        data={"csrf_token": _csrf_token(detail.text)},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert set(calls) == {
+        ("local", f"dual-awg2-public-{user_id}"),
+        ("local", f"dual-awg3-public-{user_id}"),
+    }
+    with _repo(Path(settings.database_path)) as repo:
+        assert repo.get_device(awg2_device_id)["status"] == "disabled"
+        assert repo.get_device(awg3_device_id)["status"] == "disabled"
+        profiles = DualProtocolProfileService(repo).for_passport(passport_id)
+        assert [profile.lifecycle_state for profile in profiles] == ["active", "active"]
+        action = repo.list_admin_actions_for_target_user(user_id)[0]
+        metadata = json.loads(action["metadata_json"])
+        assert {
+            (item["passport_device_id"], item["protocol_version"])
+            for item in metadata["protocol_targets"]
+        } == {(passport_id, "awg2"), (passport_id, "awg3")}
+        serialized = json.dumps(metadata)
+        assert "dual-awg2-private" not in serialized
+        assert "dual-awg3-psk" not in serialized
+
+
+def test_delete_dual_protocol_config_revokes_only_selected_profile(
+    tmp_path: Path,
+    monkeypatch,
+):
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        web_app,
+        "ServerConfigPeerApplier",
+        _fake_peer_applier(calls),
+    )
+    server_config_path = _write_server_config(tmp_path, server_name="local")
+    settings = _settings(
+        tmp_path,
+        vps_apply_enabled=True,
+        server_config_path=server_config_path,
+    )
+    user_id = _seed_user(
+        Path(settings.database_path),
+        telegram_id=6126,
+        username="dual-config-revoke",
+        first_name="Dual",
+        last_name="Config",
+    )
+    passport_id, awg2_device_id, awg3_device_id = _seed_dual_protocol_passport(
+        Path(settings.database_path), user_id=user_id
+    )
+    client = _authenticated_client(settings)
+
+    detail = client.get(f"/users/{user_id}")
+    response = client.post(
+        f"/users/{user_id}/devices/{awg3_device_id}/delete",
+        data={"csrf_token": _csrf_token(detail.text)},
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 303
+    assert calls == [("local", f"dual-awg3-public-{user_id}")]
+    with _repo(Path(settings.database_path)) as repo:
+        assert repo.get_device(awg3_device_id)["status"] == "revoked"
+        assert repo.get_device(awg2_device_id)["status"] == "active"
+        profiles = DualProtocolProfileService(repo).for_passport(passport_id)
+        assert [(profile.protocol_version.value, profile.lifecycle_state) for profile in profiles] == [
+            ("awg2", "active"),
+            ("awg3", "revoked"),
+        ]
+        assert repo.get_device_passport(passport_id)["revoked_at"] is None
 
 
 def test_disable_user_vpn_with_apply_disabled_marks_local_devices_only(tmp_path: Path):
@@ -1487,6 +1593,65 @@ def _seed_devices(database_path: Path, *, user_id: int) -> None:
             reason="test",
             revoked_at="2026-05-29T10:00:00Z",
         )
+    finally:
+        conn.close()
+
+
+def _seed_dual_protocol_passport(
+    database_path: Path,
+    *,
+    user_id: int,
+) -> tuple[str, int, int]:
+    conn = connect(database_path)
+    try:
+        initialize_schema(conn)
+        repo = Repository(conn)
+        server_id = repo.ensure_default_server(
+            name="local", network_cidr="10.8.0.0/24"
+        )
+        awg2_device_id = repo.create_device(
+            user_id=user_id,
+            server_id=server_id,
+            name="dual-awg2",
+            duration_days=7,
+            vpn_ip=f"10.8.1.{user_id + 2}",
+            peer_public_key=f"dual-awg2-public-{user_id}",
+            peer_private_key_encrypted="dual-awg2-private",
+            preshared_key_encrypted="dual-awg2-psk",
+            config_version="amneziawg_v2",
+            protocol_version="awg2",
+        )
+        awg3_device_id = repo.create_device(
+            user_id=user_id,
+            server_id=server_id,
+            name="dual-awg3",
+            duration_days=7,
+            vpn_ip=f"10.8.2.{user_id + 2}",
+            peer_public_key=f"dual-awg3-public-{user_id}",
+            peer_private_key_encrypted="dual-awg3-private",
+            preshared_key_encrypted="dual-awg3-psk",
+            config_version="amneziawg_v3",
+            protocol_version="awg3",
+        )
+        passport_id = f"device-web-dual-{user_id}"
+        repo.create_device_passport(
+            device_id=passport_id,
+            owner_user_id=user_id,
+            local_device_id=awg2_device_id,
+            platform="windows",
+            official_client_type="amnezia_vpn",
+            client_version="5.0.0.5",
+            import_method="conf_file",
+            config_schema_version="amneziawg_v2",
+            config_fingerprint="sha256:" + f"{user_id:x}".ljust(64, "0")[:64],
+            last_seen_at=None,
+            acceptance_evidence=None,
+            protocol_version="awg2",
+        )
+        profiles = DualProtocolProfileService(repo)
+        profiles.attach_active(passport_id, ProtocolVersion.AWG2, awg2_device_id)
+        profiles.attach_active(passport_id, ProtocolVersion.AWG3, awg3_device_id)
+        return passport_id, awg2_device_id, awg3_device_id
     finally:
         conn.close()
 

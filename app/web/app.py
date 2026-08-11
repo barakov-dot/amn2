@@ -40,7 +40,11 @@ from app.server_config.loader import select_server
 from app.services.access import RemoteOperationPartialFailure
 from app.services.config_material import ConfigMaterialUnavailable
 from app.services.config_delivery import build_device_config_delivery
-from app.services.device_revoke import cascade_revoke_physical_device
+from app.services.device_revoke import (
+    cascade_revoke_physical_device,
+    cascade_revoke_protocol_config,
+)
+from app.services.protocol_config_lifecycle import ProtocolConfigLifecycleService
 from app.config_assignment import (
     CONFIG_ASSIGNMENT_MODES,
     DEDICATED_DEVICE,
@@ -3388,6 +3392,11 @@ def _disable_user_vpn(settings: Settings, request: Request, user_id: int) -> int
     with _open_repository(settings) as (repo, _conn):
         user = _row_to_dict(repo.get_user(user_id))
         devices = [_row_to_dict(row) for row in repo.list_user_devices_for_vpn_removal(user_id)]
+        protocol_targets = ProtocolConfigLifecycleService(repo).disable_user(
+            user_id=user_id,
+            actor_id=_web_admin_actor_id(settings),
+            reason="web_disable_vpn",
+        )
 
     vps_apply = _revoke_devices_from_vpn(settings, devices)
     disabled_at = utc_now_iso()
@@ -3412,6 +3421,9 @@ def _disable_user_vpn(settings: Settings, request: Request, user_id: int) -> int
                     "device_names": [str(device["name"]) for device in devices],
                     "disabled_device_count": disabled_count,
                     "vps_apply": vps_apply,
+                    "protocol_targets": [
+                        target.safe_metadata() for target in protocol_targets
+                    ],
                 },
             )
     return disabled_count
@@ -3481,15 +3493,34 @@ def _delete_user_device(
                 },
             )
 
-        cascade_revoke_physical_device(
-            repo,
-            local_device_id=device_id,
-            reason="web_admin_physical_device_revoke",
-            revoked_at=datetime.now(timezone.utc),
-            peer_remover=peer_remover,
-            apply_remote=remote_required and settings.vps_apply_enabled,
-            audit_recorder=record_audit,
-        )
+        profile = repo.get_device_protocol_profile_by_local_device_id(device_id)
+        if profile is None:
+            cascade_revoke_physical_device(
+                repo,
+                local_device_id=device_id,
+                reason="web_admin_physical_device_revoke",
+                revoked_at=datetime.now(timezone.utc),
+                peer_remover=peer_remover,
+                apply_remote=remote_required and settings.vps_apply_enabled,
+                audit_recorder=record_audit,
+            )
+        else:
+            ProtocolConfigLifecycleService(repo).revoke_config(
+                local_device_id=device_id,
+                actor_id=_web_admin_actor_id(settings),
+                reason="web_admin_protocol_config_revoke",
+            )
+            cascade_revoke_protocol_config(
+                repo,
+                local_device_id=device_id,
+                reason="web_admin_protocol_config_revoke",
+                revoked_at=datetime.now(timezone.utc),
+                peer_remover=peer_remover,
+                apply_remote=remote_required and settings.vps_apply_enabled,
+                actor_kind="admin",
+                actor_id=_web_admin_actor_id(settings),
+                audit_recorder=record_audit,
+            )
 
 
 class _SingleDeviceWebPeerRemover:
