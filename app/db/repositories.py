@@ -974,10 +974,17 @@ class Repository:
         local_device_id: int,
         passport_device_id: str | None = None,
     ) -> sqlite3.Row:
+        has_serialized_outer_transaction = self._transaction_depth > 0
         with self.transaction():
             current = self.get_protocol_issuance_attempt(attempt_id)
             if current is None:
                 raise LookupError("issuance attempt not found")
+            completing_issuer_marker = (
+                str(current["state"]) == "recovery_required"
+                and str(current["reason_code"]) == "issuer_in_progress"
+            )
+            if completing_issuer_marker and not has_serialized_outer_transaction:
+                raise ValueError("issuer marker completion requires outer transaction")
             actual_passport = passport_device_id or current["passport_device_id"]
             if actual_passport is None:
                 raise ValueError("completed issuance requires an actual passport")
@@ -1002,7 +1009,11 @@ class Repository:
                     reason_code = 'issued',
                     completed_at = CURRENT_TIMESTAMP,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND state = 'reserved'
+                WHERE id = ?
+                  AND (
+                    state = 'reserved'
+                    OR (state = 'recovery_required' AND reason_code = 'issuer_in_progress')
+                  )
                 """,
                 (actual_passport, local_device_id, attempt_id),
             )
@@ -1025,7 +1036,31 @@ class Repository:
             if current is None:
                 raise LookupError("issuance attempt not found")
             if str(current["state"]) == "recovery_required":
-                return current
+                if str(current["reason_code"]) != "issuer_in_progress":
+                    return current
+                cursor = self._conn.execute(
+                    """
+                    UPDATE protocol_issuance_attempts
+                    SET passport_device_id = COALESCE(?, passport_device_id),
+                        local_device_id = COALESCE(?, local_device_id),
+                        reason_code = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                      AND state = 'recovery_required'
+                      AND reason_code = 'issuer_in_progress'
+                    """,
+                    (
+                        passport_device_id,
+                        local_device_id,
+                        reason_code,
+                        attempt_id,
+                    ),
+                )
+                if cursor.rowcount != 1:
+                    raise ValueError("issuance recovery marker changed")
+                attempt = self.get_protocol_issuance_attempt(attempt_id)
+                assert attempt is not None
+                return attempt
             cursor = self._conn.execute(
                 """
                 UPDATE protocol_issuance_attempts

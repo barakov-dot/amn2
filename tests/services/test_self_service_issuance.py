@@ -15,10 +15,16 @@ from app.db.repositories import Repository
 from app.db.schema import initialize_schema
 from app.services.awg3_control import Awg3ControlState
 from app.services.client_compatibility import ClientIdentity
+from app.services.client_compatibility import (
+    ClientCompatibilityEvidence,
+    CompatibilityEvidenceStatus,
+    SourceReleaseKind,
+)
 from app.services.device_passports import create_device_passport
 from app.services.dual_protocol_profiles import DualProtocolProfileService
-from app.services.protocol_admission import AdmissionResult
+from app.services.protocol_admission import AdmissionResult, ProtocolAdmissionService
 from app.services.protocol_issuance_barrier import ProtocolIssuanceBarrierService
+from app.services.vpn_runtime_instances import RuntimeInstanceSpec
 from app.vpn.protocol_versions import ProtocolVersion
 
 
@@ -237,6 +243,7 @@ def _service(
     issuer=None,
     now=None,
     token_factory=None,
+    admission_provider=None,
 ):
     module = _module()
     admission = admission or StaticAdmissionService(
@@ -249,7 +256,7 @@ def _service(
     issuer = issuer or SyntheticIssuer(
         harness.repo, user_id=harness.user_id, server_id=harness.server_id
     )
-    admission_provider = FreshAdmissionProvider(admission, control)
+    admission_provider = admission_provider or FreshAdmissionProvider(admission, control)
     service = module.SelfServiceIssuanceService(
         repo=harness.repo,
         admission_provider=admission_provider,
@@ -626,6 +633,111 @@ def test_admin_pilot_never_bypasses_emergency_suspension(harness):
     assert service.issuer.calls == []
 
 
+def test_real_candidate_admission_selects_newest_exact_evidence_for_admin_pilot(
+    harness,
+):
+    exact = CANDIDATE_CLIENT
+    other = ClientIdentity(
+        exact.application,
+        exact.platform,
+        exact.version,
+        build_id="other-build",
+    )
+
+    def evidence(
+        evidence_id,
+        client,
+        source_kind,
+        status,
+        observed_at,
+    ):
+        return ClientCompatibilityEvidence(
+            evidence_id=evidence_id,
+            client=client,
+            protocol_version=ProtocolVersion.AWG3,
+            source_kind=source_kind,
+            status=status,
+            observed_at=observed_at,
+            safe_reference=f"synthetic:{evidence_id}",
+            scope="exact candidate admission",
+            release_kind=SourceReleaseKind.PRERELEASE,
+        )
+
+    admission_service = ProtocolAdmissionService(
+        evidence=(
+            evidence(
+                "candidate-z",
+                exact,
+                "official_release",
+                CompatibilityEvidenceStatus.CLAIMED,
+                NOW,
+            ),
+            evidence(
+                "candidate-a",
+                exact,
+                "local_import",
+                CompatibilityEvidenceStatus.CLAIMED,
+                NOW,
+            ),
+            evidence(
+                "candidate-failed-history",
+                exact,
+                "official_release",
+                CompatibilityEvidenceStatus.FAILED,
+                NOW - timedelta(days=1),
+            ),
+            evidence(
+                "candidate-superseded-history",
+                exact,
+                "local_import",
+                CompatibilityEvidenceStatus.SUPERSEDED,
+                NOW - timedelta(days=1),
+            ),
+            evidence(
+                "candidate-nonexact-newer",
+                other,
+                "official_release",
+                CompatibilityEvidenceStatus.CLAIMED,
+                NOW + timedelta(minutes=1),
+            ),
+        ),
+        runtimes=(
+            RuntimeInstanceSpec(
+                runtime_instance_id="rt-synthetic-awg3-candidate",
+                server_id=harness.server_id,
+                protocol_version=ProtocolVersion.AWG3,
+                runtime_version="3.0.3",
+                interface_name="awg3",
+                udp_port=30002,
+                vpn_cidr="10.217.0.0/24",
+                container_name="synthetic-awg3",
+                service_name=None,
+                config_path="/synthetic/awg3.conf",
+                lifecycle_state="candidate",
+                acceptance_receipt=None,
+            ),
+        ),
+        now=NOW,
+    )
+    control = Awg3ControlState(False, False, False, False, None)
+    service = _service(
+        harness,
+        admission_provider=lambda request: (
+            admission_service.decide(request),
+            control,
+        ),
+    )
+
+    result = service.issue_admin_pilot(
+        admin_telegram_id=700,
+        request=_request(harness, client=CANDIDATE_CLIENT),
+    )
+
+    assert result.status == "issued"
+    attempt = _attempts(harness)[0]
+    assert attempt["compatibility_evidence_id"] == "candidate-a"
+
+
 def test_distinct_confirmation_race_reservation_calls_issuer_once(harness):
     issuer = SyntheticIssuer(
         harness.repo, user_id=harness.user_id, server_id=harness.server_id
@@ -657,7 +769,7 @@ def test_distinct_confirmation_race_reservation_calls_issuer_once(harness):
 
     assert outer.status == "issued"
     assert inner["result"].status == "blocked"
-    assert inner["result"].reason_code == "issuance_in_progress"
+    assert inner["result"].reason_code == "issuance_recovery_required"
     assert len(issuer.calls) == 1
     assert [row["state"] for row in _attempts(harness)] == ["completed"]
 
@@ -690,7 +802,7 @@ def test_admin_pilot_race_reservation_calls_issuer_once(harness):
 
     assert outer.status == "issued"
     assert inner["result"].status == "blocked"
-    assert inner["result"].reason_code == "issuance_in_progress"
+    assert inner["result"].reason_code == "issuance_recovery_required"
     assert len(issuer.calls) == 1
     assert [row["state"] for row in _attempts(harness)] == ["completed"]
 
@@ -814,18 +926,47 @@ def test_issuer_exception_requires_recovery_and_blocks_fresh_token(harness):
     assert len(issuer.calls) == 1
 
 
+def test_preissuer_recovery_marker_failure_prevents_self_service_issuer_call(
+    harness,
+    monkeypatch,
+):
+    issuer = SyntheticIssuer(
+        harness.repo,
+        user_id=harness.user_id,
+        server_id=harness.server_id,
+    )
+    service = _service(harness, issuer=issuer)
+    request = _request(harness)
+    token = service.decide(request).token
+
+    def fail_initial_marker(*_args, **_kwargs):
+        raise RuntimeError("synthetic initial recovery marker failed")
+
+    monkeypatch.setattr(
+        harness.repo,
+        "mark_protocol_issuance_attempt_recovery_required",
+        fail_initial_marker,
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic initial recovery marker failed"):
+        service.issue_after_confirmation(request, confirmation_token=token)
+
+    assert issuer.calls == []
+    assert _attempts(harness) == []
+
+
 @pytest.mark.parametrize(
-    ("failure_stage", "expected_attempt_state", "error_message"),
+    ("failure_stage", "expected_reason", "error_message"),
     [
-        ("state", None, "synthetic recovery state write failed"),
-        ("event", "recovery_required", "synthetic recovery event write failed"),
+        ("state", "issuer_in_progress", "synthetic recovery enrichment failed"),
+        ("event", "issuer_failed", "synthetic recovery event write failed"),
     ],
 )
-def test_recovery_persistence_failure_never_commits_a_preissuer_reserved_attempt(
+def test_secondary_recovery_failure_commits_original_marker_and_blocks_retry(
     harness,
     monkeypatch,
     failure_stage,
-    expected_attempt_state,
+    expected_reason,
     error_message,
 ):
     issuer = RaisingIssuer()
@@ -834,13 +975,19 @@ def test_recovery_persistence_failure_never_commits_a_preissuer_reserved_attempt
     token = service.decide(request).token
 
     if failure_stage == "state":
-        def fail_recovery_state(*_args, **_kwargs):
-            raise RuntimeError(error_message)
+        original_mark = harness.repo.mark_protocol_issuance_attempt_recovery_required
+        mark_calls = []
+
+        def fail_recovery_enrichment(*args, **kwargs):
+            mark_calls.append(kwargs["reason_code"])
+            if len(mark_calls) == 2:
+                raise RuntimeError(error_message)
+            return original_mark(*args, **kwargs)
 
         monkeypatch.setattr(
             harness.repo,
             "mark_protocol_issuance_attempt_recovery_required",
-            fail_recovery_state,
+            fail_recovery_enrichment,
         )
     else:
         original_append = harness.repo.append_protocol_config_event
@@ -860,12 +1007,20 @@ def test_recovery_persistence_failure_never_commits_a_preissuer_reserved_attempt
         service.issue_after_confirmation(request, confirmation_token=token)
 
     attempts = _attempts(harness)
-    assert all(row["state"] != "reserved" for row in attempts)
-    if expected_attempt_state is None:
-        assert attempts == []
-    else:
-        assert [row["state"] for row in attempts] == [expected_attempt_state]
-        assert attempts[0]["reason_code"] == "issuer_failed"
+    assert [row["state"] for row in attempts] == ["recovery_required"]
+    assert attempts[0]["reason_code"] == expected_reason
+    retry_service = _service(
+        harness,
+        issuer=issuer,
+        token_factory=lambda: "synthetic-recovery-retry-token",
+    )
+    retry_token = retry_service.decide(request).token
+    retry = retry_service.issue_after_confirmation(
+        request,
+        confirmation_token=retry_token,
+    )
+    assert retry.status == "blocked"
+    assert retry.reason_code == "issuance_recovery_required"
     assert len(issuer.calls) == 1
 
 

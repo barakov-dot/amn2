@@ -154,7 +154,7 @@ def test_device_passport_secret_routes_select_exact_protocol_profiles(
                 config_bytes=f"synthetic-config-{device_id}".encode(),
                 qr_filename=f"synthetic-{device_id}.qr.png",
                 qr_png_bytes=b"\x89PNG\r\n\x1a\n" + str(device_id).encode(),
-                vpn_import_link="vpn://synthetic-profile-only",
+                vpn_import_link="synthetic-import-reference",
             )
         )
 
@@ -217,7 +217,7 @@ def test_device_passport_secret_routes_fail_closed_without_exact_active_profile(
             config_bytes=b"synthetic-unexpected-config",
             qr_filename="synthetic-unexpected.qr.png",
             qr_png_bytes=b"\x89PNG\r\n\x1a\nsynthetic-unexpected",
-            vpn_import_link="vpn://synthetic-unexpected-only",
+            vpn_import_link="synthetic-import-reference",
         ))
 
     monkeypatch.setattr(

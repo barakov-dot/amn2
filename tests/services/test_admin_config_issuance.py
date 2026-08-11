@@ -56,6 +56,18 @@ class StaticAdmissionService:
         return self._result
 
 
+class SequencedAdmissionService:
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = []
+
+    def decide(self, request):
+        self.calls.append(request)
+        if not self.results:
+            raise AssertionError("unexpected admission call")
+        return self.results.pop(0)
+
+
 class SpyAccessService:
     def __init__(self) -> None:
         self.calls = []
@@ -1044,3 +1056,133 @@ def test_admin_awg3_failure_after_issuer_persists_recovery_and_never_reissues(
     assert attempt["local_device_id"] == first.receipts[0].device_id
     assert attempt["passport_device_id"] == first.receipts[0].passport_device_id
     assert len(peer_applier.applied) == 1
+
+
+def test_preissuer_recovery_marker_failure_prevents_admin_awg3_issuer_call(
+    tmp_path,
+    monkeypatch,
+):
+    conn, repo = _repo(tmp_path)
+    peer_applier = FakePeerApplier()
+    access = SyntheticAwg3AccessService(repo, peer_applier)
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=access,
+        admission_service=_admission("admitted_awg3"),
+        admin_telegram_id=7001,
+        attachment_builder=lambda _filename, _content: None,
+    )
+
+    def fail_initial_marker(*_args, **_kwargs):
+        raise RuntimeError("synthetic admin recovery marker failed")
+
+    monkeypatch.setattr(
+        repo,
+        "mark_protocol_issuance_attempt_recovery_required",
+        fail_initial_marker,
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic admin recovery marker failed"):
+        service.issue_manifest(_manifest(_phase13_item()))
+
+    assert access.calls == []
+    assert conn.execute("SELECT COUNT(*) FROM protocol_issuance_attempts").fetchone()[0] == 0
+
+
+def test_admin_secondary_recovery_failure_commits_unknown_marker_and_never_reissues(
+    tmp_path,
+    monkeypatch,
+):
+    conn, repo = _repo(tmp_path)
+    peer_applier = FakePeerApplier()
+    access = SyntheticAwg3AccessService(repo, peer_applier)
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=access,
+        admission_service=_admission("admitted_awg3"),
+        admin_telegram_id=7001,
+        attachment_builder=lambda _filename, _content: (_ for _ in ()).throw(
+            RuntimeError("synthetic admin finalization failure")
+        ),
+    )
+    original_mark = repo.mark_protocol_issuance_attempt_recovery_required
+    mark_calls = []
+
+    def fail_recovery_enrichment(*args, **kwargs):
+        mark_calls.append(kwargs["reason_code"])
+        if len(mark_calls) == 2:
+            raise RuntimeError("synthetic admin recovery enrichment failed")
+        return original_mark(*args, **kwargs)
+
+    monkeypatch.setattr(
+        repo,
+        "mark_protocol_issuance_attempt_recovery_required",
+        fail_recovery_enrichment,
+    )
+    manifest = _manifest(_phase13_item())
+
+    with pytest.raises(RuntimeError, match="synthetic admin recovery enrichment failed"):
+        service.issue_manifest(manifest)
+
+    attempt = conn.execute("SELECT * FROM protocol_issuance_attempts").fetchone()
+    assert attempt["state"] == "recovery_required"
+    assert attempt["reason_code"] == "issuer_in_progress"
+    replay = service.issue_manifest(manifest)
+    assert replay.status == "partial_failure"
+    assert len(peer_applier.applied) == 1
+
+
+@pytest.mark.parametrize(
+    "blocked_decision",
+    [
+        "blocked_global_acceptance",
+        "blocked_runtime_suspended",
+        "blocked_evidence_stale_or_failed",
+    ],
+    ids=["security_revoked", "emergency_suspended", "evidence_stale"],
+)
+def test_admin_awg3_batch_rechecks_fresh_admission_inside_each_serialized_slot(
+    tmp_path,
+    blocked_decision,
+):
+    conn, repo = _repo(tmp_path)
+    peer_applier = FakePeerApplier()
+    admitted = _admission("admitted_awg3").decide(None)
+    blocked = AdmissionResult(
+        blocked_decision,
+        ProtocolVersion.AWG3,
+        None,
+        None,
+    )
+    admission = SequencedAdmissionService(
+        [admitted, admitted, admitted, blocked]
+    )
+    service = AdminConfigIssuanceService(
+        repo=repo,
+        access_service=SyntheticAwg3AccessService(repo, peer_applier),
+        admission_service=admission,
+        admin_telegram_id=7001,
+        attachment_builder=lambda _filename, _content: None,
+    )
+
+    result = service.issue_manifest(
+        _manifest(
+            _phase13_item(recipient="Alice", device="Laptop"),
+            _phase13_item(recipient="Bob", device="Phone"),
+        )
+    )
+
+    assert result.status == "partial_failure"
+    assert len(admission.calls) == 4
+    assert len(peer_applier.applied) == 1
+    assert [receipt.status for receipt in result.receipts] == [
+        "completed",
+        "partial_failure",
+    ]
+    assert result.receipts[1].error_code == blocked_decision
+    attempts = conn.execute(
+        "SELECT state, compatibility_evidence_id FROM protocol_issuance_attempts "
+        "ORDER BY id"
+    ).fetchall()
+    assert [tuple(row) for row in attempts] == [("completed", "compat-exact")]
+    assert conn.execute("SELECT COUNT(*) FROM device_protocol_profiles").fetchone()[0] == 1

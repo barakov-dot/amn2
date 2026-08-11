@@ -132,6 +132,28 @@ class ProtocolAdmissionService:
                         None,
                         None,
                     )
+                candidate_evidence = max(
+                    sorted(status_evidence, key=lambda item: item.evidence_id),
+                    key=lambda item: item.observed_at,
+                    default=None,
+                )
+                if (
+                    candidate_evidence is None
+                    or candidate_evidence.status
+                    not in {
+                        CompatibilityEvidenceStatus.CLAIMED,
+                        CompatibilityEvidenceStatus.PASSED,
+                    }
+                    or not timedelta(0)
+                    <= self._now - candidate_evidence.observed_at
+                    <= self._max_evidence_age
+                ):
+                    return AdmissionResult(
+                        "blocked_evidence_stale_or_failed",
+                        request.protocol_version,
+                        None,
+                        None,
+                    )
                 runtime = next(
                     (
                         item
@@ -151,7 +173,7 @@ class ProtocolAdmissionService:
                     "candidate_awg3",
                     request.protocol_version,
                     runtime.runtime_instance_id if runtime is not None else None,
-                    None,
+                    candidate_evidence.evidence_id,
                 )
             if compatibility is CompatibilityAdmissionState.REJECTED:
                 decision: AdmissionDecision = (

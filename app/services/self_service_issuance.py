@@ -32,7 +32,7 @@ _AWG3_COMPATIBILITY_BLOCKS = frozenset(
 )
 
 
-class _UnsafeRecoveryPersistenceError(RuntimeError):
+class _RecoveryEnrichmentError(RuntimeError):
     pass
 
 
@@ -412,6 +412,11 @@ class SelfServiceIssuanceService:
             if reservation_block is not None:
                 return reservation_block
             assert attempt is not None
+            self._repo.mark_protocol_issuance_attempt_recovery_required(
+                int(attempt["id"]),
+                local_device_id=None,
+                reason_code="issuer_in_progress",
+            )
             try:
                 result = self._issue_reserved(
                     request,
@@ -422,8 +427,6 @@ class SelfServiceIssuanceService:
                     actor_id=actor_id,
                     reason_code=reason_code,
                 )
-            except _UnsafeRecoveryPersistenceError:
-                raise
             except Exception as exc:
                 failure = exc
         if failure is not None:
@@ -536,7 +539,7 @@ class SelfServiceIssuanceService:
                 reason_code=reason_code,
             )
         except Exception as exc:
-            raise _UnsafeRecoveryPersistenceError(str(exc)) from exc
+            raise _RecoveryEnrichmentError(str(exc)) from exc
         with self._repo.transaction():
             self._repo.append_protocol_config_event(
                 event_type="protocol_issuance_recovery_required",

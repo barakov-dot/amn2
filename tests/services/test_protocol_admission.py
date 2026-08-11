@@ -183,7 +183,10 @@ def test_official_claim_alone_does_not_admit_awg3():
     result = service.decide(request("amnezia_vpn", "5.0.0.5"))
     assert result.decision == "candidate_awg3"
     assert result.admitted is False
-    assert result.compatibility_evidence_id is None
+    assert (
+        result.compatibility_evidence_id
+        == "compat-win-5005-awg3-official_release-claimed"
+    )
 
 
 def test_future_dated_passed_evidence_fails_closed():
