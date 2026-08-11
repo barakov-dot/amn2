@@ -728,6 +728,43 @@ class Repository:
             (passport_device_id, protocol_version),
         ).fetchone()
 
+    def get_device_protocol_profile_by_id(
+        self,
+        profile_id: int,
+    ) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM device_protocol_profiles WHERE id = ?",
+            (profile_id,),
+        ).fetchone()
+
+    def get_device_protocol_profile_by_local_device_id(
+        self,
+        local_device_id: int,
+    ) -> sqlite3.Row | None:
+        return self._conn.execute(
+            "SELECT * FROM device_protocol_profiles WHERE local_device_id = ?",
+            (local_device_id,),
+        ).fetchone()
+
+    def get_latest_protocol_profile_retirement(
+        self,
+        local_device_id: int,
+    ) -> sqlite3.Row | None:
+        return self._conn.execute(
+            """
+            SELECT *
+            FROM protocol_config_events
+            WHERE local_device_id = ?
+              AND event_type IN (
+                  'protocol_profile_retired',
+                  'compromise_reissue_revoked'
+              )
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (local_device_id,),
+        ).fetchone()
+
     def update_device_protocol_profile(
         self,
         *,
@@ -746,6 +783,42 @@ class Repository:
             (lifecycle_state, replacement_device_id, profile_id),
         )
         self._commit()
+
+    def transition_device_protocol_profile(
+        self,
+        *,
+        profile_id: int,
+        expected_lifecycle_state: str,
+        expected_local_device_id: int,
+        expected_replacement_device_id: int | None,
+        lifecycle_state: str,
+        local_device_id: int,
+        replacement_device_id: int | None,
+    ) -> bool:
+        cursor = self._conn.execute(
+            """
+            UPDATE device_protocol_profiles
+            SET lifecycle_state = ?,
+                local_device_id = ?,
+                replacement_device_id = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+              AND lifecycle_state = ?
+              AND local_device_id = ?
+              AND replacement_device_id IS ?
+            """,
+            (
+                lifecycle_state,
+                local_device_id,
+                replacement_device_id,
+                profile_id,
+                expected_lifecycle_state,
+                expected_local_device_id,
+                expected_replacement_device_id,
+            ),
+        )
+        self._commit()
+        return cursor.rowcount == 1
 
     def append_protocol_config_event(
         self,

@@ -144,6 +144,209 @@ def test_normal_replacement_keeps_old_effective_until_activation_and_is_protocol
     assert service.get(awg2.profile_id).lifecycle_state == "active"
 
 
+def test_fresh_service_uses_direct_durable_profile_lookups(
+    harness: ProfileHarness,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    profile = _service(harness.repo).attach_active(
+        harness.passport_device_id,
+        ProtocolVersion.AWG3,
+        harness.awg3_device_id,
+    )
+
+    def fail_if_passports_are_scanned(*_args, **_kwargs):
+        raise AssertionError("profile lookup must not scan passports")
+
+    monkeypatch.setattr(
+        harness.repo,
+        "list_device_passports",
+        fail_if_passports_are_scanned,
+    )
+    fresh = _service(harness.repo)
+
+    assert fresh.get(profile.profile_id) == profile
+    assert fresh.by_local_device_id(harness.awg3_device_id) == profile
+
+
+def test_profile_lookup_is_not_limited_to_the_latest_100_passports(
+    harness: ProfileHarness,
+):
+    profile = _service(harness.repo).attach_active(
+        harness.passport_device_id,
+        ProtocolVersion.AWG3,
+        harness.awg3_device_id,
+    )
+    harness.conn.execute(
+        "UPDATE device_passports SET updated_at = ? WHERE device_id = ?",
+        ("2026-01-01 00:00:00", harness.passport_device_id),
+    )
+    harness.conn.commit()
+    owner_user_id = int(
+        harness.repo.get_device(harness.awg2_device_id)["user_id"]
+    )
+    for sequence in range(101):
+        create_device_passport(
+            harness.repo,
+            owner_user_id=owner_user_id,
+            local_device_id=None,
+            platform="unknown",
+            official_client_type="unknown_official",
+            import_method="unknown",
+            config_schema_version="amneziawg_v2",
+            config_text=f"bounded-scan-regression-{sequence}",
+        )
+
+    fresh = _service(harness.repo)
+
+    assert fresh.get(profile.profile_id) == profile
+    assert fresh.by_local_device_id(harness.awg3_device_id) == profile
+
+
+def test_repeated_replacement_swaps_current_identity_and_retires_each_old_device(
+    harness: ProfileHarness,
+):
+    owner = harness.repo.get_device(harness.awg3_device_id)
+    second_replacement_device_id = _create_local_device(
+        harness.repo,
+        user_id=int(owner["user_id"]),
+        server_id=int(owner["server_id"]),
+        sequence=5,
+        protocol=ProtocolVersion.AWG3,
+    )
+    service = _service(harness.repo)
+    original = service.attach_active(
+        harness.passport_device_id,
+        ProtocolVersion.AWG3,
+        harness.awg3_device_id,
+    )
+    service.start_replacement(
+        original.profile_id,
+        replacement_device_id=harness.replacement_device_id,
+    )
+    first = service.activate_replacement(original.profile_id)
+    first_row = harness.repo.get_device_protocol_profile(
+        passport_device_id=harness.passport_device_id,
+        protocol_version="awg3",
+    )
+
+    assert first.local_device_id == harness.replacement_device_id
+    assert int(first_row["local_device_id"]) == harness.replacement_device_id
+    assert first_row["replacement_device_id"] is None
+
+    restarted = _service(harness.repo)
+    pending = restarted.start_replacement(
+        original.profile_id,
+        replacement_device_id=second_replacement_device_id,
+    )
+    second = restarted.activate_replacement(original.profile_id)
+
+    assert pending.local_device_id == harness.replacement_device_id
+    assert second.local_device_id == second_replacement_device_id
+    assert second.replacement_device_id is None
+    after_second_restart = _service(harness.repo)
+    assert after_second_restart.get(original.profile_id) == second
+    assert after_second_restart.by_local_device_id(
+        harness.awg3_device_id
+    ).lifecycle_state == "revoked"
+    assert after_second_restart.by_local_device_id(
+        harness.replacement_device_id
+    ).lifecycle_state == "revoked"
+    assert after_second_restart.by_local_device_id(
+        second_replacement_device_id
+    ) == second
+    retirements = harness.conn.execute(
+        """
+        SELECT local_device_id, metadata_json
+        FROM protocol_config_events
+        WHERE event_type = 'protocol_profile_retired'
+        ORDER BY id
+        """
+    ).fetchall()
+    assert [int(row["local_device_id"]) for row in retirements] == [
+        harness.awg3_device_id,
+        harness.replacement_device_id,
+    ]
+    assert [json.loads(str(row["metadata_json"])) for row in retirements] == [
+        {"lifecycle_state": "revoked", "profile_id": original.profile_id},
+        {"lifecycle_state": "revoked", "profile_id": original.profile_id},
+    ]
+
+
+def test_activation_event_failure_rolls_back_without_cache_divergence(
+    harness: ProfileHarness,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    service = _service(harness.repo)
+    original = service.attach_active(
+        harness.passport_device_id,
+        ProtocolVersion.AWG3,
+        harness.awg3_device_id,
+    )
+    pending = service.start_replacement(
+        original.profile_id,
+        replacement_device_id=harness.replacement_device_id,
+    )
+    before_events = harness.conn.execute(
+        "SELECT COUNT(*) FROM protocol_config_events"
+    ).fetchone()[0]
+
+    def fail_event(**_kwargs):
+        raise RuntimeError("forced event failure")
+
+    monkeypatch.setattr(
+        harness.repo,
+        "append_protocol_config_event",
+        fail_event,
+    )
+
+    with pytest.raises(RuntimeError, match="forced event failure"):
+        service.activate_replacement(original.profile_id)
+
+    assert service.get(original.profile_id) == pending
+    assert service.by_local_device_id(harness.awg3_device_id) == pending
+    assert _service(harness.repo).get(original.profile_id) == pending
+    assert harness.conn.execute(
+        "SELECT COUNT(*) FROM protocol_config_events"
+    ).fetchone()[0] == before_events
+
+
+def test_activation_revalidates_pending_device_owner_before_cas_and_event(
+    harness: ProfileHarness,
+):
+    service = _service(harness.repo)
+    original = service.attach_active(
+        harness.passport_device_id,
+        ProtocolVersion.AWG3,
+        harness.awg3_device_id,
+    )
+    pending = service.start_replacement(
+        original.profile_id,
+        replacement_device_id=harness.replacement_device_id,
+    )
+    other_user_id = harness.repo.upsert_user(
+        telegram_id=9304,
+        username="activation-other-user",
+        first_name="Activation",
+        last_name="Other",
+    )
+    harness.conn.execute(
+        "UPDATE devices SET user_id = ? WHERE id = ?",
+        (other_user_id, harness.replacement_device_id),
+    )
+    harness.conn.commit()
+    before_events = harness.conn.execute(
+        "SELECT COUNT(*) FROM protocol_config_events"
+    ).fetchone()[0]
+
+    with pytest.raises(ValueError, match="does not belong to passport owner"):
+        service.activate_replacement(original.profile_id)
+
+    assert service.get(original.profile_id) == pending
+    assert harness.conn.execute(
+        "SELECT COUNT(*) FROM protocol_config_events"
+    ).fetchone()[0] == before_events
+
+
 def test_start_replacement_rejects_a_second_pending_replacement(
     harness: ProfileHarness,
 ):
@@ -157,12 +360,192 @@ def test_start_replacement_rejects_a_second_pending_replacement(
         old.profile_id,
         replacement_device_id=harness.replacement_device_id,
     )
+    before_events = harness.conn.execute(
+        "SELECT COUNT(*) FROM protocol_config_events"
+    ).fetchone()[0]
 
     with pytest.raises(ValueError, match="replacement already pending"):
         service.start_replacement(
             old.profile_id,
             replacement_device_id=harness.awg2_device_id,
         )
+    assert harness.conn.execute(
+        "SELECT COUNT(*) FROM protocol_config_events"
+    ).fetchone()[0] == before_events
+
+
+def test_cas_conflict_raises_before_transition_event(
+    harness: ProfileHarness,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    service = _service(harness.repo)
+    profile = service.attach_active(
+        harness.passport_device_id,
+        ProtocolVersion.AWG3,
+        harness.awg3_device_id,
+    )
+    before_events = harness.conn.execute(
+        "SELECT COUNT(*) FROM protocol_config_events"
+    ).fetchone()[0]
+    monkeypatch.setattr(
+        harness.repo,
+        "transition_device_protocol_profile",
+        lambda **_kwargs: False,
+        raising=False,
+    )
+
+    with pytest.raises(RuntimeError, match="protocol profile changed concurrently"):
+        service.start_replacement(
+            profile.profile_id,
+            replacement_device_id=harness.replacement_device_id,
+        )
+
+    assert service.get(profile.profile_id) == profile
+    assert harness.conn.execute(
+        "SELECT COUNT(*) FROM protocol_config_events"
+    ).fetchone()[0] == before_events
+
+
+def test_repository_profile_cas_compares_state_and_both_device_identities(
+    harness: ProfileHarness,
+):
+    profile = _service(harness.repo).attach_active(
+        harness.passport_device_id,
+        ProtocolVersion.AWG3,
+        harness.awg3_device_id,
+    )
+
+    stale = harness.repo.transition_device_protocol_profile(
+        profile_id=profile.profile_id,
+        expected_lifecycle_state="active",
+        expected_local_device_id=harness.replacement_device_id,
+        expected_replacement_device_id=None,
+        lifecycle_state="pending_replacement",
+        local_device_id=harness.awg3_device_id,
+        replacement_device_id=harness.replacement_device_id,
+    )
+
+    assert stale is False
+    assert _service(harness.repo).get(profile.profile_id) == profile
+
+    changed = harness.repo.transition_device_protocol_profile(
+        profile_id=profile.profile_id,
+        expected_lifecycle_state="active",
+        expected_local_device_id=harness.awg3_device_id,
+        expected_replacement_device_id=None,
+        lifecycle_state="pending_replacement",
+        local_device_id=harness.awg3_device_id,
+        replacement_device_id=harness.replacement_device_id,
+    )
+    repeated_stale = harness.repo.transition_device_protocol_profile(
+        profile_id=profile.profile_id,
+        expected_lifecycle_state="active",
+        expected_local_device_id=harness.awg3_device_id,
+        expected_replacement_device_id=None,
+        lifecycle_state="review_required",
+        local_device_id=harness.awg3_device_id,
+        replacement_device_id=None,
+    )
+
+    assert changed is True
+    assert repeated_stale is False
+    pending = _service(harness.repo).get(profile.profile_id)
+    assert pending.lifecycle_state == "pending_replacement"
+    assert pending.local_device_id == harness.awg3_device_id
+    assert pending.replacement_device_id == harness.replacement_device_id
+
+
+def test_attach_rejects_device_owned_by_another_passport_owner(
+    harness: ProfileHarness,
+):
+    other_user_id = harness.repo.upsert_user(
+        telegram_id=9302,
+        username="other-profile-user",
+        first_name="Other",
+        last_name="Owner",
+    )
+    server_id = int(
+        harness.repo.get_device(harness.awg3_device_id)["server_id"]
+    )
+    other_device_id = _create_local_device(
+        harness.repo,
+        user_id=other_user_id,
+        server_id=server_id,
+        sequence=6,
+        protocol=ProtocolVersion.AWG3,
+    )
+    before_events = harness.conn.execute(
+        "SELECT COUNT(*) FROM protocol_config_events"
+    ).fetchone()[0]
+
+    with pytest.raises(ValueError, match="does not belong to passport owner"):
+        _service(harness.repo).attach_active(
+            harness.passport_device_id,
+            ProtocolVersion.AWG3,
+            other_device_id,
+        )
+
+    assert harness.repo.get_device_protocol_profile(
+        passport_device_id=harness.passport_device_id,
+        protocol_version="awg3",
+    ) is None
+    assert harness.conn.execute(
+        "SELECT COUNT(*) FROM protocol_config_events"
+    ).fetchone()[0] == before_events
+
+
+def test_replacement_rejects_cross_owner_but_allows_same_owner_other_server(
+    harness: ProfileHarness,
+):
+    owner_device = harness.repo.get_device(harness.awg3_device_id)
+    other_user_id = harness.repo.upsert_user(
+        telegram_id=9303,
+        username="replacement-other-user",
+        first_name="Replacement",
+        last_name="Other",
+    )
+    other_owner_device_id = _create_local_device(
+        harness.repo,
+        user_id=other_user_id,
+        server_id=int(owner_device["server_id"]),
+        sequence=7,
+        protocol=ProtocolVersion.AWG3,
+    )
+    other_server_id = harness.repo.ensure_default_server(
+        name="same-owner-other-server",
+        network_cidr="10.214.0.0/24",
+    )
+    same_owner_other_server_device_id = _create_local_device(
+        harness.repo,
+        user_id=int(owner_device["user_id"]),
+        server_id=other_server_id,
+        sequence=8,
+        protocol=ProtocolVersion.AWG3,
+    )
+    service = _service(harness.repo)
+    profile = service.attach_active(
+        harness.passport_device_id,
+        ProtocolVersion.AWG3,
+        harness.awg3_device_id,
+    )
+    before_events = harness.conn.execute(
+        "SELECT COUNT(*) FROM protocol_config_events"
+    ).fetchone()[0]
+
+    with pytest.raises(ValueError, match="does not belong to passport owner"):
+        service.start_replacement(
+            profile.profile_id,
+            replacement_device_id=other_owner_device_id,
+        )
+
+    assert harness.conn.execute(
+        "SELECT COUNT(*) FROM protocol_config_events"
+    ).fetchone()[0] == before_events
+    pending = service.start_replacement(
+        profile.profile_id,
+        replacement_device_id=same_owner_other_server_device_id,
+    )
+    assert pending.replacement_device_id == same_owner_other_server_device_id
 
 
 def test_compromise_reissue_revokes_old_before_new_issue(
