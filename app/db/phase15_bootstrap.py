@@ -351,6 +351,7 @@ def _rebuild_phase15_schema(
             conn.execute(f"DROP INDEX IF EXISTS {index_name}")
         if drop_d827_device_owner_index:
             conn.execute("DROP INDEX uq_device_passports_device_owner")
+            _validate_d827_index_drop(conn)
 
         conn.execute(
             "ALTER TABLE protocol_issuance_confirmations "
@@ -545,6 +546,29 @@ def _is_exact_d827_predecessor_shape(conn: sqlite3.Connection) -> bool:
 def _validate_exact_d827_predecessor_shape(conn: sqlite3.Connection) -> None:
     if not _is_exact_d827_predecessor_shape(conn):
         raise RuntimeError("phase15 d827 predecessor schema changed during migration")
+
+
+def _validate_d827_index_drop(conn: sqlite3.Connection) -> None:
+    predecessor_index = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+        ("uq_device_passports_device_owner",),
+    ).fetchone()
+    legacy_copy_exists = any(
+        _table_exists(conn, table)
+        for table in (
+            "telegram_callback_handles_legacy",
+            "protocol_issuance_confirmations_legacy",
+        )
+    )
+    if (
+        predecessor_index is not None
+        or legacy_copy_exists
+        or _table_sql(conn, "telegram_callback_handles")
+        != _normalize_sql(D827_CALLBACK_TABLE_SQL)
+        or _table_sql(conn, "protocol_issuance_confirmations")
+        != _normalize_sql(D827_CONFIRMATION_TABLE_SQL)
+    ):
+        raise RuntimeError("phase15 d827 index drop changed unexpected schema")
 
 
 def _table_sql(conn: sqlite3.Connection, table: str) -> str:
