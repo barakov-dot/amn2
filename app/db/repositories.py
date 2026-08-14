@@ -26,6 +26,12 @@ RUNTIME_LIFECYCLE_STATES = {
     "retired",
 }
 COMPATIBILITY_EVIDENCE_STATUSES = {"claimed", "passed", "failed", "superseded"}
+SHA256_DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
+
+
+def _require_sha256_digest(value: str, field_name: str) -> None:
+    if SHA256_DIGEST_PATTERN.fullmatch(value) is None:
+        raise ValueError(f"{field_name} must be a lowercase SHA-256 digest")
 
 
 class ProtocolIssuanceExecutionBlocked(ValueError):
@@ -738,6 +744,7 @@ class Repository:
         created_at: str,
         expires_at: str,
     ) -> sqlite3.Row:
+        _require_sha256_digest(handle_digest, "handle_digest")
         with self.transaction():
             self._conn.execute(
                 """
@@ -781,19 +788,82 @@ class Repository:
         handle_digest: str,
         owner_user_id: int,
         now: str,
+        *,
+        claim_id_digest: str,
+        claim_expires_at: str,
     ) -> sqlite3.Row | None:
+        _require_sha256_digest(handle_digest, "handle_digest")
+        _require_sha256_digest(claim_id_digest, "claim_id_digest")
+        if claim_expires_at <= now:
+            raise ValueError("claim_expires_at must be later than now")
         with self.transaction():
-            return self._conn.execute(
+            cursor = self._conn.execute(
                 """
-                SELECT *
-                FROM telegram_callback_handles
+                UPDATE telegram_callback_handles
+                SET claim_id_digest = ?,
+                    claimed_at = ?,
+                    claim_expires_at = ?
                 WHERE handle_digest = ?
                   AND owner_user_id = ?
                   AND consumed_at IS NULL
                   AND expires_at > ?
+                  AND (
+                      claim_id_digest IS NULL
+                      OR claim_expires_at <= ?
+                  )
                 """,
-                (handle_digest, owner_user_id, now),
+                (
+                    claim_id_digest,
+                    now,
+                    claim_expires_at,
+                    handle_digest,
+                    owner_user_id,
+                    now,
+                    now,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM telegram_callback_handles WHERE handle_digest = ?",
+                (handle_digest,),
             ).fetchone()
+            assert row is not None
+            return row
+
+    def release_callback_handle_claim(
+        self,
+        handle_digest: str,
+        owner_user_id: int,
+        now: str,
+        *,
+        claim_id_digest: str,
+    ) -> sqlite3.Row | None:
+        _require_sha256_digest(handle_digest, "handle_digest")
+        _require_sha256_digest(claim_id_digest, "claim_id_digest")
+        with self.transaction():
+            cursor = self._conn.execute(
+                """
+                UPDATE telegram_callback_handles
+                SET claim_id_digest = NULL,
+                    claimed_at = NULL,
+                    claim_expires_at = NULL
+                WHERE handle_digest = ?
+                  AND owner_user_id = ?
+                  AND consumed_at IS NULL
+                  AND expires_at > ?
+                  AND claim_id_digest = ?
+                """,
+                (handle_digest, owner_user_id, now, claim_id_digest),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM telegram_callback_handles WHERE handle_digest = ?",
+                (handle_digest,),
+            ).fetchone()
+            assert row is not None
+            return row
 
     def consume_callback_handle(
         self,
@@ -801,7 +871,11 @@ class Repository:
         owner_user_id: int,
         now: str,
         terminal_reason: str,
+        *,
+        claim_id_digest: str,
     ) -> sqlite3.Row | None:
+        _require_sha256_digest(handle_digest, "handle_digest")
+        _require_sha256_digest(claim_id_digest, "claim_id_digest")
         with self.transaction():
             cursor = self._conn.execute(
                 """
@@ -811,8 +885,18 @@ class Repository:
                   AND owner_user_id = ?
                   AND consumed_at IS NULL
                   AND expires_at > ?
+                  AND claim_id_digest = ?
+                  AND claim_expires_at > ?
                 """,
-                (now, terminal_reason, handle_digest, owner_user_id, now),
+                (
+                    now,
+                    terminal_reason,
+                    handle_digest,
+                    owner_user_id,
+                    now,
+                    claim_id_digest,
+                    now,
+                ),
             )
             if cursor.rowcount != 1:
                 return None
@@ -838,6 +922,10 @@ class Repository:
         created_at: str,
         expires_at: str,
     ) -> sqlite3.Row:
+        _require_sha256_digest(token_digest, "token_digest")
+        _require_sha256_digest(
+            selection_handle_digest, "selection_handle_digest"
+        )
         with self.transaction():
             self._conn.execute(
                 """
@@ -882,19 +970,84 @@ class Repository:
         token_digest: str,
         owner_user_id: int,
         now: str,
+        *,
+        claim_id_digest: str,
+        claim_expires_at: str,
     ) -> sqlite3.Row | None:
+        _require_sha256_digest(token_digest, "token_digest")
+        _require_sha256_digest(claim_id_digest, "claim_id_digest")
+        if claim_expires_at <= now:
+            raise ValueError("claim_expires_at must be later than now")
         with self.transaction():
-            return self._conn.execute(
+            cursor = self._conn.execute(
                 """
-                SELECT *
-                FROM protocol_issuance_confirmations
+                UPDATE protocol_issuance_confirmations
+                SET claim_id_digest = ?,
+                    claimed_at = ?,
+                    claim_expires_at = ?
                 WHERE token_digest = ?
                   AND owner_user_id = ?
                   AND consumed_at IS NULL
                   AND expires_at > ?
+                  AND (
+                      claim_id_digest IS NULL
+                      OR claim_expires_at <= ?
+                  )
                 """,
-                (token_digest, owner_user_id, now),
+                (
+                    claim_id_digest,
+                    now,
+                    claim_expires_at,
+                    token_digest,
+                    owner_user_id,
+                    now,
+                    now,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM protocol_issuance_confirmations "
+                "WHERE token_digest = ?",
+                (token_digest,),
             ).fetchone()
+            assert row is not None
+            return row
+
+    def release_issuance_confirmation_claim(
+        self,
+        token_digest: str,
+        owner_user_id: int,
+        now: str,
+        *,
+        claim_id_digest: str,
+    ) -> sqlite3.Row | None:
+        _require_sha256_digest(token_digest, "token_digest")
+        _require_sha256_digest(claim_id_digest, "claim_id_digest")
+        with self.transaction():
+            cursor = self._conn.execute(
+                """
+                UPDATE protocol_issuance_confirmations
+                SET claim_id_digest = NULL,
+                    claimed_at = NULL,
+                    claim_expires_at = NULL
+                WHERE token_digest = ?
+                  AND owner_user_id = ?
+                  AND consumed_at IS NULL
+                  AND expires_at > ?
+                  AND claim_id_digest = ?
+                """,
+                (token_digest, owner_user_id, now, claim_id_digest),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM protocol_issuance_confirmations "
+                "WHERE token_digest = ?",
+                (token_digest,),
+            ).fetchone()
+            assert row is not None
+            return row
 
     def consume_issuance_confirmation(
         self,
@@ -902,7 +1055,11 @@ class Repository:
         owner_user_id: int,
         now: str,
         terminal_reason: str,
+        *,
+        claim_id_digest: str,
     ) -> sqlite3.Row | None:
+        _require_sha256_digest(token_digest, "token_digest")
+        _require_sha256_digest(claim_id_digest, "claim_id_digest")
         with self.transaction():
             cursor = self._conn.execute(
                 """
@@ -912,8 +1069,18 @@ class Repository:
                   AND owner_user_id = ?
                   AND consumed_at IS NULL
                   AND expires_at > ?
+                  AND claim_id_digest = ?
+                  AND claim_expires_at > ?
                 """,
-                (now, terminal_reason, token_digest, owner_user_id, now),
+                (
+                    now,
+                    terminal_reason,
+                    token_digest,
+                    owner_user_id,
+                    now,
+                    claim_id_digest,
+                    now,
+                ),
             )
             if cursor.rowcount != 1:
                 return None
