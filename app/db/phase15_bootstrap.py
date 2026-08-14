@@ -133,6 +133,44 @@ CREATE TABLE protocol_issuance_confirmations (
 """
 
 
+D827_CALLBACK_TABLE_SQL = (
+    CREATE_CALLBACK_TABLE_SQL.replace(
+        "handle_digest TEXT NOT NULL PRIMARY KEY",
+        "handle_digest TEXT PRIMARY KEY",
+    )
+    .replace(
+        "            claim_id_digest IS NOT NULL\n"
+        "            AND length(claim_id_digest) = 64",
+        "            length(claim_id_digest) = 64",
+    )
+    .replace(
+        "FOREIGN KEY(passport_device_id) REFERENCES device_passports(device_id)",
+        "FOREIGN KEY(passport_device_id, owner_user_id)\n"
+        "        REFERENCES device_passports(device_id, owner_user_id)",
+    )
+)
+D827_CONFIRMATION_TABLE_SQL = (
+    CREATE_CONFIRMATION_TABLE_SQL.replace(
+        "token_digest TEXT NOT NULL PRIMARY KEY",
+        "token_digest TEXT PRIMARY KEY",
+    )
+    .replace(
+        "            claim_id_digest IS NOT NULL\n"
+        "            AND length(claim_id_digest) = 64",
+        "            length(claim_id_digest) = 64",
+    )
+    .replace(
+        "FOREIGN KEY(passport_device_id) REFERENCES device_passports(device_id)",
+        "FOREIGN KEY(passport_device_id, owner_user_id)\n"
+        "        REFERENCES device_passports(device_id, owner_user_id)",
+    )
+)
+D827_DEVICE_OWNER_INDEX_SQL = (
+    "CREATE UNIQUE INDEX uq_device_passports_device_owner "
+    "ON device_passports(device_id, owner_user_id)"
+)
+
+
 INDEX_SQL = (
     "CREATE INDEX IF NOT EXISTS idx_telegram_callback_handles_owner_passport "
     "ON telegram_callback_handles(owner_user_id, passport_device_id)",
@@ -230,6 +268,9 @@ def ensure_phase15_bootstrap_schema(conn: sqlite3.Connection) -> None:
         callback_columns == CALLBACK_COLUMNS
         and confirmation_columns == CONFIRMATION_COLUMNS
     ):
+        if _is_exact_d827_predecessor_shape(conn):
+            _upgrade_d827_schema(conn)
+            return
         _validate_canonical_shape(conn)
         _ensure_phase15_objects(conn)
         return
@@ -259,6 +300,33 @@ def _ensure_phase15_objects(conn: sqlite3.Connection) -> None:
 
 
 def _upgrade_legacy_schema(conn: sqlite3.Connection) -> None:
+    _rebuild_phase15_schema(
+        conn,
+        callback_source_columns=LEGACY_CALLBACK_COLUMNS,
+        confirmation_source_columns=LEGACY_CONFIRMATION_COLUMNS,
+        include_claim_state=False,
+        drop_d827_device_owner_index=False,
+    )
+
+
+def _upgrade_d827_schema(conn: sqlite3.Connection) -> None:
+    _rebuild_phase15_schema(
+        conn,
+        callback_source_columns=CALLBACK_COLUMNS,
+        confirmation_source_columns=CONFIRMATION_COLUMNS,
+        include_claim_state=True,
+        drop_d827_device_owner_index=True,
+    )
+
+
+def _rebuild_phase15_schema(
+    conn: sqlite3.Connection,
+    *,
+    callback_source_columns: tuple[str, ...],
+    confirmation_source_columns: tuple[str, ...],
+    include_claim_state: bool,
+    drop_d827_device_owner_index: bool,
+) -> None:
     if conn.in_transaction:
         raise RuntimeError("phase15 bootstrap upgrade requires no active transaction")
 
@@ -266,7 +334,12 @@ def _upgrade_legacy_schema(conn: sqlite3.Connection) -> None:
     try:
         conn.execute("PRAGMA foreign_keys = OFF")
         conn.execute("BEGIN IMMEDIATE")
-        callback_count, confirmation_count = _prevalidate_legacy_rows(conn)
+        if drop_d827_device_owner_index:
+            _validate_exact_d827_predecessor_shape(conn)
+        callback_count, confirmation_count = _prevalidate_rows(
+            conn,
+            include_claim_state=include_claim_state,
+        )
 
         for index_name in (
             "idx_protocol_issuance_confirmations_owner_passport",
@@ -276,6 +349,8 @@ def _upgrade_legacy_schema(conn: sqlite3.Connection) -> None:
             "idx_telegram_callback_handles_expires_at",
         ):
             conn.execute(f"DROP INDEX IF EXISTS {index_name}")
+        if drop_d827_device_owner_index:
+            conn.execute("DROP INDEX uq_device_passports_device_owner")
 
         conn.execute(
             "ALTER TABLE protocol_issuance_confirmations "
@@ -288,8 +363,8 @@ def _upgrade_legacy_schema(conn: sqlite3.Connection) -> None:
         conn.execute(CREATE_CALLBACK_TABLE_SQL)
         conn.execute(CREATE_CONFIRMATION_TABLE_SQL)
 
-        callback_columns = ", ".join(LEGACY_CALLBACK_COLUMNS)
-        confirmation_columns = ", ".join(LEGACY_CONFIRMATION_COLUMNS)
+        callback_columns = ", ".join(callback_source_columns)
+        confirmation_columns = ", ".join(confirmation_source_columns)
         conn.execute(
             f"INSERT INTO telegram_callback_handles ({callback_columns}) "
             f"SELECT {callback_columns} FROM telegram_callback_handles_legacy"
@@ -332,7 +407,9 @@ def _upgrade_legacy_schema(conn: sqlite3.Connection) -> None:
         conn.execute(f"PRAGMA foreign_keys = {foreign_keys_enabled}")
 
 
-def _prevalidate_legacy_rows(conn: sqlite3.Connection) -> tuple[int, int]:
+def _prevalidate_rows(
+    conn: sqlite3.Connection, *, include_claim_state: bool
+) -> tuple[int, int]:
     callback_count = int(
         conn.execute("SELECT COUNT(*) FROM telegram_callback_handles").fetchone()[0]
     )
@@ -341,9 +418,43 @@ def _prevalidate_legacy_rows(conn: sqlite3.Connection) -> tuple[int, int]:
             "SELECT COUNT(*) FROM protocol_issuance_confirmations"
         ).fetchone()[0]
     )
+    callback_claim_predicate = ""
+    confirmation_claim_predicate = ""
+    if include_claim_state:
+        callback_claim_predicate = """
+               OR NOT (
+                    (callback.claim_id_digest IS NULL
+                     AND callback.claimed_at IS NULL
+                     AND callback.claim_expires_at IS NULL)
+                    OR (
+                        callback.claim_id_digest IS NOT NULL
+                        AND length(callback.claim_id_digest) = 64
+                        AND callback.claim_id_digest NOT GLOB '*[^0-9a-f]*'
+                        AND callback.claimed_at IS NOT NULL
+                        AND callback.claim_expires_at IS NOT NULL
+                        AND callback.claim_expires_at > callback.claimed_at
+                    )
+               )
+        """
+        confirmation_claim_predicate = """
+               OR NOT (
+                    (confirmation.claim_id_digest IS NULL
+                     AND confirmation.claimed_at IS NULL
+                     AND confirmation.claim_expires_at IS NULL)
+                    OR (
+                        confirmation.claim_id_digest IS NOT NULL
+                        AND length(confirmation.claim_id_digest) = 64
+                        AND confirmation.claim_id_digest NOT GLOB '*[^0-9a-f]*'
+                        AND confirmation.claimed_at IS NOT NULL
+                        AND confirmation.claim_expires_at IS NOT NULL
+                        AND confirmation.claim_expires_at > confirmation.claimed_at
+                    )
+               )
+        """
+
     invalid_callbacks = int(
         conn.execute(
-            """
+            f"""
             SELECT COUNT(*)
             FROM telegram_callback_handles AS callback
             LEFT JOIN users AS owner ON owner.id = callback.owner_user_id
@@ -357,12 +468,13 @@ def _prevalidate_legacy_rows(conn: sqlite3.Connection) -> tuple[int, int]:
                OR passport.device_id IS NULL
                OR ((callback.consumed_at IS NULL)
                    <> (callback.terminal_reason IS NULL))
+               {callback_claim_predicate}
             """
         ).fetchone()[0]
     )
     invalid_confirmations = int(
         conn.execute(
-            """
+            f"""
             SELECT COUNT(*)
             FROM protocol_issuance_confirmations AS confirmation
             LEFT JOIN users AS owner ON owner.id = confirmation.owner_user_id
@@ -384,12 +496,67 @@ def _prevalidate_legacy_rows(conn: sqlite3.Connection) -> tuple[int, int]:
                OR callback.handle_digest IS NULL
                OR ((confirmation.consumed_at IS NULL)
                    <> (confirmation.terminal_reason IS NULL))
+               {confirmation_claim_predicate}
             """
         ).fetchone()[0]
     )
     if invalid_callbacks or invalid_confirmations:
         raise RuntimeError("phase15 legacy rows are incompatible with lease schema")
     return callback_count, confirmation_count
+
+
+def _is_exact_d827_predecessor_shape(conn: sqlite3.Connection) -> bool:
+    expected_phase15_indexes = {
+        _normalize_sql(statement.replace(" IF NOT EXISTS", ""))
+        for statement in INDEX_SQL
+    }
+    actual_phase15_indexes = {
+        _normalize_sql(str(row[0]))
+        for row in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'index' "
+            "AND tbl_name IN (?, ?) AND sql IS NOT NULL",
+            ("telegram_callback_handles", "protocol_issuance_confirmations"),
+        )
+    }
+    phase15_triggers = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'trigger' "
+        "AND tbl_name IN (?, ?) LIMIT 1",
+        ("telegram_callback_handles", "protocol_issuance_confirmations"),
+    ).fetchone()
+    predecessor_index = conn.execute(
+        "SELECT tbl_name, sql FROM sqlite_master "
+        "WHERE type = 'index' AND name = ?",
+        ("uq_device_passports_device_owner",),
+    ).fetchone()
+    return (
+        _table_sql(conn, "telegram_callback_handles")
+        == _normalize_sql(D827_CALLBACK_TABLE_SQL)
+        and _table_sql(conn, "protocol_issuance_confirmations")
+        == _normalize_sql(D827_CONFIRMATION_TABLE_SQL)
+        and actual_phase15_indexes == expected_phase15_indexes
+        and phase15_triggers is None
+        and predecessor_index is not None
+        and str(predecessor_index[0]) == "device_passports"
+        and _normalize_sql(str(predecessor_index[1]))
+        == D827_DEVICE_OWNER_INDEX_SQL
+    )
+
+
+def _validate_exact_d827_predecessor_shape(conn: sqlite3.Connection) -> None:
+    if not _is_exact_d827_predecessor_shape(conn):
+        raise RuntimeError("phase15 d827 predecessor schema changed during migration")
+
+
+def _table_sql(conn: sqlite3.Connection, table: str) -> str:
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+        (table,),
+    ).fetchone()
+    return _normalize_sql(str(row[0])) if row is not None else ""
+
+
+def _normalize_sql(statement: str) -> str:
+    return " ".join(statement.split())
 
 
 def _validate_legacy_shape(conn: sqlite3.Connection) -> None:

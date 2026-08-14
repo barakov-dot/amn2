@@ -68,6 +68,104 @@ CREATE INDEX idx_protocol_issuance_confirmations_expires_at
     ON protocol_issuance_confirmations(expires_at);
 """
 
+D827AFF_PHASE15_SQL = """
+CREATE UNIQUE INDEX uq_device_passports_device_owner
+    ON device_passports(device_id, owner_user_id);
+
+CREATE TABLE telegram_callback_handles (
+    handle_digest TEXT PRIMARY KEY
+        CHECK (length(handle_digest) = 64
+               AND handle_digest NOT GLOB '*[^0-9a-f]*'),
+    purpose TEXT NOT NULL,
+    owner_user_id INTEGER NOT NULL,
+    passport_device_id TEXT NOT NULL,
+    client_platform TEXT,
+    client_application TEXT,
+    client_version TEXT,
+    client_build TEXT,
+    request_fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    claim_id_digest TEXT,
+    claimed_at TEXT,
+    claim_expires_at TEXT,
+    consumed_at TEXT,
+    terminal_reason TEXT,
+    UNIQUE(handle_digest, owner_user_id, passport_device_id),
+    CHECK (
+        (claim_id_digest IS NULL AND claimed_at IS NULL AND claim_expires_at IS NULL)
+        OR (
+            length(claim_id_digest) = 64
+            AND claim_id_digest NOT GLOB '*[^0-9a-f]*'
+            AND claimed_at IS NOT NULL
+            AND claim_expires_at IS NOT NULL
+            AND claim_expires_at > claimed_at
+        )
+    ),
+    CHECK (
+        (consumed_at IS NULL AND terminal_reason IS NULL)
+        OR (consumed_at IS NOT NULL AND terminal_reason IS NOT NULL)
+    ),
+    FOREIGN KEY(owner_user_id) REFERENCES users(id),
+    FOREIGN KEY(passport_device_id, owner_user_id)
+        REFERENCES device_passports(device_id, owner_user_id)
+);
+CREATE INDEX idx_telegram_callback_handles_owner_passport
+    ON telegram_callback_handles(owner_user_id, passport_device_id);
+CREATE INDEX idx_telegram_callback_handles_expires_at
+    ON telegram_callback_handles(expires_at);
+
+CREATE TABLE protocol_issuance_confirmations (
+    token_digest TEXT PRIMARY KEY
+        CHECK (length(token_digest) = 64
+               AND token_digest NOT GLOB '*[^0-9a-f]*'),
+    selection_handle_digest TEXT NOT NULL
+        CHECK (length(selection_handle_digest) = 64
+               AND selection_handle_digest NOT GLOB '*[^0-9a-f]*'),
+    owner_user_id INTEGER NOT NULL,
+    passport_device_id TEXT NOT NULL,
+    client_platform TEXT NOT NULL,
+    client_application TEXT NOT NULL,
+    client_version TEXT NOT NULL,
+    client_build TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    claim_id_digest TEXT,
+    claimed_at TEXT,
+    claim_expires_at TEXT,
+    consumed_at TEXT,
+    terminal_reason TEXT,
+    CHECK (
+        (claim_id_digest IS NULL AND claimed_at IS NULL AND claim_expires_at IS NULL)
+        OR (
+            length(claim_id_digest) = 64
+            AND claim_id_digest NOT GLOB '*[^0-9a-f]*'
+            AND claimed_at IS NOT NULL
+            AND claim_expires_at IS NOT NULL
+            AND claim_expires_at > claimed_at
+        )
+    ),
+    CHECK (
+        (consumed_at IS NULL AND terminal_reason IS NULL)
+        OR (consumed_at IS NOT NULL AND terminal_reason IS NOT NULL)
+    ),
+    FOREIGN KEY(selection_handle_digest, owner_user_id, passport_device_id)
+        REFERENCES telegram_callback_handles(
+            handle_digest, owner_user_id, passport_device_id
+        ),
+    FOREIGN KEY(owner_user_id) REFERENCES users(id),
+    FOREIGN KEY(passport_device_id, owner_user_id)
+        REFERENCES device_passports(device_id, owner_user_id)
+);
+CREATE INDEX idx_protocol_issuance_confirmations_owner_passport
+    ON protocol_issuance_confirmations(owner_user_id, passport_device_id);
+CREATE INDEX idx_protocol_issuance_confirmations_selection_handle
+    ON protocol_issuance_confirmations(selection_handle_digest);
+CREATE INDEX idx_protocol_issuance_confirmations_expires_at
+    ON protocol_issuance_confirmations(expires_at);
+"""
+
 NOW = "2026-08-14T10:05:00+00:00"
 CLAIM_EXPIRES_AT = "2026-08-14T10:08:00+00:00"
 CALLBACK_CLAIM_DIGEST = "1" * 64
@@ -984,10 +1082,206 @@ def test_legacy_rebuild_failure_rolls_back_schema_rows_indexes_and_pragma(
         ) == before_confirmation
         assert connection.execute(
             "SELECT 1 FROM sqlite_master "
-            "WHERE name LIKE '%phase15%legacy%'"
+            "WHERE type = 'table' AND name IN ("
+            "'telegram_callback_handles_legacy', "
+            "'protocol_issuance_confirmations_legacy')"
         ).fetchone() is None
         assert int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) == (
             foreign_keys_enabled
         )
+    finally:
+        connection.close()
+
+
+def test_exact_d827aff_schema_upgrades_without_phase14_side_effects(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        owner_user_id = seed_owner_and_passport(connection)
+        connection.executescript(
+            """
+            DROP TABLE protocol_issuance_confirmations;
+            DROP TABLE telegram_callback_handles;
+            CREATE INDEX idx_phase14_unrelated_owner_fixture
+                ON device_passports(owner_user_id);
+            """
+        )
+        connection.executescript(D827AFF_PHASE15_SQL)
+        connection.execute(
+            """
+            INSERT INTO protocol_config_events (
+                event_type, actor_kind, actor_id, reason, metadata_json
+            ) VALUES ('d827_phase14_preserved', 'system', 15001, 'fixture', '{}')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO telegram_callback_handles (
+                handle_digest, purpose, owner_user_id, passport_device_id,
+                client_platform, client_application, client_version,
+                client_build, request_fingerprint, created_at, expires_at,
+                claim_id_digest, claimed_at, claim_expires_at,
+                consumed_at, terminal_reason
+            ) VALUES (?, 'select_protocol', ?, 'passport-phase15', 'windows',
+                      'amnezia_vpn', '5.0.0.5', 'active-build', ?,
+                      '2026-08-14T10:00:00+00:00',
+                      '2026-08-14T10:10:00+00:00', ?, ?, ?, NULL, NULL)
+            """,
+            (
+                "a" * 64,
+                owner_user_id,
+                "sha256:" + "a" * 64,
+                "1" * 64,
+                NOW,
+                CLAIM_EXPIRES_AT,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO telegram_callback_handles (
+                handle_digest, purpose, owner_user_id, passport_device_id,
+                client_platform, client_application, client_version,
+                client_build, request_fingerprint, created_at, expires_at,
+                claim_id_digest, claimed_at, claim_expires_at,
+                consumed_at, terminal_reason
+            ) VALUES (?, 'select_protocol', ?, 'passport-phase15', 'windows',
+                      'amnezia_vpn', '5.0.0.5', 'consumed-build', ?,
+                      '2026-08-14T09:55:00+00:00',
+                      '2026-08-14T10:10:00+00:00', ?,
+                      '2026-08-14T09:56:00+00:00',
+                      '2026-08-14T10:04:00+00:00', ?, 'protocol_selected')
+            """,
+            (
+                "c" * 64,
+                owner_user_id,
+                "sha256:" + "c" * 64,
+                "3" * 64,
+                NOW,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO protocol_issuance_confirmations (
+                token_digest, selection_handle_digest, owner_user_id,
+                passport_device_id, client_platform, client_application,
+                client_version, client_build, request_fingerprint,
+                created_at, expires_at, claim_id_digest, claimed_at,
+                claim_expires_at, consumed_at, terminal_reason
+            ) VALUES (?, ?, ?, 'passport-phase15', 'windows', 'amnezia_vpn',
+                      '5.0.0.5', 'active-build', ?,
+                      '2026-08-14T10:01:00+00:00',
+                      '2026-08-14T10:11:00+00:00', ?, ?, ?, NULL, NULL)
+            """,
+            (
+                "b" * 64,
+                "a" * 64,
+                owner_user_id,
+                "sha256:" + "b" * 64,
+                "2" * 64,
+                NOW,
+                CLAIM_EXPIRES_AT,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO protocol_issuance_confirmations (
+                token_digest, selection_handle_digest, owner_user_id,
+                passport_device_id, client_platform, client_application,
+                client_version, client_build, request_fingerprint,
+                created_at, expires_at, claim_id_digest, claimed_at,
+                claim_expires_at, consumed_at, terminal_reason
+            ) VALUES (?, ?, ?, 'passport-phase15', 'windows', 'amnezia_vpn',
+                      '5.0.0.5', 'consumed-build', ?,
+                      '2026-08-14T09:57:00+00:00',
+                      '2026-08-14T10:11:00+00:00', ?,
+                      '2026-08-14T09:58:00+00:00',
+                      '2026-08-14T10:04:00+00:00', ?, 'issued')
+            """,
+            (
+                "d" * 64,
+                "c" * 64,
+                owner_user_id,
+                "sha256:" + "d" * 64,
+                "4" * 64,
+                NOW,
+            ),
+        )
+        connection.commit()
+
+        callbacks_before = [
+            tuple(row)
+            for row in connection.execute(
+                "SELECT * FROM telegram_callback_handles ORDER BY handle_digest"
+            )
+        ]
+        confirmations_before = [
+            tuple(row)
+            for row in connection.execute(
+                "SELECT * FROM protocol_issuance_confirmations ORDER BY token_digest"
+            )
+        ]
+        passport_before = tuple(
+            connection.execute(
+                "SELECT * FROM device_passports WHERE device_id = 'passport-phase15'"
+            ).fetchone()
+        )
+        phase14_indexes_before = {
+            str(row[1])
+            for row in connection.execute("PRAGMA index_list(device_passports)")
+        }
+        assert "uq_device_passports_device_owner" in phase14_indexes_before
+
+        initialize_schema(connection)
+        initialize_schema(connection)
+
+        assert [
+            tuple(row)
+            for row in connection.execute(
+                "SELECT * FROM telegram_callback_handles ORDER BY handle_digest"
+            )
+        ] == callbacks_before
+        assert [
+            tuple(row)
+            for row in connection.execute(
+                "SELECT * FROM protocol_issuance_confirmations ORDER BY token_digest"
+            )
+        ] == confirmations_before
+        assert tuple(
+            connection.execute(
+                "SELECT * FROM device_passports WHERE device_id = 'passport-phase15'"
+            ).fetchone()
+        ) == passport_before
+        phase14_indexes_after = {
+            str(row[1])
+            for row in connection.execute("PRAGMA index_list(device_passports)")
+        }
+        assert phase14_indexes_after == phase14_indexes_before - {
+            "uq_device_passports_device_owner"
+        }
+        assert "idx_phase14_unrelated_owner_fixture" in phase14_indexes_after
+        assert connection.execute(
+            "SELECT event_type FROM protocol_config_events "
+            "WHERE event_type = 'd827_phase14_preserved'"
+        ).fetchone()[0] == "d827_phase14_preserved"
+        assert {
+            str(row[0])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+                "AND tbl_name IN (?, ?)",
+                ("telegram_callback_handles", "protocol_issuance_confirmations"),
+            )
+        } == {
+            "trg_phase15_callback_owner_passport_insert",
+            "trg_phase15_callback_owner_passport_update",
+            "trg_phase15_confirmation_owner_passport_insert",
+            "trg_phase15_confirmation_owner_passport_update",
+        }
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name IN ("
+            "'telegram_callback_handles_legacy', "
+            "'protocol_issuance_confirmations_legacy')"
+        ).fetchone() is None
+        assert list(connection.execute("PRAGMA foreign_key_check")) == []
     finally:
         connection.close()
