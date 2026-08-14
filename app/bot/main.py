@@ -190,5 +190,10 @@ def create_dispatcher(*, workflow=None) -> Dispatcher:
 
     dispatcher = Dispatcher()
     dispatcher["workflow"] = workflow
+    dispatcher["phase15_awg3_components"] = getattr(
+        workflow,
+        "_phase15_awg3_components",
+        None,
+    )
     dispatcher.include_router(router)
     return dispatcher

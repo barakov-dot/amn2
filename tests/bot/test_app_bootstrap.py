@@ -10,7 +10,12 @@ from app.bot.persistent_runtime import (
 )
 from app.config import Settings
 from app.bot.main import create_dispatcher
-from app.main import create_bot, create_workflow, run_persistent_bot
+from app.main import (
+    create_bot,
+    create_workflow,
+    create_workflow_from_settings,
+    run_persistent_bot,
+)
 from app.services.access import AccessService
 from app.systemd_notify import SystemdNotifyError
 from tests.server_config.test_loader import VALID_YAML
@@ -98,6 +103,74 @@ def test_create_workflow_wires_device_name_sequence_settings(tmp_path):
 
     assert workflow._device_name_prefix == "Custom-AMNZ"
     assert workflow._device_name_sequence_seed == 12
+
+
+def test_create_workflow_from_settings_injects_disabled_fail_closed_awg3_bundle(
+    tmp_path,
+):
+    settings = Settings(
+        _env_file=None,
+        telegram_bot_token="TEST_TOKEN",
+        app_secret_key="app-bootstrap-secret-value-with-more-than-32-chars",
+        admin_telegram_ids="9001",
+    )
+
+    workflow = create_workflow_from_settings(
+        settings,
+        database_path=tmp_path / "disabled-phase15.sqlite3",
+    )
+
+    components = workflow._phase15_awg3_components
+    assert components.available is False
+    assert components.health_event_sink is None
+    assert workflow._self_service_issuance_service is components.self_service_issuance_service
+    assert workflow._callback_state is components.callback_state
+    assert workflow._awg3_client_choices == ()
+    assert isinstance(workflow._access_service, AccessService)
+
+
+def test_disabled_awg3_bootstrap_preserves_awg2_issuance(tmp_path):
+    settings = Settings(
+        _env_file=None,
+        telegram_bot_token="TEST_TOKEN",
+        app_secret_key="app-bootstrap-secret-value-with-more-than-32-chars",
+    )
+    workflow = create_workflow_from_settings(
+        settings,
+        database_path=tmp_path / "awg2-still-available.sqlite3",
+    )
+    user_id = workflow._repo.upsert_user(
+        telegram_id=1001,
+        username="alice",
+        first_name="Alice",
+        last_name=None,
+    )
+    order_id = workflow._repo.create_order(
+        user_id=user_id,
+        plan_id=None,
+        payment_mode="free_test",
+    )
+
+    result = workflow._access_service.approve_order(
+        order_id,
+        workflow._default_server_id,
+        "AWG2 laptop",
+        admin_telegram_id=9001,
+        config_version="amneziawg_v2",
+    )
+
+    assert result.device_id > 0
+    assert "[Interface]" in result.config_text
+    assert workflow._repo.get_device(result.device_id)["config_version"] == "amneziawg_v2"
+
+
+def test_dispatcher_exposes_phase15_bundle_without_activating_monitoring():
+    components = SimpleNamespace(health_event_sink=None)
+    workflow = SimpleNamespace(_phase15_awg3_components=components)
+
+    dispatcher = create_dispatcher(workflow=workflow)
+
+    assert dispatcher["phase15_awg3_components"] is components
 
 
 def test_create_workflow_can_enable_vps_peer_apply_from_server_config(tmp_path):

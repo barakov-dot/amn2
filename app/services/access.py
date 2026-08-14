@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import hashlib
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,6 +32,11 @@ from app.config_assignment import (
 )
 from app.vpn.amneziawg_v2.config import ClientConfigDefaults, ClientConfigInput
 from app.vpn.amneziawg_v2.keys import generate_key, generate_keypair
+from app.vpn.amneziawg_v3.config import (
+    Awg3ClientConfigInput,
+    HeaderProtectionSecretRef,
+    SecretResolver,
+)
 from app.vpn.config_versions import render_client_config_for_version, validate_config_version
 
 
@@ -104,6 +110,55 @@ class OperatorDeviceContext:
     runtime_instance_id: str | None = None
     client_identity_evidence_status: str | None = None
     compatibility_evidence_id: str | None = None
+
+
+@dataclass(frozen=True)
+class Awg3IssuerMaterial:
+    provider_identity: str
+    s1: int
+    s2: int
+    s3: int
+    s4: int
+    content_padding_addition: str
+    rekey_after_time: str
+    rekey_timeout: str
+    reject_after_time: str
+    keepalive_timeout: str
+    max_handshake_attempts: str
+    header_protection_key: HeaderProtectionSecretRef
+    secret_resolver: SecretResolver
+
+    def __post_init__(self) -> None:
+        _require_exact_material_text(self.provider_identity, "provider_identity")
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 12
+            for value in (self.s1, self.s2, self.s3, self.s4)
+        ):
+            raise ValueError("AWG3 issuer material requires S1-S4 values >= 12")
+        for field_name in (
+            "content_padding_addition",
+            "rekey_after_time",
+            "rekey_timeout",
+            "reject_after_time",
+            "keepalive_timeout",
+            "max_handshake_attempts",
+        ):
+            _require_exact_material_text(getattr(self, field_name), field_name)
+        if not isinstance(self.header_protection_key, HeaderProtectionSecretRef):
+            raise ValueError("header_protection_key")
+        if not callable(getattr(self.secret_resolver, "resolve", None)):
+            raise ValueError("secret_resolver")
+
+
+@dataclass(frozen=True)
+class _ResolvedHeaderProtectionSecretResolver:
+    reference: str
+    secret: str
+
+    def resolve(self, reference: str) -> str:
+        if reference != self.reference:
+            raise ValueError("unexpected header_protection_key reference")
+        return self.secret
 
 
 class PeerApplier(Protocol):
@@ -246,6 +301,180 @@ class AccessService:
                 )
                 raise RemoteOperationPartialFailure(remote_mutation, exc) from exc
             raise
+
+    def create_protocol_device_for_existing_passport(
+        self,
+        *,
+        owner_user_id: int,
+        passport_device_id: str,
+        server_id: int,
+        device_name: str,
+        config_version: str,
+        client_build: str,
+        device_context: OperatorDeviceContext,
+        awg3_material: Awg3IssuerMaterial,
+    ) -> OperatorDeviceCreateResult:
+        remote_mutation: RemoteMutationResult | None = None
+
+        def record_remote_mutation(result: RemoteMutationResult) -> None:
+            nonlocal remote_mutation
+            remote_mutation = result
+
+        try:
+            with self._repo.transaction():
+                return self._create_protocol_device_for_existing_passport(
+                    owner_user_id=owner_user_id,
+                    passport_device_id=passport_device_id,
+                    server_id=server_id,
+                    device_name=device_name,
+                    config_version=config_version,
+                    client_build=client_build,
+                    device_context=device_context,
+                    awg3_material=awg3_material,
+                    remote_mutation_observer=record_remote_mutation,
+                )
+        except Exception as exc:
+            if remote_mutation is not None and not remote_mutation.local_applied:
+                raise RemoteOperationPartialFailure(remote_mutation, exc) from exc
+            raise
+
+    def _create_protocol_device_for_existing_passport(
+        self,
+        *,
+        owner_user_id: int,
+        passport_device_id: str,
+        server_id: int,
+        device_name: str,
+        config_version: str,
+        client_build: str,
+        device_context: OperatorDeviceContext,
+        awg3_material: Awg3IssuerMaterial,
+        remote_mutation_observer: Callable[[RemoteMutationResult], None] | None,
+    ) -> OperatorDeviceCreateResult:
+        normalized_device_name = device_name.strip()
+        if not normalized_device_name:
+            raise ValueError("device_name must be non-blank")
+        if (
+            not isinstance(client_build, str)
+            or not client_build
+            or client_build != client_build.strip()
+            or client_build.casefold() in {"latest", "current", "unknown"}
+        ):
+            raise ValueError("exact client_build is required")
+        config_version = validate_config_version(config_version)
+        validate_device_passport_context(
+            platform=device_context.platform,
+            official_client_type=device_context.official_client_type,
+            client_version=device_context.client_version,
+            import_method=device_context.import_method,
+            config_schema_version=config_version,
+        )
+        if (
+            device_context.protocol_version != "awg3"
+            or not device_context.runtime_instance_id
+            or device_context.client_identity_evidence_status != "verified"
+            or not device_context.compatibility_evidence_id
+        ):
+            raise ValueError("complete AWG3 client context is required")
+        if not isinstance(awg3_material, Awg3IssuerMaterial):
+            raise ValueError("strict AWG3 issuer material is required")
+
+        try:
+            owner = self._repo.get_user(owner_user_id)
+        except LookupError as exc:
+            raise OperatorOwnerNotFound(
+                f"Protocol device owner {owner_user_id} does not exist"
+            ) from exc
+        if str(owner["status"]) != "active":
+            raise OperatorOwnerNotActive(
+                f"Protocol device owner {owner_user_id} is not active"
+            )
+        passport = self._repo.get_device_passport(passport_device_id)
+        if passport is None:
+            raise ValueError("passport was not found")
+        if int(passport["owner_user_id"]) != owner_user_id or passport["revoked_at"] is not None:
+            raise ValueError("passport owner mismatch or passport is revoked")
+        if (
+            str(passport["platform"]) != device_context.platform
+            or str(passport["official_client_type"]) != device_context.official_client_type
+        ):
+            raise ValueError("passport client context mismatch")
+        original_device_id = passport["local_device_id"]
+        if original_device_id is None:
+            raise ValueError("passport local device lineage is missing")
+        original_device = self._repo.get_user_device(
+            user_id=owner_user_id,
+            device_id=int(original_device_id),
+        )
+        if original_device is None or str(original_device["status"]) != "active":
+            raise ValueError("passport local device lineage is invalid")
+        if int(original_device["server_id"]) != server_id:
+            raise ValueError("passport server lineage mismatch")
+        if self._peer_applier is None:
+            raise OperatorPeerApplierRequired(
+                "Protocol device creation requires an explicit live peer applier"
+            )
+
+        reference = awg3_material.header_protection_key.reference
+        resolved_hpk = awg3_material.secret_resolver.resolve(reference)
+        _require_exact_material_text(
+            resolved_hpk,
+            "resolved header_protection_key",
+            maximum=4096,
+        )
+        resolved_fingerprint = "sha256:" + hashlib.sha256(
+            resolved_hpk.encode("utf-8")
+        ).hexdigest()
+        if resolved_fingerprint != awg3_material.header_protection_key.fingerprint:
+            raise ValueError("header_protection_key fingerprint mismatch")
+
+        expiry_policy = str(original_device["expiry_policy"])
+        expiry = AccessExpiry(
+            expiry_policy,
+            original_device["duration_days"],
+            None if expiry_policy == DURATION else original_device["expires_at"],
+        )
+        config_identity = build_config_identity(
+            user_label=_operator_config_user_label(owner, user_id=owner_user_id),
+            device_label=normalized_device_name,
+        )
+        server = self._repo.get_server(server_id)
+        keypair = generate_keypair()
+        preshared_key = generate_key()
+        device_id, config_text, config_fingerprint = self._create_device_with_allocated_ip(
+            user_id=owner_user_id,
+            server_id=server_id,
+            device_name=config_identity.display_name,
+            server=server,
+            expiry=expiry,
+            private_key=keypair.private_key,
+            public_key=keypair.public_key,
+            preshared_key=preshared_key,
+            config_version=config_version,
+            assignment_mode=DEDICATED_DEVICE,
+            remote_operation_id="access.create_protocol_device_for_existing_passport",
+            remote_recovery_note=lambda created_device_id: (
+                "Remote peer was applied before additional protocol device creation "
+                f"completed. Reconcile device {created_device_id} against passport "
+                f"{passport_device_id} and server {server_id}."
+            ),
+            remote_mutation_observer=remote_mutation_observer,
+            protocol_version=device_context.protocol_version,
+            runtime_instance_id=device_context.runtime_instance_id,
+            compatibility_evidence_id=device_context.compatibility_evidence_id,
+            client_identity_evidence_status=device_context.client_identity_evidence_status,
+            awg3_material=awg3_material,
+            resolved_hpk=resolved_hpk,
+        )
+        return OperatorDeviceCreateResult(
+            device_id=device_id,
+            config_text=config_text,
+            config_artifact_path=None,
+            config_filename=config_identity.filename,
+            config_fingerprint=config_fingerprint,
+            passport_device_id=passport_device_id,
+            assignment_mode=DEDICATED_DEVICE,
+        )
 
     def _create_operator_device(
         self,
@@ -509,6 +738,8 @@ class AccessService:
         runtime_instance_id: str | None = None,
         compatibility_evidence_id: str | None = None,
         client_identity_evidence_status: str | None = None,
+        awg3_material: Awg3IssuerMaterial | None = None,
+        resolved_hpk: str | None = None,
     ) -> tuple[int, str]:
         last_error: sqlite3.IntegrityError | None = None
 
@@ -525,8 +756,7 @@ class AccessService:
                 )
             except RuntimeError as exc:
                 raise IpAllocationConflict("Could not allocate a unique VPN IP address") from exc
-            config_text = render_client_config_for_version(
-                ClientConfigInput(
+            client_config = ClientConfigInput(
                     private_key=private_key,
                     address=f"{vpn_ip}/32",
                     dns=self._client_config_defaults.dns,
@@ -538,10 +768,26 @@ class AccessService:
                     jc=self._client_config_defaults.jc,
                     jmin=self._client_config_defaults.jmin,
                     jmax=self._client_config_defaults.jmax,
-                    s1=self._client_config_defaults.s1,
-                    s2=self._client_config_defaults.s2,
-                    s3=self._client_config_defaults.s3,
-                    s4=self._client_config_defaults.s4,
+                    s1=(
+                        awg3_material.s1
+                        if awg3_material is not None
+                        else self._client_config_defaults.s1
+                    ),
+                    s2=(
+                        awg3_material.s2
+                        if awg3_material is not None
+                        else self._client_config_defaults.s2
+                    ),
+                    s3=(
+                        awg3_material.s3
+                        if awg3_material is not None
+                        else self._client_config_defaults.s3
+                    ),
+                    s4=(
+                        awg3_material.s4
+                        if awg3_material is not None
+                        else self._client_config_defaults.s4
+                    ),
                     h1=self._client_config_defaults.h1,
                     h2=self._client_config_defaults.h2,
                     h3=self._client_config_defaults.h3,
@@ -551,9 +797,33 @@ class AccessService:
                     i3=self._client_config_defaults.i3,
                     i4=self._client_config_defaults.i4,
                     i5=self._client_config_defaults.i5,
-                ),
+                )
+            resolver = None
+            render_input: ClientConfigInput | Awg3ClientConfigInput = client_config
+            template_dir = self._client_config_template_dir
+            if config_version == "amneziawg_v3":
+                if awg3_material is None or resolved_hpk is None:
+                    raise ValueError("strict AWG3 issuer material is required")
+                render_input = Awg3ClientConfigInput(
+                    awg2=client_config,
+                    header_protection_key=awg3_material.header_protection_key,
+                    content_padding_addition=awg3_material.content_padding_addition,
+                    rekey_after_time=awg3_material.rekey_after_time,
+                    rekey_timeout=awg3_material.rekey_timeout,
+                    reject_after_time=awg3_material.reject_after_time,
+                    keepalive_timeout=awg3_material.keepalive_timeout,
+                    max_handshake_attempts=awg3_material.max_handshake_attempts,
+                )
+                resolver = _ResolvedHeaderProtectionSecretResolver(
+                    awg3_material.header_protection_key.reference,
+                    resolved_hpk,
+                )
+                template_dir = None
+            config_text = render_client_config_for_version(
+                render_input,
                 config_version,
-                template_dir=self._client_config_template_dir,
+                template_dir=template_dir,
+                resolver=resolver,
             )
             config_fingerprint = fingerprint_config(config_text)
 
@@ -688,3 +958,20 @@ def _operator_config_user_label(owner, *, user_id: int) -> str:
     if full_name:
         return full_name
     return f"User-{user_id}"
+
+
+def _require_exact_material_text(
+    value: object,
+    field_name: str,
+    *,
+    maximum: int = 255,
+) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value != value.strip()
+        or len(value) > maximum
+        or any(ord(character) < 32 for character in value)
+    ):
+        raise ValueError(field_name)
+    return value

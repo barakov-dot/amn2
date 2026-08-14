@@ -636,3 +636,47 @@ def test_settings_rejects_unknown_control_panel_auth_method():
             app_secret_key="test-secret",
             control_panel_auth_methods="password,magic",
         )
+
+
+def test_settings_defaults_awg3_bootstrap_and_all_providers_to_disabled_empty():
+    settings = Settings(
+        _env_file=None,
+        telegram_bot_token="TEST_TOKEN",
+        app_secret_key="test-secret",
+    )
+
+    assert settings.awg3_bootstrap_enabled is False
+    assert settings.awg3_runtime_provider_path == ""
+    assert settings.awg3_evidence_provider_path == ""
+    assert settings.awg3_exact_build_provider_path == ""
+    assert settings.awg3_issuer_material_provider_path == ""
+    assert settings.awg3_hpk_secret_path == ""
+
+
+def test_settings_represent_exact_awg3_provider_paths_and_identities():
+    settings = Settings(
+        _env_file=None,
+        telegram_bot_token="TEST_TOKEN",
+        app_secret_key="test-secret",
+        awg3_bootstrap_enabled=True,
+        awg3_runtime_provider_path=" runtime.json ",
+        awg3_runtime_provider_identity=" runtime-provider ",
+        awg3_evidence_provider_path=" evidence.json ",
+        awg3_evidence_provider_identity=" evidence-provider ",
+        awg3_exact_build_provider_path=" build.json ",
+        awg3_exact_build_provider_identity=" build-provider ",
+        awg3_expected_runtime_instance_id=" runtime-awg3 ",
+        awg3_expected_package_id=" package-001 ",
+        awg3_expected_source_head=" " + "a" * 40 + " ",
+        awg3_issuer_material_provider_path=" material.json ",
+        awg3_issuer_material_provider_identity=" material-provider ",
+        awg3_hpk_secret_path=" hpk.secret ",
+        awg3_hpk_secret_reference=" hpk-001 ",
+    )
+
+    assert settings.awg3_bootstrap_enabled is True
+    assert settings.awg3_runtime_provider_path == "runtime.json"
+    assert settings.awg3_runtime_provider_identity == "runtime-provider"
+    assert settings.awg3_expected_source_head == "a" * 40
+    assert settings.awg3_issuer_material_provider_path == "material.json"
+    assert settings.awg3_hpk_secret_reference == "hpk-001"

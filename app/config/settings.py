@@ -89,6 +89,20 @@ class Settings(BaseSettings):
         default=False,
         alias="OPERATOR_DEVICE_CREATE_ENABLED",
     )
+    awg3_bootstrap_enabled: bool = Field(default=False, alias="AWG3_BOOTSTRAP_ENABLED")
+    awg3_runtime_provider_path: str = Field(default="", alias="AWG3_RUNTIME_PROVIDER_PATH")
+    awg3_runtime_provider_identity: str = Field(default="", alias="AWG3_RUNTIME_PROVIDER_IDENTITY")
+    awg3_evidence_provider_path: str = Field(default="", alias="AWG3_EVIDENCE_PROVIDER_PATH")
+    awg3_evidence_provider_identity: str = Field(default="", alias="AWG3_EVIDENCE_PROVIDER_IDENTITY")
+    awg3_exact_build_provider_path: str = Field(default="", alias="AWG3_EXACT_BUILD_PROVIDER_PATH")
+    awg3_exact_build_provider_identity: str = Field(default="", alias="AWG3_EXACT_BUILD_PROVIDER_IDENTITY")
+    awg3_expected_runtime_instance_id: str = Field(default="", alias="AWG3_EXPECTED_RUNTIME_INSTANCE_ID")
+    awg3_expected_package_id: str = Field(default="", alias="AWG3_EXPECTED_PACKAGE_ID")
+    awg3_expected_source_head: str = Field(default="", alias="AWG3_EXPECTED_SOURCE_HEAD")
+    awg3_issuer_material_provider_path: str = Field(default="", alias="AWG3_ISSUER_MATERIAL_PROVIDER_PATH")
+    awg3_issuer_material_provider_identity: str = Field(default="", alias="AWG3_ISSUER_MATERIAL_PROVIDER_IDENTITY")
+    awg3_hpk_secret_path: str = Field(default="", alias="AWG3_HPK_SECRET_PATH")
+    awg3_hpk_secret_reference: str = Field(default="", alias="AWG3_HPK_SECRET_REFERENCE")
     server_config_path: str = Field(default="servers.yml", alias="SERVER_CONFIG_PATH")
     server_name: str = Field(default="debian-vps-1", alias="SERVER_NAME")
     control_panel_auth_methods: str = Field(
@@ -173,6 +187,25 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_vpn_port_bounds(self) -> "Settings":
+        for field_name in (
+            "awg3_runtime_provider_path",
+            "awg3_runtime_provider_identity",
+            "awg3_evidence_provider_path",
+            "awg3_evidence_provider_identity",
+            "awg3_exact_build_provider_path",
+            "awg3_exact_build_provider_identity",
+            "awg3_expected_runtime_instance_id",
+            "awg3_expected_package_id",
+            "awg3_expected_source_head",
+            "awg3_issuer_material_provider_path",
+            "awg3_issuer_material_provider_identity",
+            "awg3_hpk_secret_path",
+            "awg3_hpk_secret_reference",
+        ):
+            value = getattr(self, field_name)
+            if "\n" in value or "\r" in value:
+                raise ValueError(f"{field_name.upper()} must be one line")
+            setattr(self, field_name, value.strip())
         if not 1 <= self.telegram_admission_timeout_seconds <= 120:
             raise ValueError("TELEGRAM_ADMISSION_TIMEOUT_SECONDS must be in 1..120")
         if not 1 <= self.telegram_polling_timeout_seconds <= 50:

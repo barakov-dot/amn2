@@ -28,6 +28,7 @@ from app.server.peer_apply import ServerConfigPeerApplier
 from app.server_config.loader import load_server_config, select_server
 from app.server_config.models import ServerConfig
 from app.services.access import AccessService
+from app.services.phase15_bootstrap import build_phase15_awg3_components
 from app.systemd_notify import SystemdNotifier
 from app.vpn.amneziawg_v2.config import ClientConfigDefaults
 
@@ -251,6 +252,7 @@ def create_workflow_from_settings(
         client_config_defaults=settings.client_config_defaults,
         bot_device_name_prefix=settings.bot_device_name_prefix,
         bot_device_name_sequence_seed=settings.bot_device_name_sequence_seed,
+        phase15_settings=settings,
     )
 
 
@@ -281,6 +283,7 @@ def create_workflow(
     client_config_defaults: ClientConfigDefaults | None = None,
     bot_device_name_prefix: str = "Neobyatnaya-AMNZ",
     bot_device_name_sequence_seed: int = 4,
+    phase15_settings: Settings | None = None,
 ) -> BotWorkflow:
     conn = connect(database_path)
     initialize_schema(conn)
@@ -310,6 +313,14 @@ def create_workflow(
         client_config_defaults=client_config_defaults,
     )
     secret_box = SecretBox.from_app_secret(app_secret_key)
+    phase15_components = None
+    if phase15_settings is not None:
+        phase15_components = build_phase15_awg3_components(
+            phase15_settings,
+            repo,
+            access_service,
+            peer_applier,
+        )
     workflow = BotWorkflow(
         repo=repo,
         admin_telegram_ids=admin_telegram_ids,
@@ -324,7 +335,33 @@ def create_workflow(
         device_name_prefix=bot_device_name_prefix,
         device_name_sequence_seed=bot_device_name_sequence_seed,
         vps_writes_enabled=vps_apply_enabled,
+        admin_config_issuance_factory=(
+            phase15_components.admin_config_issuance_factory
+            if phase15_components is not None
+            else None
+        ),
+        self_service_issuance_service=(
+            phase15_components.self_service_issuance_service
+            if phase15_components is not None
+            else None
+        ),
+        callback_state=(
+            phase15_components.callback_state
+            if phase15_components is not None
+            else None
+        ),
+        awg3_client_choices=(
+            phase15_components.awg3_client_choices
+            if phase15_components is not None
+            else ()
+        ),
+        awg3_delivery_builder=(
+            phase15_components.delivery_builder
+            if phase15_components is not None
+            else None
+        ),
     )
+    workflow._phase15_awg3_components = phase15_components
     return workflow
 
 
