@@ -659,6 +659,69 @@ def test_awg3_invalid_selection_fails_closed_if_terminal_consume_is_lost(
         )
 
 
+def test_awg3_selection_terminal_consume_loss_returns_no_result(
+    harness, monkeypatch
+):
+    service = _service(harness)
+    request = _request(harness)
+    handle = service._callback_state.create_selection(
+        owner_user_id=request.user_id,
+        passport_device_id=request.passport_device_id,
+        client_platform=request.client.platform,
+        client_application=request.client.application,
+        client_version=request.client.version,
+        client_build=request.client.build_id,
+        request_fingerprint=_module().request_fingerprint(request),
+    )
+    harness.repo.set_user_status_for_admin(harness.user_id, "blocked")
+    monkeypatch.setattr(
+        service._callback_state,
+        "consume_selection",
+        lambda _state, *, terminal_reason: False,
+    )
+
+    result = service.decide_from_selection(
+        owner_user_id=request.user_id,
+        telegram_id=request.telegram_id,
+        selection_handle=handle,
+    )
+
+    assert result is None
+
+
+def test_awg3_expired_wrong_purpose_selection_stays_unconsumed(harness):
+    callback_service = _callback_module().TelegramCallbackStateService(
+        repo=harness.repo,
+        now=lambda: NOW,
+    )
+    request = _request(harness)
+    handle = "W" * 22
+    handle_digest = hashlib.sha256(handle.encode()).hexdigest()
+    harness.repo.create_callback_handle(
+        handle_digest=handle_digest,
+        purpose="wrong_purpose",
+        owner_user_id=request.user_id,
+        passport_device_id=request.passport_device_id,
+        client_platform=request.client.platform,
+        client_application=request.client.application,
+        client_version=request.client.version,
+        client_build=request.client.build_id,
+        request_fingerprint=_module().request_fingerprint(request),
+        created_at=(NOW - timedelta(minutes=16)).isoformat(),
+        expires_at=(NOW - timedelta(minutes=1)).isoformat(),
+    )
+
+    assert callback_service.consume_expired_selection(
+        handle, owner_user_id=request.user_id
+    ) is None
+    row = harness.conn.execute(
+        "SELECT consumed_at, terminal_reason FROM telegram_callback_handles "
+        "WHERE handle_digest = ?",
+        (handle_digest,),
+    ).fetchone()
+    assert tuple(row) == (None, None)
+
+
 def test_awg3_selection_wrong_owner_does_not_consume_owner_state(harness):
     service = _service(harness)
     request = _request(harness)
@@ -909,6 +972,87 @@ def test_awg3_competing_connection_cannot_reach_issuer_with_live_claim(tmp_path)
     first_conn.close()
 
 
+def test_awg3_inflight_confirmation_survives_expired_duplicate_and_prune(
+    harness,
+):
+    clock = [NOW]
+    issuer = SyntheticIssuer(
+        harness.repo, user_id=harness.user_id, server_id=harness.server_id
+    )
+    worker_a = _service(harness, issuer=issuer, now=lambda: clock[0])
+    duplicate_worker = _service(harness, issuer=issuer, now=lambda: clock[0])
+    request = _request(harness)
+    token = worker_a.decide(request).token
+    observations = {}
+
+    def duplicate_and_prune_after_ttl():
+        clock[0] = NOW + timedelta(minutes=6)
+        observations["duplicate"] = duplicate_worker.issue_after_confirmation(
+            owner_user_id=harness.user_id,
+            confirmation_token=token,
+        )
+        observations["new_selection"] = duplicate_worker.decide(request)
+
+    issuer.callback = duplicate_and_prune_after_ttl
+
+    issued = worker_a.issue_after_confirmation(
+        owner_user_id=harness.user_id,
+        confirmation_token=token,
+    )
+
+    row = harness.conn.execute(
+        "SELECT consumed_at, terminal_reason FROM protocol_issuance_confirmations "
+        "WHERE token_digest = ?",
+        (hashlib.sha256(token.encode()).hexdigest(),),
+    ).fetchone()
+    assert observations["duplicate"] is None
+    assert observations["new_selection"].status == "confirmation_required"
+    assert issued.status == "issued"
+    assert len(issuer.calls) == 1
+    assert tuple(row) == (clock[0].isoformat(), "issued")
+
+
+def test_awg3_inflight_selection_survives_expired_duplicate_and_prune(harness):
+    clock = [NOW]
+    worker_a = _service(harness, now=lambda: clock[0])
+    duplicate_worker = _service(harness, now=lambda: clock[0])
+    request = _request(harness)
+    handle = worker_a._callback_state.create_selection(
+        owner_user_id=request.user_id,
+        passport_device_id=request.passport_device_id,
+        client_platform=request.client.platform,
+        client_application=request.client.application,
+        client_version=request.client.version,
+        client_build=request.client.build_id,
+        request_fingerprint=_module().request_fingerprint(request),
+    )
+    claimed = worker_a._callback_state.claim_selection(
+        handle, owner_user_id=request.user_id
+    )
+    assert claimed is not None
+    clock[0] = NOW + timedelta(minutes=16)
+
+    duplicate = duplicate_worker.decide_from_selection(
+        owner_user_id=request.user_id,
+        telegram_id=request.telegram_id,
+        selection_handle=handle,
+    )
+    duplicate_worker._callback_state.create_selection(
+        owner_user_id=request.user_id,
+        passport_device_id=request.passport_device_id,
+        client_platform=request.client.platform,
+        client_application=request.client.application,
+        client_version=request.client.version,
+        client_build=request.client.build_id,
+        request_fingerprint=_module().request_fingerprint(request),
+    )
+
+    assert duplicate is None
+    assert worker_a._callback_state.consume_selection(
+        claimed, terminal_reason="protocol-selected"
+    ) is True
+
+
 def test_awg3_duplicate_confirmation_never_calls_issuer_twice(harness):
     issuer = SyntheticIssuer(
         harness.repo, user_id=harness.user_id, server_id=harness.server_id
@@ -978,8 +1122,7 @@ def test_awg3_issued_result_fails_closed_when_exact_claim_is_lost(harness):
         confirmation_token=token,
     )
 
-    assert result.status == "blocked"
-    assert result.reason_code == "invalid_confirmation"
+    assert result is None
     assert len(issuer.calls) == 1
     row = harness.conn.execute(
         "SELECT consumed_at, claim_id_digest FROM protocol_issuance_confirmations"
@@ -1006,8 +1149,28 @@ def test_awg3_transient_result_fails_closed_when_claim_release_fails(
         confirmation_token=token,
     )
 
-    assert result.status == "blocked"
-    assert result.reason_code == "invalid_confirmation"
+    assert result is None
+
+
+def test_awg3_confirmation_terminal_consume_loss_returns_no_result(
+    harness, monkeypatch
+):
+    service = _service(harness)
+    request = _request(harness)
+    token = service.decide(request).token
+    harness.repo.set_user_status_for_admin(harness.user_id, "blocked")
+    monkeypatch.setattr(
+        service._callback_state,
+        "consume_confirmation",
+        lambda _state, *, terminal_reason: False,
+    )
+
+    result = service.issue_after_confirmation(
+        owner_user_id=harness.user_id,
+        confirmation_token=token,
+    )
+
+    assert result is None
 
 
 def test_issue_rechecks_gate_drift_before_consuming_token_or_calling_issuer(harness):

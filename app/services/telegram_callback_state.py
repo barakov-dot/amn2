@@ -153,6 +153,7 @@ class TelegramCallbackStateService:
             _digest(handle),
             owner_user_id,
             _timestamp(self._utc_now()),
+            expected_purpose=SELECTION_PURPOSE,
         )
         return None if row is None else _expired_selection_state(row)
 

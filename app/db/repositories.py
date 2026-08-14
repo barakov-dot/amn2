@@ -911,8 +911,12 @@ class Repository:
         handle_digest: str,
         owner_user_id: int,
         now: str,
+        *,
+        expected_purpose: str,
     ) -> sqlite3.Row | None:
         _require_sha256_digest(handle_digest, "handle_digest")
+        if not expected_purpose:
+            raise ValueError("expected_purpose")
         with self.transaction():
             cursor = self._conn.execute(
                 """
@@ -920,10 +924,14 @@ class Repository:
                 SET consumed_at = ?, terminal_reason = 'expired'
                 WHERE handle_digest = ?
                   AND owner_user_id = ?
+                  AND purpose = ?
                   AND consumed_at IS NULL
                   AND expires_at <= ?
+                  AND claim_id_digest IS NULL
+                  AND claimed_at IS NULL
+                  AND claim_expires_at IS NULL
                 """,
-                (now, handle_digest, owner_user_id, now),
+                (now, handle_digest, owner_user_id, expected_purpose, now),
             )
             if cursor.rowcount != 1:
                 return None
@@ -1131,6 +1139,9 @@ class Repository:
                   AND owner_user_id = ?
                   AND consumed_at IS NULL
                   AND expires_at <= ?
+                  AND claim_id_digest IS NULL
+                  AND claimed_at IS NULL
+                  AND claim_expires_at IS NULL
                 """,
                 (now, token_digest, owner_user_id, now),
             )
@@ -1147,13 +1158,22 @@ class Repository:
     def prune_expired_phase15_callback_state(self, now: str) -> int:
         with self.transaction():
             confirmation_cursor = self._conn.execute(
-                "DELETE FROM protocol_issuance_confirmations WHERE expires_at <= ?",
+                """
+                DELETE FROM protocol_issuance_confirmations
+                WHERE expires_at <= ?
+                  AND claim_id_digest IS NULL
+                  AND claimed_at IS NULL
+                  AND claim_expires_at IS NULL
+                """,
                 (now,),
             )
             callback_cursor = self._conn.execute(
                 """
                 DELETE FROM telegram_callback_handles
                 WHERE expires_at <= ?
+                  AND claim_id_digest IS NULL
+                  AND claimed_at IS NULL
+                  AND claim_expires_at IS NULL
                   AND NOT EXISTS (
                       SELECT 1
                       FROM protocol_issuance_confirmations

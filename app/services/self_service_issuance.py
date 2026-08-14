@@ -175,11 +175,7 @@ class SelfServiceIssuanceService:
                 return None
             blocked, _admission = self._validate_standard(request)
             if blocked is not None:
-                return (
-                    blocked
-                    if self._finish_selection(selection, blocked)
-                    else self._blocked(request, "invalid_confirmation")
-                )
+                return blocked if self._finish_selection(selection, blocked) else None
         except BaseException as exc:
             if not self._callback_state.release_selection(selection):
                 raise RuntimeError("selection claim release failed") from exc
@@ -263,7 +259,7 @@ class SelfServiceIssuanceService:
                 return (
                     blocked
                     if self._finish_confirmation(confirmation, blocked)
-                    else self._blocked(resolved_request, "invalid_confirmation")
+                    else None
                 )
             assert admission is not None
             result = self._reserve_and_issue_serialized(
@@ -281,7 +277,7 @@ class SelfServiceIssuanceService:
         return (
             result
             if self._finish_confirmation(confirmation, result)
-            else self._blocked(resolved_request, "invalid_confirmation")
+            else None
         )
 
     def issue_admin_pilot(
