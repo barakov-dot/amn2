@@ -2,6 +2,7 @@ import sqlite3
 
 import pytest
 
+from app.db import phase15_bootstrap
 from app.db.repositories import Repository
 from app.db.schema import initialize_schema
 
@@ -490,13 +491,10 @@ def test_callback_owner_and_passport_pair_is_database_bound(database_path) -> No
         assert connection.execute(
             "SELECT COUNT(*) FROM telegram_callback_handles"
         ).fetchone()[0] == 0
-        owner_index_columns = [
-            row[2]
-            for row in connection.execute(
-                "PRAGMA index_info(uq_device_passports_device_owner)"
-            )
-        ]
-        assert owner_index_columns == ["device_id", "owner_user_id"]
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'index' AND name = 'uq_device_passports_device_owner'"
+        ).fetchone() is None
     finally:
         connection.close()
 
@@ -510,6 +508,9 @@ def test_phase15_digest_fields_reject_raw_and_non_lowercase_values(
         repo = Repository(connection)
         invalid_callback = callback_values(owner_user_id)
         invalid_callback["handle_digest"] = "raw-callback-token"
+        with pytest.raises(ValueError, match="handle_digest"):
+            repo.create_callback_handle(**invalid_callback)
+        invalid_callback["handle_digest"] = None
         with pytest.raises(ValueError, match="handle_digest"):
             repo.create_callback_handle(**invalid_callback)
 
@@ -543,6 +544,60 @@ def test_phase15_digest_fields_reject_raw_and_non_lowercase_values(
                 """,
                 (NOW, CLAIM_EXPIRES_AT, "a" * 64),
             )
+    finally:
+        connection.close()
+
+
+def test_phase15_digest_constraints_reject_null_direct_sql(database_path) -> None:
+    connection = open_connection(database_path)
+    try:
+        owner_user_id = seed_owner_and_passport(connection)
+        repo = Repository(connection)
+        repo.create_callback_handle(**callback_values(owner_user_id))
+        repo.create_issuance_confirmation(**confirmation_values(owner_user_id))
+
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO telegram_callback_handles (
+                    handle_digest, purpose, owner_user_id, passport_device_id,
+                    request_fingerprint, created_at, expires_at
+                ) VALUES (NULL, 'select_protocol', ?, 'passport-phase15',
+                          ?, '2026-08-14T10:00:00+00:00',
+                          '2026-08-14T10:10:00+00:00')
+                """,
+                (owner_user_id, "sha256:" + "c" * 64),
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO protocol_issuance_confirmations (
+                    token_digest, selection_handle_digest, owner_user_id,
+                    passport_device_id, client_platform, client_application,
+                    client_version, client_build, request_fingerprint,
+                    created_at, expires_at
+                ) VALUES (NULL, ?, ?, 'passport-phase15', 'windows',
+                          'amnezia_vpn', '5.0.0.5', 'exact-build', ?,
+                          '2026-08-14T10:01:00+00:00',
+                          '2026-08-14T10:11:00+00:00')
+                """,
+                ("a" * 64, owner_user_id, "sha256:" + "d" * 64),
+            )
+        for table, identity_column, identity_digest in (
+            ("telegram_callback_handles", "handle_digest", "a" * 64),
+            ("protocol_issuance_confirmations", "token_digest", "b" * 64),
+        ):
+            with pytest.raises(sqlite3.IntegrityError):
+                connection.execute(
+                    f"""
+                    UPDATE {table}
+                    SET claim_id_digest = NULL,
+                        claimed_at = ?,
+                        claim_expires_at = ?
+                    WHERE {identity_column} = ?
+                    """,
+                    (NOW, CLAIM_EXPIRES_AT, identity_digest),
+                )
     finally:
         connection.close()
 
@@ -716,7 +771,6 @@ def test_exact_ee66e108_phase15_schema_upgrades_without_row_loss(
             """
             DROP TABLE protocol_issuance_confirmations;
             DROP TABLE telegram_callback_handles;
-            DROP INDEX IF EXISTS uq_device_passports_device_owner;
             """
         )
         connection.executescript(EE66E108_PHASE15_SQL)
@@ -767,11 +821,173 @@ def test_exact_ee66e108_phase15_schema_upgrades_without_row_loss(
         assert callback["request_fingerprint"] == "sha256:" + "a" * 64
         assert confirmation["selection_handle_digest"] == "a" * 64
         assert list(connection.execute("PRAGMA foreign_key_check")) == []
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'index' AND name = 'uq_device_passports_device_owner'"
+        ).fetchone() is None
+    finally:
+        connection.close()
+
+
+def test_legacy_null_digest_is_rejected_before_rebuild(database_path) -> None:
+    connection = open_connection(database_path)
+    try:
+        owner_user_id = seed_owner_and_passport(connection)
+        connection.executescript(
+            """
+            DROP TABLE protocol_issuance_confirmations;
+            DROP TABLE telegram_callback_handles;
+            """
+        )
+        connection.executescript(EE66E108_PHASE15_SQL)
+        connection.execute(
+            """
+            INSERT INTO telegram_callback_handles (
+                handle_digest, purpose, owner_user_id, passport_device_id,
+                request_fingerprint, created_at, expires_at
+            ) VALUES (NULL, 'select_protocol', ?, 'passport-phase15', ?,
+                      '2026-08-14T10:00:00+00:00',
+                      '2026-08-14T10:10:00+00:00')
+            """,
+            (owner_user_id, "sha256:" + "a" * 64),
+        )
+        connection.commit()
+
+        with pytest.raises(RuntimeError, match="incompatible"):
+            initialize_schema(connection)
+
+        assert connection.execute(
+            "SELECT COUNT(*) FROM telegram_callback_handles "
+            "WHERE handle_digest IS NULL"
+        ).fetchone()[0] == 1
         assert [
-            row[2]
+            row[1]
             for row in connection.execute(
-                "PRAGMA index_info(uq_device_passports_device_owner)"
+                "PRAGMA table_info(telegram_callback_handles)"
             )
-        ] == ["device_id", "owner_user_id"]
+        ] == [
+            "handle_digest",
+            "purpose",
+            "owner_user_id",
+            "passport_device_id",
+            "client_platform",
+            "client_application",
+            "client_version",
+            "client_build",
+            "request_fingerprint",
+            "created_at",
+            "expires_at",
+            "consumed_at",
+            "terminal_reason",
+        ]
+        assert int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) == 1
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("foreign_keys_enabled", [0, 1])
+def test_legacy_rebuild_failure_rolls_back_schema_rows_indexes_and_pragma(
+    database_path,
+    monkeypatch,
+    foreign_keys_enabled,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        owner_user_id = seed_owner_and_passport(connection)
+        connection.executescript(
+            """
+            DROP TABLE protocol_issuance_confirmations;
+            DROP TABLE telegram_callback_handles;
+            """
+        )
+        connection.executescript(EE66E108_PHASE15_SQL)
+        connection.execute(
+            """
+            INSERT INTO telegram_callback_handles (
+                handle_digest, purpose, owner_user_id, passport_device_id,
+                client_platform, client_application, client_version,
+                client_build, request_fingerprint, created_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            tuple(callback_values(owner_user_id).values()),
+        )
+        connection.execute(
+            """
+            INSERT INTO protocol_issuance_confirmations (
+                token_digest, selection_handle_digest, owner_user_id,
+                passport_device_id, client_platform, client_application,
+                client_version, client_build, request_fingerprint,
+                created_at, expires_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            tuple(confirmation_values(owner_user_id).values()),
+        )
+        connection.commit()
+        connection.execute(f"PRAGMA foreign_keys = {foreign_keys_enabled}")
+        before_objects = [
+            tuple(row)
+            for row in connection.execute(
+                """
+                SELECT type, name, tbl_name, sql
+                FROM sqlite_master
+                WHERE tbl_name IN (
+                    'telegram_callback_handles',
+                    'protocol_issuance_confirmations'
+                )
+                ORDER BY type, name
+                """
+            )
+        ]
+        before_callback = tuple(
+            connection.execute(
+                "SELECT * FROM telegram_callback_handles"
+            ).fetchone()
+        )
+        before_confirmation = tuple(
+            connection.execute(
+                "SELECT * FROM protocol_issuance_confirmations"
+            ).fetchone()
+        )
+        monkeypatch.setattr(
+            phase15_bootstrap,
+            "CREATE_CALLBACK_TABLE_SQL",
+            "CREATE TABL controlled_failure",
+        )
+
+        with pytest.raises(sqlite3.OperationalError):
+            initialize_schema(connection)
+
+        after_objects = [
+            tuple(row)
+            for row in connection.execute(
+                """
+                SELECT type, name, tbl_name, sql
+                FROM sqlite_master
+                WHERE tbl_name IN (
+                    'telegram_callback_handles',
+                    'protocol_issuance_confirmations'
+                )
+                ORDER BY type, name
+                """
+            )
+        ]
+        assert after_objects == before_objects
+        assert tuple(
+            connection.execute(
+                "SELECT * FROM telegram_callback_handles"
+            ).fetchone()
+        ) == before_callback
+        assert tuple(
+            connection.execute(
+                "SELECT * FROM protocol_issuance_confirmations"
+            ).fetchone()
+        ) == before_confirmation
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE name LIKE '%phase15%legacy%'"
+        ).fetchone() is None
+        assert int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) == (
+            foreign_keys_enabled
+        )
     finally:
         connection.close()

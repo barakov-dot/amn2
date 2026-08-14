@@ -46,7 +46,7 @@ CONFIRMATION_COLUMNS = (
 
 CREATE_CALLBACK_TABLE_SQL = """
 CREATE TABLE telegram_callback_handles (
-    handle_digest TEXT PRIMARY KEY
+    handle_digest TEXT NOT NULL PRIMARY KEY
         CHECK (length(handle_digest) = 64
                AND handle_digest NOT GLOB '*[^0-9a-f]*'),
     purpose TEXT NOT NULL,
@@ -68,7 +68,8 @@ CREATE TABLE telegram_callback_handles (
     CHECK (
         (claim_id_digest IS NULL AND claimed_at IS NULL AND claim_expires_at IS NULL)
         OR (
-            length(claim_id_digest) = 64
+            claim_id_digest IS NOT NULL
+            AND length(claim_id_digest) = 64
             AND claim_id_digest NOT GLOB '*[^0-9a-f]*'
             AND claimed_at IS NOT NULL
             AND claim_expires_at IS NOT NULL
@@ -80,15 +81,14 @@ CREATE TABLE telegram_callback_handles (
         OR (consumed_at IS NOT NULL AND terminal_reason IS NOT NULL)
     ),
     FOREIGN KEY(owner_user_id) REFERENCES users(id),
-    FOREIGN KEY(passport_device_id, owner_user_id)
-        REFERENCES device_passports(device_id, owner_user_id)
+    FOREIGN KEY(passport_device_id) REFERENCES device_passports(device_id)
 )
 """
 
 
 CREATE_CONFIRMATION_TABLE_SQL = """
 CREATE TABLE protocol_issuance_confirmations (
-    token_digest TEXT PRIMARY KEY
+    token_digest TEXT NOT NULL PRIMARY KEY
         CHECK (length(token_digest) = 64
                AND token_digest NOT GLOB '*[^0-9a-f]*'),
     selection_handle_digest TEXT NOT NULL
@@ -111,7 +111,8 @@ CREATE TABLE protocol_issuance_confirmations (
     CHECK (
         (claim_id_digest IS NULL AND claimed_at IS NULL AND claim_expires_at IS NULL)
         OR (
-            length(claim_id_digest) = 64
+            claim_id_digest IS NOT NULL
+            AND length(claim_id_digest) = 64
             AND claim_id_digest NOT GLOB '*[^0-9a-f]*'
             AND claimed_at IS NOT NULL
             AND claim_expires_at IS NOT NULL
@@ -125,17 +126,14 @@ CREATE TABLE protocol_issuance_confirmations (
     FOREIGN KEY(selection_handle_digest, owner_user_id, passport_device_id)
         REFERENCES telegram_callback_handles(
             handle_digest, owner_user_id, passport_device_id
-        ),
+    ),
     FOREIGN KEY(owner_user_id) REFERENCES users(id),
-    FOREIGN KEY(passport_device_id, owner_user_id)
-        REFERENCES device_passports(device_id, owner_user_id)
+    FOREIGN KEY(passport_device_id) REFERENCES device_passports(device_id)
 )
 """
 
 
 INDEX_SQL = (
-    "CREATE UNIQUE INDEX IF NOT EXISTS uq_device_passports_device_owner "
-    "ON device_passports(device_id, owner_user_id)",
     "CREATE INDEX IF NOT EXISTS idx_telegram_callback_handles_owner_passport "
     "ON telegram_callback_handles(owner_user_id, passport_device_id)",
     "CREATE INDEX IF NOT EXISTS idx_telegram_callback_handles_expires_at "
@@ -146,6 +144,68 @@ INDEX_SQL = (
     "ON protocol_issuance_confirmations(selection_handle_digest)",
     "CREATE INDEX IF NOT EXISTS idx_protocol_issuance_confirmations_expires_at "
     "ON protocol_issuance_confirmations(expires_at)",
+)
+
+
+TRIGGER_SQL = (
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_phase15_callback_owner_passport_insert
+    BEFORE INSERT ON telegram_callback_handles
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+        SELECT 1
+        FROM device_passports
+        WHERE device_id = NEW.passport_device_id
+          AND owner_user_id = NEW.owner_user_id
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'phase15 callback owner/passport mismatch');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_phase15_callback_owner_passport_update
+    BEFORE UPDATE OF owner_user_id, passport_device_id
+    ON telegram_callback_handles
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+        SELECT 1
+        FROM device_passports
+        WHERE device_id = NEW.passport_device_id
+          AND owner_user_id = NEW.owner_user_id
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'phase15 callback owner/passport mismatch');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_phase15_confirmation_owner_passport_insert
+    BEFORE INSERT ON protocol_issuance_confirmations
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+        SELECT 1
+        FROM device_passports
+        WHERE device_id = NEW.passport_device_id
+          AND owner_user_id = NEW.owner_user_id
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'phase15 confirmation owner/passport mismatch');
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS trg_phase15_confirmation_owner_passport_update
+    BEFORE UPDATE OF owner_user_id, passport_device_id
+    ON protocol_issuance_confirmations
+    FOR EACH ROW
+    WHEN NOT EXISTS (
+        SELECT 1
+        FROM device_passports
+        WHERE device_id = NEW.passport_device_id
+          AND owner_user_id = NEW.owner_user_id
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'phase15 confirmation owner/passport mismatch');
+    END
+    """,
 )
 
 
@@ -171,7 +231,7 @@ def ensure_phase15_bootstrap_schema(conn: sqlite3.Connection) -> None:
         and confirmation_columns == CONFIRMATION_COLUMNS
     ):
         _validate_canonical_shape(conn)
-        _ensure_indexes(conn)
+        _ensure_phase15_objects(conn)
         return
 
     if (
@@ -186,15 +246,15 @@ def ensure_phase15_bootstrap_schema(conn: sqlite3.Connection) -> None:
 
 
 def _create_phase15_schema(conn: sqlite3.Connection) -> None:
-    conn.execute(INDEX_SQL[0])
     conn.execute(CREATE_CALLBACK_TABLE_SQL)
     conn.execute(CREATE_CONFIRMATION_TABLE_SQL)
-    for statement in INDEX_SQL[1:]:
-        conn.execute(statement)
+    _ensure_phase15_objects(conn)
 
 
-def _ensure_indexes(conn: sqlite3.Connection) -> None:
+def _ensure_phase15_objects(conn: sqlite3.Connection) -> None:
     for statement in INDEX_SQL:
+        conn.execute(statement)
+    for statement in TRIGGER_SQL:
         conn.execute(statement)
 
 
@@ -208,7 +268,6 @@ def _upgrade_legacy_schema(conn: sqlite3.Connection) -> None:
         conn.execute("BEGIN IMMEDIATE")
         callback_count, confirmation_count = _prevalidate_legacy_rows(conn)
 
-        conn.execute(INDEX_SQL[0])
         for index_name in (
             "idx_protocol_issuance_confirmations_owner_passport",
             "idx_protocol_issuance_confirmations_selection_handle",
@@ -257,8 +316,7 @@ def _upgrade_legacy_schema(conn: sqlite3.Connection) -> None:
 
         conn.execute("DROP TABLE protocol_issuance_confirmations_legacy")
         conn.execute("DROP TABLE telegram_callback_handles_legacy")
-        for statement in INDEX_SQL[1:]:
-            conn.execute(statement)
+        _ensure_phase15_objects(conn)
 
         violations = conn.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
@@ -292,7 +350,8 @@ def _prevalidate_legacy_rows(conn: sqlite3.Connection) -> tuple[int, int]:
             LEFT JOIN device_passports AS passport
               ON passport.device_id = callback.passport_device_id
              AND passport.owner_user_id = callback.owner_user_id
-            WHERE length(callback.handle_digest) != 64
+            WHERE callback.handle_digest IS NULL
+               OR length(callback.handle_digest) != 64
                OR callback.handle_digest GLOB '*[^0-9a-f]*'
                OR owner.id IS NULL
                OR passport.device_id IS NULL
@@ -314,8 +373,10 @@ def _prevalidate_legacy_rows(conn: sqlite3.Connection) -> tuple[int, int]:
               ON callback.handle_digest = confirmation.selection_handle_digest
              AND callback.owner_user_id = confirmation.owner_user_id
              AND callback.passport_device_id = confirmation.passport_device_id
-            WHERE length(confirmation.token_digest) != 64
+            WHERE confirmation.token_digest IS NULL
+               OR length(confirmation.token_digest) != 64
                OR confirmation.token_digest GLOB '*[^0-9a-f]*'
+               OR confirmation.selection_handle_digest IS NULL
                OR length(confirmation.selection_handle_digest) != 64
                OR confirmation.selection_handle_digest GLOB '*[^0-9a-f]*'
                OR owner.id IS NULL
@@ -361,11 +422,18 @@ def _validate_canonical_shape(conn: sqlite3.Connection) -> None:
     required_foreign_keys = (
         (
             "telegram_callback_handles",
+            "users",
+            (("owner_user_id", "id"),),
+        ),
+        (
+            "telegram_callback_handles",
             "device_passports",
-            (
-                ("passport_device_id", "device_id"),
-                ("owner_user_id", "owner_user_id"),
-            ),
+            (("passport_device_id", "device_id"),),
+        ),
+        (
+            "protocol_issuance_confirmations",
+            "users",
+            (("owner_user_id", "id"),),
         ),
         (
             "protocol_issuance_confirmations",
@@ -379,10 +447,7 @@ def _validate_canonical_shape(conn: sqlite3.Connection) -> None:
         (
             "protocol_issuance_confirmations",
             "device_passports",
-            (
-                ("passport_device_id", "device_id"),
-                ("owner_user_id", "owner_user_id"),
-            ),
+            (("passport_device_id", "device_id"),),
         ),
     )
     if not all(
@@ -390,6 +455,22 @@ def _validate_canonical_shape(conn: sqlite3.Connection) -> None:
         for table, target, columns in required_foreign_keys
     ):
         raise RuntimeError("unsupported phase15 owner binding constraints")
+    required_triggers = {
+        "trg_phase15_callback_owner_passport_insert",
+        "trg_phase15_callback_owner_passport_update",
+        "trg_phase15_confirmation_owner_passport_insert",
+        "trg_phase15_confirmation_owner_passport_update",
+    }
+    actual_triggers = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+            "AND tbl_name IN (?, ?)",
+            ("telegram_callback_handles", "protocol_issuance_confirmations"),
+        )
+    }
+    if not required_triggers.issubset(actual_triggers):
+        raise RuntimeError("unsupported phase15 owner binding triggers")
     for table, digest_columns in (
         ("telegram_callback_handles", ("handle_digest", "claim_id_digest")),
         (
@@ -405,8 +486,24 @@ def _validate_canonical_shape(conn: sqlite3.Connection) -> None:
         if any(
             f"{column} NOT GLOB '*[^0-9a-f]*'" not in table_sql
             for column in digest_columns
-        ):
+        ) or "claim_id_digest IS NOT NULL" not in table_sql:
             raise RuntimeError("unsupported phase15 digest constraints")
+    not_null_columns = {
+        table: {
+            str(row[1]): int(row[3])
+            for row in conn.execute(f"PRAGMA table_info({table})")
+        }
+        for table in (
+            "telegram_callback_handles",
+            "protocol_issuance_confirmations",
+        )
+    }
+    if (
+        not_null_columns["telegram_callback_handles"].get("handle_digest") != 1
+        or not_null_columns["protocol_issuance_confirmations"].get("token_digest")
+        != 1
+    ):
+        raise RuntimeError("unsupported phase15 nullable identity digest")
 
 
 def _has_foreign_key(

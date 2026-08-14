@@ -29,8 +29,11 @@ COMPATIBILITY_EVIDENCE_STATUSES = {"claimed", "passed", "failed", "superseded"}
 SHA256_DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 
 
-def _require_sha256_digest(value: str, field_name: str) -> None:
-    if SHA256_DIGEST_PATTERN.fullmatch(value) is None:
+def _require_sha256_digest(value: object, field_name: str) -> None:
+    if (
+        not isinstance(value, str)
+        or SHA256_DIGEST_PATTERN.fullmatch(value) is None
+    ):
         raise ValueError(f"{field_name} must be a lowercase SHA-256 digest")
 
 
