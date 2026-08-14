@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -56,11 +57,31 @@ def test_dispatcher_registers_short_awg3_callback_routes():
     dispatcher = create_dispatcher(workflow=object())
     router = dispatcher.sub_routers[0]
 
-    callback_handler_names = {
-        handler.callback.__name__ for handler in router.callback_query.handlers
+    handlers = {
+        handler.callback.__name__: handler
+        for handler in router.callback_query.handlers
     }
+    select_filter = handlers["awg3_select"].filters[0]
+    confirm_filter = handlers["awg3_confirm"].filters[0]
 
-    assert {"awg3_select", "awg3_confirm"} <= callback_handler_names
+    assert asyncio.run(
+        select_filter.call(SimpleNamespace(data=f"a3s:{'A' * 22}"))
+    ) is True
+    assert asyncio.run(
+        select_filter.call(SimpleNamespace(data=f"a3c:{'T' * 22}"))
+    ) is False
+    assert asyncio.run(
+        select_filter.call(SimpleNamespace(data="awg3:select:legacy"))
+    ) is False
+    assert asyncio.run(
+        confirm_filter.call(SimpleNamespace(data=f"a3c:{'T' * 22}"))
+    ) is True
+    assert asyncio.run(
+        confirm_filter.call(SimpleNamespace(data=f"a3s:{'A' * 22}"))
+    ) is False
+    assert asyncio.run(
+        confirm_filter.call(SimpleNamespace(data="awg3:confirm:legacy"))
+    ) is False
 
 
 def test_create_workflow_wires_device_name_sequence_settings(tmp_path):

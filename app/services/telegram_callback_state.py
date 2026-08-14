@@ -42,6 +42,28 @@ class TelegramConfirmationState:
     claim_id_digest: str
 
 
+@dataclass(frozen=True)
+class TelegramExpiredSelectionState:
+    owner_user_id: int
+    passport_device_id: str
+    client_platform: str
+    client_application: str
+    client_version: str
+    client_build: str
+    request_fingerprint: str
+
+
+@dataclass(frozen=True)
+class TelegramExpiredConfirmationState:
+    owner_user_id: int
+    passport_device_id: str
+    client_platform: str
+    client_application: str
+    client_version: str
+    client_build: str
+    request_fingerprint: str
+
+
 class TelegramCallbackStateService:
     def __init__(
         self,
@@ -81,6 +103,7 @@ class TelegramCallbackStateService:
             raise ValueError("client_build")
         handle = self._new_opaque(self._opaque_factory, "selection handle")
         now = self._utc_now()
+        self._repo.prune_expired_phase15_callback_state(_timestamp(now))
         self._repo.create_callback_handle(
             handle_digest=_digest(handle),
             purpose=SELECTION_PURPOSE,
@@ -114,9 +137,24 @@ class TelegramCallbackStateService:
             return None
         state = _selection_state(row, claim_id_digest)
         if str(row["purpose"]) != SELECTION_PURPOSE:
-            self.consume_selection(state, terminal_reason="invalid_purpose")
+            if not self.consume_selection(
+                state, terminal_reason="invalid_purpose"
+            ):
+                raise RuntimeError("invalid-purpose selection was not consumed")
             return None
         return state
+
+    def consume_expired_selection(
+        self, handle: str, *, owner_user_id: int
+    ) -> TelegramExpiredSelectionState | None:
+        if not _is_opaque(handle):
+            return None
+        row = self._repo.consume_expired_callback_handle(
+            _digest(handle),
+            owner_user_id,
+            _timestamp(self._utc_now()),
+        )
+        return None if row is None else _expired_selection_state(row)
 
     def release_selection(self, state: TelegramSelectionState) -> bool:
         return (
@@ -180,6 +218,18 @@ class TelegramCallbackStateService:
             if row is None
             else _confirmation_state(row, claim_id_digest)
         )
+
+    def consume_expired_confirmation(
+        self, token: str, *, owner_user_id: int
+    ) -> TelegramExpiredConfirmationState | None:
+        if not _is_opaque(token):
+            return None
+        row = self._repo.consume_expired_issuance_confirmation(
+            _digest(token),
+            owner_user_id,
+            _timestamp(self._utc_now()),
+        )
+        return None if row is None else _expired_confirmation_state(row)
 
     def release_confirmation(self, state: TelegramConfirmationState) -> bool:
         return (
@@ -265,8 +315,36 @@ def _confirmation_state(
     )
 
 
+def _expired_selection_state(
+    row: Mapping[str, object],
+) -> TelegramExpiredSelectionState:
+    return TelegramExpiredSelectionState(
+        owner_user_id=int(row["owner_user_id"]),
+        passport_device_id=str(row["passport_device_id"]),
+        client_platform=str(row["client_platform"]),
+        client_application=str(row["client_application"]),
+        client_version=str(row["client_version"]),
+        client_build=str(row["client_build"]),
+        request_fingerprint=str(row["request_fingerprint"]),
+    )
+
+
+def _expired_confirmation_state(
+    row: Mapping[str, object],
+) -> TelegramExpiredConfirmationState:
+    return TelegramExpiredConfirmationState(
+        owner_user_id=int(row["owner_user_id"]),
+        passport_device_id=str(row["passport_device_id"]),
+        client_platform=str(row["client_platform"]),
+        client_application=str(row["client_application"]),
+        client_version=str(row["client_version"]),
+        client_build=str(row["client_build"]),
+        request_fingerprint=str(row["request_fingerprint"]),
+    )
+
+
 def _is_opaque(value: object) -> bool:
-    return isinstance(value, str) and 1 <= len(value) <= 60 and all(
+    return isinstance(value, str) and 22 <= len(value) <= 60 and all(
         character.isascii() and (character.isalnum() or character in "-_")
         for character in value
     )

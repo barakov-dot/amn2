@@ -71,8 +71,8 @@ from app.services.config_material import ConfigMaterialUnavailable
 
 AWG3_SELECT_PREFIX = "a3s"
 AWG3_CONFIRM_PREFIX = "a3c"
-_AWG3_SELECT_RE = re.compile(r"^a3s:([A-Za-z0-9_-]{1,60})$")
-_AWG3_CONFIRM_RE = re.compile(r"^a3c:([A-Za-z0-9_-]{1,60})$")
+_AWG3_SELECT_RE = re.compile(r"^a3s:([A-Za-z0-9_-]{22,60})$")
+_AWG3_CONFIRM_RE = re.compile(r"^a3c:([A-Za-z0-9_-]{22,60})$")
 
 
 async def handle_start(message, *, workflow) -> None:

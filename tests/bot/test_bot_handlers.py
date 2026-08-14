@@ -1068,21 +1068,31 @@ def test_awg3_select_rejects_malformed_callback_ids_before_workflow():
     assert callback.answered is True
 
 
-def test_awg3_select_accepts_only_short_opaque_handle():
-    callback = FakeCallback(data="a3s:opaque_handle-123", user_id=700)
+def test_awg3_select_rejects_opaque_handle_below_128_bit_length():
+    callback = FakeCallback(data="a3s:short", user_id=700)
     workflow = FakeWorkflow(admin_ids=set())
 
     asyncio.run(bot_handlers.handle_awg3_select(callback, workflow=workflow))
 
-    assert workflow.awg3_requests == [(700, "opaque_handle-123")]
+    assert workflow.awg3_requests == []
+    assert callback.message.answers[0]["text"] == "Invalid AWG3 selection."
+
+
+def test_awg3_select_accepts_only_short_opaque_handle():
+    callback = FakeCallback(data=f"a3s:{'A' * 22}", user_id=700)
+    workflow = FakeWorkflow(admin_ids=set())
+
+    asyncio.run(bot_handlers.handle_awg3_select(callback, workflow=workflow))
+
+    assert workflow.awg3_requests == [(700, "A" * 22)]
     confirmation_data = callback.message.answers[0]["reply_markup"].inline_keyboard[0][0].callback_data
-    assert confirmation_data == "a3c:token-1"
+    assert confirmation_data == f"a3c:{'T' * 22}"
     assert len(confirmation_data.encode("utf-8")) <= 64
 
 
 def test_awg3_confirm_rejects_non_private_chat_before_workflow_or_secret_media():
     callback = FakeCallback(
-        data="a3c:token-1",
+        data=f"a3c:{'T' * 22}",
         user_id=700,
         chat_type="group",
     )
@@ -1097,7 +1107,7 @@ def test_awg3_confirm_rejects_non_private_chat_before_workflow_or_secret_media()
 
 
 def test_awg3_confirm_delivers_exactly_document_then_photo_to_private_owner():
-    callback = FakeCallback(data="a3c:token-1", user_id=700)
+    callback = FakeCallback(data=f"a3c:{'T' * 22}", user_id=700)
     workflow = FakeWorkflow(admin_ids=set())
 
     asyncio.run(bot_handlers.handle_awg3_confirm(callback, workflow=workflow))
@@ -1229,7 +1239,7 @@ class FakeWorkflow:
             status="confirmation_required",
             reason_code="confirmation_required",
             offer_awg2=False,
-            token="token-1",
+            token="T" * 22,
         )
 
     def confirm_awg3(self, *, telegram_id, confirmation_token):

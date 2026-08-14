@@ -887,19 +887,43 @@ class Repository:
                 WHERE handle_digest = ?
                   AND owner_user_id = ?
                   AND consumed_at IS NULL
-                  AND expires_at > ?
                   AND claim_id_digest = ?
-                  AND claim_expires_at > ?
                 """,
                 (
                     now,
                     terminal_reason,
                     handle_digest,
                     owner_user_id,
-                    now,
                     claim_id_digest,
-                    now,
                 ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM telegram_callback_handles WHERE handle_digest = ?",
+                (handle_digest,),
+            ).fetchone()
+            assert row is not None
+            return row
+
+    def consume_expired_callback_handle(
+        self,
+        handle_digest: str,
+        owner_user_id: int,
+        now: str,
+    ) -> sqlite3.Row | None:
+        _require_sha256_digest(handle_digest, "handle_digest")
+        with self.transaction():
+            cursor = self._conn.execute(
+                """
+                UPDATE telegram_callback_handles
+                SET consumed_at = ?, terminal_reason = 'expired'
+                WHERE handle_digest = ?
+                  AND owner_user_id = ?
+                  AND consumed_at IS NULL
+                  AND expires_at <= ?
+                """,
+                (now, handle_digest, owner_user_id, now),
             )
             if cursor.rowcount != 1:
                 return None
@@ -1071,19 +1095,44 @@ class Repository:
                 WHERE token_digest = ?
                   AND owner_user_id = ?
                   AND consumed_at IS NULL
-                  AND expires_at > ?
                   AND claim_id_digest = ?
-                  AND claim_expires_at > ?
                 """,
                 (
                     now,
                     terminal_reason,
                     token_digest,
                     owner_user_id,
-                    now,
                     claim_id_digest,
-                    now,
                 ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM protocol_issuance_confirmations "
+                "WHERE token_digest = ?",
+                (token_digest,),
+            ).fetchone()
+            assert row is not None
+            return row
+
+    def consume_expired_issuance_confirmation(
+        self,
+        token_digest: str,
+        owner_user_id: int,
+        now: str,
+    ) -> sqlite3.Row | None:
+        _require_sha256_digest(token_digest, "token_digest")
+        with self.transaction():
+            cursor = self._conn.execute(
+                """
+                UPDATE protocol_issuance_confirmations
+                SET consumed_at = ?, terminal_reason = 'expired'
+                WHERE token_digest = ?
+                  AND owner_user_id = ?
+                  AND consumed_at IS NULL
+                  AND expires_at <= ?
+                """,
+                (now, token_digest, owner_user_id, now),
             )
             if cursor.rowcount != 1:
                 return None

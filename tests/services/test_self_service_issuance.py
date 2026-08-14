@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from app.bot.delivery import ConfigDeliveryPackage
+from app.bot.workflows import BotWorkflow
 from app.db.connection import connect
 from app.db.repositories import Repository
 from app.db.schema import initialize_schema
@@ -305,6 +307,20 @@ def _attempts(harness: Harness):
     ).fetchall()
 
 
+def _awg3_delivery():
+    return ConfigDeliveryPackage(
+        template_key="config_ready",
+        message_text="synthetic ready",
+        config_filename="synthetic-awg3.conf",
+        config_bytes=b"synthetic-config-payload",
+        qr_filename="synthetic-awg3.qr.png",
+        qr_png_bytes=b"synthetic-qr-payload",
+        vpn_import_link="synthetic-import-reference",
+        config_caption="synthetic config",
+        qr_caption="synthetic qr",
+    )
+
+
 def _seed_file_backed_harness(database_path):
     conn = connect(database_path)
     initialize_schema(conn)
@@ -463,7 +479,7 @@ def test_confirmation_is_short_lived_request_bound_and_one_time(harness):
     expired = service.issue_after_confirmation(
         request, confirmation_token=expiring.token
     )
-    assert expired.reason_code == "invalid_confirmation"
+    assert expired.reason_code == "confirmation_expired"
     assert service.issuer.calls == []
 
     clock[0] = NOW
@@ -524,6 +540,202 @@ def test_awg3_callback_state_is_short_digest_only_exact_and_ttl_bound(harness):
     ) == timedelta(minutes=15)
 
 
+def test_awg3_callback_state_rejects_opaque_values_below_128_bit_length(harness):
+    callback_service = _callback_module().TelegramCallbackStateService(
+        repo=harness.repo,
+        now=lambda: NOW,
+        opaque_factory=lambda: "too-short",
+    )
+    request = _request(harness)
+
+    with pytest.raises(ValueError, match="selection handle"):
+        callback_service.create_selection(
+            owner_user_id=request.user_id,
+            passport_device_id=request.passport_device_id,
+            client_platform=request.client.platform,
+            client_application=request.client.application,
+            client_version=request.client.version,
+            client_build=request.client.build_id,
+            request_fingerprint=_module().request_fingerprint(request),
+        )
+
+    short_confirmation = _callback_module().TelegramCallbackStateService(
+        repo=harness.repo,
+        now=lambda: NOW,
+        opaque_factory=lambda: "A" * 22,
+        confirmation_factory=lambda: "too-short",
+    )
+    handle = short_confirmation.create_selection(
+        owner_user_id=request.user_id,
+        passport_device_id=request.passport_device_id,
+        client_platform=request.client.platform,
+        client_application=request.client.application,
+        client_version=request.client.version,
+        client_build=request.client.build_id,
+        request_fingerprint=_module().request_fingerprint(request),
+    )
+    selection = short_confirmation.claim_selection(
+        handle, owner_user_id=request.user_id
+    )
+    with pytest.raises(ValueError, match="confirmation token"):
+        short_confirmation.create_confirmation(selection)
+
+    short_claim = _callback_module().TelegramCallbackStateService(
+        repo=harness.repo,
+        now=lambda: NOW,
+        opaque_factory=lambda: "B" * 22,
+        claim_factory=lambda: "too-short",
+    )
+    claim_handle = short_claim.create_selection(
+        owner_user_id=request.user_id,
+        passport_device_id=request.passport_device_id,
+        client_platform=request.client.platform,
+        client_application=request.client.application,
+        client_version=request.client.version,
+        client_build=request.client.build_id,
+        request_fingerprint=_module().request_fingerprint(request),
+    )
+    with pytest.raises(ValueError, match="claim id"):
+        short_claim.claim_selection(claim_handle, owner_user_id=request.user_id)
+
+
+def test_awg3_invalid_purpose_fails_closed_if_terminal_consume_is_lost(
+    harness, monkeypatch
+):
+    callback_service = _callback_module().TelegramCallbackStateService(
+        repo=harness.repo,
+        now=lambda: NOW,
+    )
+    request = _request(harness)
+    handle = "C" * 22
+    harness.repo.create_callback_handle(
+        handle_digest=hashlib.sha256(handle.encode()).hexdigest(),
+        purpose="wrong_purpose",
+        owner_user_id=request.user_id,
+        passport_device_id=request.passport_device_id,
+        client_platform=request.client.platform,
+        client_application=request.client.application,
+        client_version=request.client.version,
+        client_build=request.client.build_id,
+        request_fingerprint=_module().request_fingerprint(request),
+        created_at=NOW.isoformat(),
+        expires_at=(NOW + timedelta(minutes=15)).isoformat(),
+    )
+    monkeypatch.setattr(
+        callback_service,
+        "consume_selection",
+        lambda _state, *, terminal_reason: False,
+    )
+
+    with pytest.raises(RuntimeError, match="invalid-purpose selection"):
+        callback_service.claim_selection(handle, owner_user_id=request.user_id)
+
+
+def test_awg3_invalid_selection_fails_closed_if_terminal_consume_is_lost(
+    harness, monkeypatch
+):
+    service = _service(harness)
+    request = _request(harness)
+    handle = service._callback_state.create_selection(
+        owner_user_id=request.user_id,
+        passport_device_id=request.passport_device_id,
+        client_platform=request.client.platform,
+        client_application=request.client.application,
+        client_version=request.client.version,
+        client_build=request.client.build_id,
+        request_fingerprint="sha256:" + "f" * 64,
+    )
+    monkeypatch.setattr(
+        service._callback_state,
+        "consume_selection",
+        lambda _state, *, terminal_reason: False,
+    )
+
+    with pytest.raises(RuntimeError, match="invalid selection"):
+        service.decide_from_selection(
+            owner_user_id=request.user_id,
+            telegram_id=request.telegram_id,
+            selection_handle=handle,
+        )
+
+
+def test_awg3_selection_wrong_owner_does_not_consume_owner_state(harness):
+    service = _service(harness)
+    request = _request(harness)
+    callback_state = service._callback_state
+    handle = callback_state.create_selection(
+        owner_user_id=request.user_id,
+        passport_device_id=request.passport_device_id,
+        client_platform=request.client.platform,
+        client_application=request.client.application,
+        client_version=request.client.version,
+        client_build=request.client.build_id,
+        request_fingerprint=_module().request_fingerprint(request),
+    )
+    other_owner_id = harness.repo.upsert_user(
+        telegram_id=9308,
+        username="other-owner",
+        first_name="Other",
+        last_name="Owner",
+    )
+
+    assert service.decide_from_selection(
+        owner_user_id=other_owner_id,
+        telegram_id=9308,
+        selection_handle=handle,
+    ) is None
+    owner_result = service.decide_from_selection(
+        owner_user_id=request.user_id,
+        telegram_id=request.telegram_id,
+        selection_handle=handle,
+    )
+
+    assert owner_result.status == "confirmation_required"
+
+
+def test_awg3_expired_selection_is_owner_terminal_and_wrong_owner_safe(harness):
+    clock = [NOW]
+    service = _service(harness, now=lambda: clock[0])
+    request = _request(harness)
+    handle = service._callback_state.create_selection(
+        owner_user_id=request.user_id,
+        passport_device_id=request.passport_device_id,
+        client_platform=request.client.platform,
+        client_application=request.client.application,
+        client_version=request.client.version,
+        client_build=request.client.build_id,
+        request_fingerprint=_module().request_fingerprint(request),
+    )
+    other_owner_id = harness.repo.upsert_user(
+        telegram_id=9308,
+        username="other-owner",
+        first_name="Other",
+        last_name="Owner",
+    )
+    clock[0] = NOW + timedelta(minutes=16)
+
+    assert service.decide_from_selection(
+        owner_user_id=other_owner_id,
+        telegram_id=9308,
+        selection_handle=handle,
+    ) is None
+    assert harness.conn.execute(
+        "SELECT consumed_at FROM telegram_callback_handles"
+    ).fetchone()[0] is None
+
+    owner_result = service.decide_from_selection(
+        owner_user_id=request.user_id,
+        telegram_id=request.telegram_id,
+        selection_handle=handle,
+    )
+
+    assert owner_result.status == "blocked"
+    assert owner_result.reason_code == "selection_expired"
+    assert harness.conn.execute(
+        "SELECT terminal_reason FROM telegram_callback_handles"
+    ).fetchone()[0] == "expired"
+
+
 def test_awg3_confirmation_survives_service_restart_and_is_owner_bound(harness):
     first = _service(harness)
     request = _request(harness)
@@ -566,6 +778,137 @@ def test_awg3_confirmation_survives_service_restart_and_is_owner_bound(harness):
     ) == timedelta(minutes=5)
 
 
+def test_awg3_reopened_database_fresh_service_and_workflow_complete_callback(
+    tmp_path,
+):
+    database_path = tmp_path / "awg3-workflow-restart.sqlite3"
+    user_id, telegram_id, server_id, passport_device_id = (
+        _seed_file_backed_harness(database_path)
+    )
+    first_conn = connect(database_path)
+    first_repo = Repository(first_conn)
+    first_harness = Harness(
+        conn=first_conn,
+        repo=first_repo,
+        user_id=user_id,
+        telegram_id=telegram_id,
+        server_id=server_id,
+        passport_device_id=passport_device_id,
+    )
+    client = ACCEPTED_CLIENT
+    first_service = _service(first_harness)
+    first_workflow = BotWorkflow(
+        repo=first_repo,
+        admin_telegram_ids=set(),
+        self_service_issuance_service=first_service,
+        awg3_client_choices=(client,),
+    )
+    choice = first_workflow.list_awg3_client_choices(
+        telegram_id=telegram_id,
+        passport_device_id=passport_device_id,
+    )[0]
+    token = first_workflow.request_awg3(
+        telegram_id=telegram_id,
+        selection_handle=choice.selection_handle,
+    ).token
+    first_conn.close()
+
+    restarted_conn = connect(database_path)
+    try:
+        restarted_repo = Repository(restarted_conn)
+        restarted_harness = Harness(
+            conn=restarted_conn,
+            repo=restarted_repo,
+            user_id=user_id,
+            telegram_id=telegram_id,
+            server_id=server_id,
+            passport_device_id=passport_device_id,
+        )
+        issuer = SyntheticIssuer(
+            restarted_repo, user_id=user_id, server_id=server_id
+        )
+        restarted_service = _service(restarted_harness, issuer=issuer)
+        restarted_workflow = BotWorkflow(
+            repo=restarted_repo,
+            admin_telegram_ids=set(),
+            self_service_issuance_service=restarted_service,
+            awg3_client_choices=(client,),
+            awg3_delivery_builder=lambda _device_id: _awg3_delivery(),
+        )
+
+        confirmed = restarted_workflow.confirm_awg3(
+            telegram_id=telegram_id,
+            confirmation_token=token,
+        )
+
+        assert confirmed.result.status == "issued"
+        assert confirmed.delivery.config_filename == "synthetic-awg3.conf"
+        assert len(issuer.calls) == 1
+    finally:
+        restarted_conn.close()
+
+
+def test_awg3_competing_connection_cannot_reach_issuer_with_live_claim(tmp_path):
+    database_path = tmp_path / "awg3-competing-claim.sqlite3"
+    user_id, telegram_id, server_id, passport_device_id = (
+        _seed_file_backed_harness(database_path)
+    )
+    first_conn = connect(database_path)
+    first_repo = Repository(first_conn)
+    first_harness = Harness(
+        conn=first_conn,
+        repo=first_repo,
+        user_id=user_id,
+        telegram_id=telegram_id,
+        server_id=server_id,
+        passport_device_id=passport_device_id,
+    )
+    first_issuer = SyntheticIssuer(
+        first_repo, user_id=user_id, server_id=server_id
+    )
+    first_service = _service(first_harness, issuer=first_issuer)
+    token = first_service.decide(_request(first_harness)).token
+    live_claim = first_service._callback_state.claim_confirmation(
+        token, owner_user_id=user_id
+    )
+    assert live_claim is not None
+
+    second_conn = connect(database_path)
+    try:
+        second_repo = Repository(second_conn)
+        second_harness = Harness(
+            conn=second_conn,
+            repo=second_repo,
+            user_id=user_id,
+            telegram_id=telegram_id,
+            server_id=server_id,
+            passport_device_id=passport_device_id,
+        )
+        second_issuer = SyntheticIssuer(
+            second_repo, user_id=user_id, server_id=server_id
+        )
+        second_service = _service(second_harness, issuer=second_issuer)
+
+        duplicate = second_service.issue_after_confirmation(
+            owner_user_id=user_id,
+            confirmation_token=token,
+        )
+
+        assert duplicate is None
+        assert second_issuer.calls == []
+    finally:
+        second_conn.close()
+
+    assert first_service._callback_state.release_confirmation(live_claim) is True
+    issued = first_service.issue_after_confirmation(
+        owner_user_id=user_id,
+        confirmation_token=token,
+    )
+    assert issued.status == "issued"
+    assert len(first_issuer.calls) == 1
+    first_conn.close()
+
+
 def test_awg3_duplicate_confirmation_never_calls_issuer_twice(harness):
     issuer = SyntheticIssuer(
         harness.repo, user_id=harness.user_id, server_id=harness.server_id
@@ -591,6 +934,80 @@ def test_awg3_duplicate_confirmation_never_calls_issuer_twice(harness):
     assert issued.status == "issued"
     assert duplicate["result"] is None
     assert len(issuer.calls) == 1
+
+
+def test_awg3_claimed_confirmation_finalizes_after_row_and_claim_ttl(harness):
+    clock = [NOW]
+    issuer = SyntheticIssuer(
+        harness.repo, user_id=harness.user_id, server_id=harness.server_id
+    )
+    service = _service(harness, issuer=issuer, now=lambda: clock[0])
+    request = _request(harness)
+    token = service.decide(request).token
+    issuer.callback = lambda: clock.__setitem__(0, NOW + timedelta(minutes=6))
+
+    result = service.issue_after_confirmation(
+        owner_user_id=harness.user_id,
+        confirmation_token=token,
+    )
+
+    row = harness.conn.execute(
+        "SELECT consumed_at, terminal_reason FROM protocol_issuance_confirmations"
+    ).fetchone()
+    assert result.status == "issued"
+    assert tuple(row) == (
+        (NOW + timedelta(minutes=6)).isoformat(),
+        "issued",
+    )
+
+
+def test_awg3_issued_result_fails_closed_when_exact_claim_is_lost(harness):
+    issuer = SyntheticIssuer(
+        harness.repo, user_id=harness.user_id, server_id=harness.server_id
+    )
+    service = _service(harness, issuer=issuer)
+    request = _request(harness)
+    token = service.decide(request).token
+    issuer.callback = lambda: harness.conn.execute(
+        "UPDATE protocol_issuance_confirmations SET claim_id_digest = ?",
+        ("f" * 64,),
+    )
+
+    result = service.issue_after_confirmation(
+        owner_user_id=harness.user_id,
+        confirmation_token=token,
+    )
+
+    assert result.status == "blocked"
+    assert result.reason_code == "invalid_confirmation"
+    assert len(issuer.calls) == 1
+    row = harness.conn.execute(
+        "SELECT consumed_at, claim_id_digest FROM protocol_issuance_confirmations"
+    ).fetchone()
+    assert tuple(row) == (None, "f" * 64)
+
+
+def test_awg3_transient_result_fails_closed_when_claim_release_fails(
+    harness, monkeypatch
+):
+    control = MutableControlService(_permitting_state())
+    service = _service(harness, control=control)
+    request = _request(harness)
+    token = service.decide(request).token
+    control.state = replace(control.state, issuance_enabled=False)
+    monkeypatch.setattr(
+        service._callback_state,
+        "release_confirmation",
+        lambda _state: False,
+    )
+
+    result = service.issue_after_confirmation(
+        owner_user_id=harness.user_id,
+        confirmation_token=token,
+    )
+
+    assert result.status == "blocked"
+    assert result.reason_code == "invalid_confirmation"
 
 
 def test_issue_rechecks_gate_drift_before_consuming_token_or_calling_issuer(harness):
@@ -992,9 +1409,11 @@ def test_issue_rechecks_fresh_admission_view_before_reservation_and_issuer(
     assert _attempts(harness) == []
 
 
-def test_expired_confirmations_are_pruned_opportunistically(harness):
+def test_expired_confirmation_is_owner_terminal_then_pruned_opportunistically(
+    harness,
+):
     clock = [NOW]
-    tokens = iter(("synthetic-old-token", "synthetic-new-token"))
+    tokens = iter(("synthetic-old-token-opaque", "synthetic-new-token-opaque"))
     service = _service(
         harness,
         now=lambda: clock[0],
@@ -1004,11 +1423,55 @@ def test_expired_confirmations_are_pruned_opportunistically(harness):
     old = service.decide(request).token
     clock[0] = NOW + timedelta(minutes=6)
 
-    service.decide(request)
     result = service.issue_after_confirmation(request, confirmation_token=old)
 
-    assert result.reason_code == "invalid_confirmation"
+    assert result.reason_code == "confirmation_expired"
     assert service.issuer.calls == []
+    expired_row = harness.conn.execute(
+        "SELECT consumed_at, terminal_reason FROM protocol_issuance_confirmations "
+        "WHERE token_digest = ?",
+        (hashlib.sha256(old.encode()).hexdigest(),),
+    ).fetchone()
+    assert tuple(expired_row) == (clock[0].isoformat(), "expired")
+
+    service.decide(request)
+
+    assert harness.conn.execute(
+        "SELECT 1 FROM protocol_issuance_confirmations WHERE token_digest = ?",
+        (hashlib.sha256(old.encode()).hexdigest(),),
+    ).fetchone() is None
+
+
+def test_expired_confirmation_wrong_owner_cannot_consume_owner_state(harness):
+    clock = [NOW]
+    service = _service(harness, now=lambda: clock[0])
+    request = _request(harness)
+    token = service.decide(request).token
+    other_owner_id = harness.repo.upsert_user(
+        telegram_id=9308,
+        username="other-owner",
+        first_name="Other",
+        last_name="Owner",
+    )
+    clock[0] = NOW + timedelta(minutes=6)
+
+    assert service.issue_after_confirmation(
+        owner_user_id=other_owner_id,
+        confirmation_token=token,
+    ) is None
+    assert harness.conn.execute(
+        "SELECT consumed_at FROM protocol_issuance_confirmations"
+    ).fetchone()[0] is None
+
+    owner_result = service.issue_after_confirmation(
+        owner_user_id=harness.user_id,
+        confirmation_token=token,
+    )
+
+    assert owner_result.reason_code == "confirmation_expired"
+    assert harness.conn.execute(
+        "SELECT terminal_reason FROM protocol_issuance_confirmations"
+    ).fetchone()[0] == "expired"
 
 
 def test_invalid_issuer_result_requires_recovery_and_blocks_fresh_token(harness):
@@ -1016,12 +1479,12 @@ def test_invalid_issuer_result_requires_recovery_and_blocks_fresh_token(harness)
     first = _service(
         harness,
         issuer=issuer,
-        token_factory=lambda: "synthetic-invalid-one",
+        token_factory=lambda: "synthetic-invalid-one-x",
     )
     second = _service(
         harness,
         issuer=issuer,
-        token_factory=lambda: "synthetic-invalid-two",
+        token_factory=lambda: "synthetic-invalid-two-x",
     )
     request = _request(harness)
     first_token = first.decide(request).token

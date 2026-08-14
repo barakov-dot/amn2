@@ -18,6 +18,8 @@ from app.services.protocol_admission import (
 from app.services.telegram_callback_state import (
     TelegramCallbackStateService,
     TelegramConfirmationState,
+    TelegramExpiredConfirmationState,
+    TelegramExpiredSelectionState,
     TelegramSelectionState,
 )
 from app.vpn.protocol_versions import ProtocolVersion
@@ -150,22 +152,39 @@ class SelfServiceIssuanceService:
             selection_handle, owner_user_id=owner_user_id
         )
         if selection is None:
-            return None
+            expired = self._callback_state.consume_expired_selection(
+                selection_handle, owner_user_id=owner_user_id
+            )
+            if expired is None:
+                return None
+            expired_request = self._request_from_selection(
+                expired, telegram_id=telegram_id
+            )
+            return (
+                None
+                if expired_request is None
+                else self._blocked(expired_request, "selection_expired")
+            )
         try:
             request = self._request_from_selection(selection, telegram_id=telegram_id)
             if request is None:
-                self._callback_state.consume_selection(
+                if not self._callback_state.consume_selection(
                     selection, terminal_reason="invalid_selection"
-                )
+                ):
+                    raise RuntimeError("invalid selection was not consumed")
                 return None
             blocked, _admission = self._validate_standard(request)
             if blocked is not None:
-                self._finish_selection(selection, blocked)
-                return blocked
-            return self._create_confirmation(request, selection)
-        except BaseException:
-            self._callback_state.release_selection(selection)
+                return (
+                    blocked
+                    if self._finish_selection(selection, blocked)
+                    else self._blocked(request, "invalid_confirmation")
+                )
+        except BaseException as exc:
+            if not self._callback_state.release_selection(selection):
+                raise RuntimeError("selection claim release failed") from exc
             raise
+        return self._create_confirmation(request, selection)
 
     def _create_confirmation(
         self,
@@ -174,8 +193,9 @@ class SelfServiceIssuanceService:
     ) -> SelfServiceIssuanceResult:
         try:
             token = self._callback_state.create_confirmation(selection)
-        except BaseException:
-            self._callback_state.release_selection(selection)
+        except BaseException as exc:
+            if not self._callback_state.release_selection(selection):
+                raise RuntimeError("selection claim release failed") from exc
             raise
         if not self._callback_state.consume_selection(
             selection, terminal_reason="confirmation_created"
@@ -204,28 +224,47 @@ class SelfServiceIssuanceService:
             confirmation_token or "", owner_user_id=resolved_owner_id
         )
         if confirmation is None:
-            return (
-                self._blocked(request, "invalid_confirmation")
-                if request is not None
-                else None
+            expired = self._callback_state.consume_expired_confirmation(
+                confirmation_token or "", owner_user_id=resolved_owner_id
             )
-        try:
-            resolved_request = request or self._request_from_confirmation(confirmation)
-            if resolved_request is None or not self._confirmation_matches_request(
-                confirmation, resolved_request
-            ):
-                self._callback_state.consume_confirmation(
-                    confirmation, terminal_reason="invalid_confirmation"
-                )
+            if expired is None:
                 return (
                     self._blocked(request, "invalid_confirmation")
                     if request is not None
                     else None
                 )
+            resolved_expired_request = request or self._request_from_confirmation(
+                expired
+            )
+            if resolved_expired_request is None or not self._confirmation_matches_request(
+                expired, resolved_expired_request
+            ):
+                return (
+                    self._blocked(request, "invalid_confirmation")
+                    if request is not None
+                    else None
+                )
+            return self._blocked(resolved_expired_request, "confirmation_expired")
+        try:
+            resolved_request = request or self._request_from_confirmation(confirmation)
+            if resolved_request is None or not self._confirmation_matches_request(
+                confirmation, resolved_request
+            ):
+                consumed = self._callback_state.consume_confirmation(
+                    confirmation, terminal_reason="invalid_confirmation"
+                )
+                return (
+                    self._blocked(request, "invalid_confirmation")
+                    if request is not None and consumed
+                    else None
+                )
             blocked, admission = self._validate_standard(resolved_request)
             if blocked is not None:
-                self._finish_confirmation(confirmation, blocked)
-                return blocked
+                return (
+                    blocked
+                    if self._finish_confirmation(confirmation, blocked)
+                    else self._blocked(resolved_request, "invalid_confirmation")
+                )
             assert admission is not None
             result = self._reserve_and_issue_serialized(
                 resolved_request,
@@ -235,11 +274,15 @@ class SelfServiceIssuanceService:
                 actor_id=resolved_request.telegram_id,
                 reason_code="issued",
             )
-        except BaseException:
-            self._callback_state.release_confirmation(confirmation)
+        except BaseException as exc:
+            if not self._callback_state.release_confirmation(confirmation):
+                raise RuntimeError("confirmation claim release failed") from exc
             raise
-        self._finish_confirmation(confirmation, result)
-        return result
+        return (
+            result
+            if self._finish_confirmation(confirmation, result)
+            else self._blocked(resolved_request, "invalid_confirmation")
+        )
 
     def issue_admin_pilot(
         self,
@@ -384,7 +427,7 @@ class SelfServiceIssuanceService:
 
     def _request_from_selection(
         self,
-        selection: TelegramSelectionState,
+        selection: TelegramSelectionState | TelegramExpiredSelectionState,
         *,
         telegram_id: int,
     ) -> SelfServiceIssuanceRequest | None:
@@ -413,7 +456,8 @@ class SelfServiceIssuanceService:
         )
 
     def _request_from_confirmation(
-        self, confirmation: TelegramConfirmationState
+        self,
+        confirmation: TelegramConfirmationState | TelegramExpiredConfirmationState,
     ) -> SelfServiceIssuanceRequest | None:
         try:
             user = self._repo.get_user(confirmation.owner_user_id)
@@ -434,7 +478,7 @@ class SelfServiceIssuanceService:
 
     @staticmethod
     def _confirmation_matches_request(
-        confirmation: TelegramConfirmationState,
+        confirmation: TelegramConfirmationState | TelegramExpiredConfirmationState,
         request: SelfServiceIssuanceRequest,
     ) -> bool:
         return (
@@ -451,25 +495,23 @@ class SelfServiceIssuanceService:
         self,
         selection: TelegramSelectionState,
         result: SelfServiceIssuanceResult,
-    ) -> None:
+    ) -> bool:
         if _is_terminal_callback_result(result):
-            self._callback_state.consume_selection(
+            return self._callback_state.consume_selection(
                 selection, terminal_reason=result.reason_code
             )
-            return
-        self._callback_state.release_selection(selection)
+        return self._callback_state.release_selection(selection)
 
     def _finish_confirmation(
         self,
         confirmation: TelegramConfirmationState,
         result: SelfServiceIssuanceResult,
-    ) -> None:
+    ) -> bool:
         if result.status == "issued" or _is_terminal_callback_result(result):
-            self._callback_state.consume_confirmation(
+            return self._callback_state.consume_confirmation(
                 confirmation, terminal_reason=result.reason_code
             )
-            return
-        self._callback_state.release_confirmation(confirmation)
+        return self._callback_state.release_confirmation(confirmation)
 
     def _reserve(
         self,

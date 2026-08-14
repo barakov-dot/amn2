@@ -635,6 +635,126 @@ def test_issuance_confirmation_is_unique_exact_and_terminal(database_path) -> No
         connection.close()
 
 
+def test_expired_callback_state_terminal_consume_is_owner_bound(database_path) -> None:
+    connection = open_connection(database_path)
+    try:
+        owner_user_id = seed_owner_and_passport(connection)
+        other_owner_id = Repository(connection).upsert_user(
+            telegram_id=15002,
+            username="other",
+            first_name="Other",
+            last_name="Owner",
+        )
+        repo = Repository(connection)
+        expired_callback = callback_values(owner_user_id)
+        expired_callback["expires_at"] = "2026-08-14T10:04:00+00:00"
+        repo.create_callback_handle(**expired_callback)
+
+        assert repo.consume_expired_callback_handle(
+            "a" * 64, other_owner_id, NOW
+        ) is None
+        assert connection.execute(
+            "SELECT consumed_at FROM telegram_callback_handles"
+        ).fetchone()[0] is None
+
+        consumed = repo.consume_expired_callback_handle(
+            "a" * 64, owner_user_id, NOW
+        )
+
+        assert isinstance(consumed, sqlite3.Row)
+        assert consumed["consumed_at"] == NOW
+        assert consumed["terminal_reason"] == "expired"
+    finally:
+        connection.close()
+
+
+def test_expired_confirmation_terminal_consume_is_owner_bound(database_path) -> None:
+    connection = open_connection(database_path)
+    try:
+        owner_user_id = seed_owner_and_passport(connection)
+        other_owner_id = Repository(connection).upsert_user(
+            telegram_id=15002,
+            username="other",
+            first_name="Other",
+            last_name="Owner",
+        )
+        repo = Repository(connection)
+        repo.create_callback_handle(**callback_values(owner_user_id))
+        expired_confirmation = confirmation_values(owner_user_id)
+        expired_confirmation["expires_at"] = "2026-08-14T10:04:00+00:00"
+        repo.create_issuance_confirmation(**expired_confirmation)
+
+        assert repo.consume_expired_issuance_confirmation(
+            "b" * 64, other_owner_id, NOW
+        ) is None
+        assert connection.execute(
+            "SELECT consumed_at FROM protocol_issuance_confirmations"
+        ).fetchone()[0] is None
+
+        consumed = repo.consume_expired_issuance_confirmation(
+            "b" * 64, owner_user_id, NOW
+        )
+
+        assert isinstance(consumed, sqlite3.Row)
+        assert consumed["consumed_at"] == NOW
+        assert consumed["terminal_reason"] == "expired"
+    finally:
+        connection.close()
+
+
+def test_matching_claim_can_finalize_after_row_and_claim_ttl(database_path) -> None:
+    connection = open_connection(database_path)
+    try:
+        owner_user_id = seed_owner_and_passport(connection)
+        repo = Repository(connection)
+        repo.create_callback_handle(**callback_values(owner_user_id))
+        repo.create_issuance_confirmation(**confirmation_values(owner_user_id))
+        assert repo.claim_callback_handle(
+            "a" * 64,
+            owner_user_id,
+            NOW,
+            claim_id_digest=CALLBACK_CLAIM_DIGEST,
+            claim_expires_at="2026-08-14T10:06:00+00:00",
+        ) is not None
+        assert repo.claim_issuance_confirmation(
+            "b" * 64,
+            owner_user_id,
+            NOW,
+            claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+            claim_expires_at="2026-08-14T10:06:00+00:00",
+        ) is not None
+        after_both_ttls = "2026-08-14T10:11:00+00:00"
+
+        assert repo.consume_callback_handle(
+            "a" * 64,
+            owner_user_id,
+            after_both_ttls,
+            "protocol-selected",
+            claim_id_digest="3" * 64,
+        ) is None
+        callback = repo.consume_callback_handle(
+            "a" * 64,
+            owner_user_id,
+            after_both_ttls,
+            "protocol-selected",
+            claim_id_digest=CALLBACK_CLAIM_DIGEST,
+        )
+        confirmation = repo.consume_issuance_confirmation(
+            "b" * 64,
+            owner_user_id,
+            after_both_ttls,
+            "issued",
+            claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+        )
+
+        assert callback is not None
+        assert callback["terminal_reason"] == "protocol-selected"
+        assert confirmation is not None
+        assert confirmation["terminal_reason"] == "issued"
+    finally:
+        connection.close()
+
+
 def test_prune_expired_callback_state_removes_only_expired_rows(database_path) -> None:
     connection = open_connection(database_path)
     try:
