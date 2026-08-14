@@ -4,6 +4,8 @@ from aiogram.types import CallbackQuery
 from aiogram.types import Message
 
 from app.bot.handlers import (
+    AWG3_CONFIRM_PREFIX,
+    AWG3_SELECT_PREFIX,
     handle_admin_add_user,
     handle_admin_approve,
     handle_admin_create_order,
@@ -20,6 +22,8 @@ from app.bot.handlers import (
     handle_admin_template,
     handle_admin_users,
     handle_config_request,
+    handle_awg3_confirm,
+    handle_awg3_select,
     handle_my_devices,
     handle_language_choice,
     handle_my_tariff,
@@ -91,6 +95,14 @@ def create_dispatcher(*, workflow=None) -> Dispatcher:
     @router.callback_query(F.data == REQUEST_CONFIG_PREFIX)
     async def request_config(callback: CallbackQuery) -> None:
         await handle_request_config_prompt(callback)
+
+    @router.callback_query(F.data.startswith(f"{AWG3_SELECT_PREFIX}:"))
+    async def awg3_select(callback: CallbackQuery) -> None:
+        await handle_awg3_select(callback, workflow=workflow)
+
+    @router.callback_query(F.data.startswith(f"{AWG3_CONFIRM_PREFIX}:"))
+    async def awg3_confirm(callback: CallbackQuery) -> None:
+        await handle_awg3_confirm(callback, workflow=workflow)
 
     @router.callback_query(F.data.startswith(f"{LANGUAGE_CALLBACK_PREFIX}:"))
     async def language_choice(callback: CallbackQuery) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import json
 import sqlite3
 import threading
@@ -215,6 +216,10 @@ def _module():
     return importlib.import_module("app.services.self_service_issuance")
 
 
+def _callback_module():
+    return importlib.import_module("app.services.telegram_callback_state")
+
+
 def _admitted(protocol: ProtocolVersion = ProtocolVersion.AWG3):
     return AdmissionResult(
         decision="admitted_awg3" if protocol is ProtocolVersion.AWG3 else "admitted_awg2",
@@ -283,7 +288,7 @@ def _service(
         issuer=issuer,
         now=now or (lambda: NOW),
         confirmation_ttl=timedelta(minutes=5),
-        token_factory=token_factory or (lambda: "synthetic-confirmation-token"),
+        token_factory=token_factory,
         bot_admin_telegram_id=700,
         pilot_user_id=harness.user_id,
         pilot_passport_device_id=harness.passport_device_id,
@@ -453,11 +458,12 @@ def test_confirmation_is_short_lived_request_bound_and_one_time(harness):
     assert mismatched.reason_code == "invalid_confirmation"
     assert service.issuer.calls == []
 
+    expiring = service.decide(request)
     clock[0] = NOW + timedelta(minutes=6)
     expired = service.issue_after_confirmation(
-        request, confirmation_token=decision.token
+        request, confirmation_token=expiring.token
     )
-    assert expired.reason_code == "confirmation_expired"
+    assert expired.reason_code == "invalid_confirmation"
     assert service.issuer.calls == []
 
     clock[0] = NOW
@@ -467,6 +473,124 @@ def test_confirmation_is_short_lived_request_bound_and_one_time(harness):
     assert issued.status == "issued"
     assert replay.reason_code == "invalid_confirmation"
     assert len(service.issuer.calls) == 1
+
+
+def test_awg3_callback_state_is_short_digest_only_exact_and_ttl_bound(harness):
+    callback_service = _callback_module().TelegramCallbackStateService(
+        repo=harness.repo,
+        now=lambda: NOW,
+        opaque_factory=lambda: "A" * 22,
+    )
+    request = _request(harness)
+
+    handle = callback_service.create_selection(
+        owner_user_id=request.user_id,
+        passport_device_id=request.passport_device_id,
+        client_platform=request.client.platform,
+        client_application=request.client.application,
+        client_version=request.client.version,
+        client_build=request.client.build_id,
+        request_fingerprint=_module().request_fingerprint(request),
+    )
+    state = callback_service.claim_selection(handle, owner_user_id=request.user_id)
+
+    assert state is not None
+    assert len(f"a3s:{handle}".encode("utf-8")) <= 64
+    assert tuple(
+        getattr(state, field)
+        for field in (
+            "owner_user_id",
+            "passport_device_id",
+            "client_platform",
+            "client_application",
+            "client_version",
+            "client_build",
+            "request_fingerprint",
+        )
+    ) == (
+        request.user_id,
+        request.passport_device_id,
+        "windows",
+        "amnezia_vpn",
+        "5.0.0.5",
+        "accepted-build",
+        _module().request_fingerprint(request),
+    )
+    row = harness.conn.execute("SELECT * FROM telegram_callback_handles").fetchone()
+    assert row["handle_digest"] == hashlib.sha256(handle.encode()).hexdigest()
+    assert handle not in tuple(str(value) for value in row)
+    assert datetime.fromisoformat(row["expires_at"]) - datetime.fromisoformat(
+        row["created_at"]
+    ) == timedelta(minutes=15)
+
+
+def test_awg3_confirmation_survives_service_restart_and_is_owner_bound(harness):
+    first = _service(harness)
+    request = _request(harness)
+    decision = first.decide(request)
+    other_owner_id = harness.repo.upsert_user(
+        telegram_id=9308,
+        username="other-owner",
+        first_name="Other",
+        last_name="Owner",
+    )
+
+    restarted = _service(harness, issuer=first.issuer)
+    wrong_owner = restarted.issue_after_confirmation(
+        owner_user_id=other_owner_id,
+        confirmation_token=decision.token,
+    )
+    issued = restarted.issue_after_confirmation(
+        owner_user_id=harness.user_id,
+        confirmation_token=decision.token,
+    )
+    replay = restarted.issue_after_confirmation(
+        owner_user_id=harness.user_id,
+        confirmation_token=decision.token,
+    )
+
+    assert wrong_owner is None
+    assert issued.status == "issued"
+    assert replay is None
+    assert len(first.issuer.calls) == 1
+    confirmation = harness.conn.execute(
+        "SELECT * FROM protocol_issuance_confirmations"
+    ).fetchone()
+    selection = harness.conn.execute(
+        "SELECT * FROM telegram_callback_handles"
+    ).fetchone()
+    assert confirmation["selection_handle_digest"] == selection["handle_digest"]
+    assert confirmation["consumed_at"] is not None
+    assert datetime.fromisoformat(confirmation["expires_at"]) - datetime.fromisoformat(
+        confirmation["created_at"]
+    ) == timedelta(minutes=5)
+
+
+def test_awg3_duplicate_confirmation_never_calls_issuer_twice(harness):
+    issuer = SyntheticIssuer(
+        harness.repo, user_id=harness.user_id, server_id=harness.server_id
+    )
+    first = _service(harness, issuer=issuer)
+    second = _service(harness, issuer=issuer)
+    request = _request(harness)
+    token = first.decide(request).token
+    duplicate = {}
+    issuer.callback = lambda: duplicate.setdefault(
+        "result",
+        second.issue_after_confirmation(
+            owner_user_id=harness.user_id,
+            confirmation_token=token,
+        ),
+    )
+
+    issued = first.issue_after_confirmation(
+        owner_user_id=harness.user_id,
+        confirmation_token=token,
+    )
+
+    assert issued.status == "issued"
+    assert duplicate["result"] is None
+    assert len(issuer.calls) == 1
 
 
 def test_issue_rechecks_gate_drift_before_consuming_token_or_calling_issuer(harness):

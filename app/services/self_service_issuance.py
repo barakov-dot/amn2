@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
-import secrets
-import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -17,6 +14,11 @@ from app.services.dual_protocol_profiles import DualProtocolProfileService
 from app.services.protocol_admission import (
     AdmissionRequest,
     AdmissionResult,
+)
+from app.services.telegram_callback_state import (
+    TelegramCallbackStateService,
+    TelegramConfirmationState,
+    TelegramSelectionState,
 )
 from app.vpn.protocol_versions import ProtocolVersion
 
@@ -76,12 +78,6 @@ class ConfigIssuer(Protocol):
     ) -> object: ...
 
 
-@dataclass(frozen=True)
-class _PendingConfirmation:
-    request_fingerprint: str
-    expires_at: datetime
-
-
 class SelfServiceIssuanceService:
     def __init__(
         self,
@@ -95,6 +91,7 @@ class SelfServiceIssuanceService:
         now: Callable[[], datetime] | None = None,
         confirmation_ttl: timedelta = timedelta(minutes=5),
         token_factory: Callable[[], str] | None = None,
+        callback_state: TelegramCallbackStateService | None = None,
         bot_admin_telegram_id: int | None = None,
         pilot_user_id: int | None = None,
         pilot_passport_device_id: str | None = None,
@@ -109,14 +106,16 @@ class SelfServiceIssuanceService:
         self._profiles = profile_service
         self._issuer = issuer
         self._now = now or (lambda: datetime.now(timezone.utc))
-        self._confirmation_ttl = confirmation_ttl
-        self._token_factory = token_factory or (lambda: secrets.token_urlsafe(24))
+        self._callback_state = callback_state or TelegramCallbackStateService(
+            repo=repo,
+            now=self._now,
+            confirmation_ttl=confirmation_ttl,
+            confirmation_factory=token_factory,
+        )
         self._bot_admin_telegram_id = bot_admin_telegram_id
         self._pilot_user_id = pilot_user_id
         self._pilot_passport_device_id = pilot_passport_device_id
         self._pilot_client = pilot_client
-        self._pending: dict[str, _PendingConfirmation] = {}
-        self._confirmation_lock = threading.RLock()
 
     def decide(
         self, request: SelfServiceIssuanceRequest
@@ -124,17 +123,64 @@ class SelfServiceIssuanceService:
         blocked, _admission = self._validate_standard(request)
         if blocked is not None:
             return blocked
-        token = self._token_factory()
-        if not isinstance(token, str) or not token:
-            raise ValueError("confirmation token factory returned an invalid token")
-        token_digest = _digest(token)
-        now = self._now()
-        with self._confirmation_lock:
-            self._prune_expired_confirmations(now)
-            self._pending[token_digest] = _PendingConfirmation(
-                request_fingerprint=_request_fingerprint(request),
-                expires_at=now + self._confirmation_ttl,
-            )
+        handle = self._callback_state.create_selection(
+            owner_user_id=request.user_id,
+            passport_device_id=request.passport_device_id,
+            client_platform=request.client.platform,
+            client_application=request.client.application,
+            client_version=request.client.version,
+            client_build=request.client.build_id,
+            request_fingerprint=request_fingerprint(request),
+        )
+        selection = self._callback_state.claim_selection(
+            handle, owner_user_id=request.user_id
+        )
+        if selection is None:
+            raise RuntimeError("new confirmation selection could not be claimed")
+        return self._create_confirmation(request, selection)
+
+    def decide_from_selection(
+        self,
+        *,
+        owner_user_id: int,
+        telegram_id: int,
+        selection_handle: str,
+    ) -> SelfServiceIssuanceResult | None:
+        selection = self._callback_state.claim_selection(
+            selection_handle, owner_user_id=owner_user_id
+        )
+        if selection is None:
+            return None
+        try:
+            request = self._request_from_selection(selection, telegram_id=telegram_id)
+            if request is None:
+                self._callback_state.consume_selection(
+                    selection, terminal_reason="invalid_selection"
+                )
+                return None
+            blocked, _admission = self._validate_standard(request)
+            if blocked is not None:
+                self._finish_selection(selection, blocked)
+                return blocked
+            return self._create_confirmation(request, selection)
+        except BaseException:
+            self._callback_state.release_selection(selection)
+            raise
+
+    def _create_confirmation(
+        self,
+        request: SelfServiceIssuanceRequest,
+        selection: TelegramSelectionState,
+    ) -> SelfServiceIssuanceResult:
+        try:
+            token = self._callback_state.create_confirmation(selection)
+        except BaseException:
+            self._callback_state.release_selection(selection)
+            raise
+        if not self._callback_state.consume_selection(
+            selection, terminal_reason="confirmation_created"
+        ):
+            raise RuntimeError("confirmation selection was not consumed")
         return SelfServiceIssuanceResult(
             status="confirmation_required",
             protocol_version=request.protocol_version,
@@ -146,32 +192,54 @@ class SelfServiceIssuanceService:
 
     def issue_after_confirmation(
         self,
-        request: SelfServiceIssuanceRequest,
+        request: SelfServiceIssuanceRequest | None = None,
         *,
+        owner_user_id: int | None = None,
         confirmation_token: str | None,
-    ) -> SelfServiceIssuanceResult:
-        with self._confirmation_lock:
-            pending, token_digest, invalid = self._validate_confirmation(
-                request, confirmation_token
+    ) -> SelfServiceIssuanceResult | None:
+        resolved_owner_id = request.user_id if request is not None else owner_user_id
+        if resolved_owner_id is None:
+            raise ValueError("owner_user_id")
+        confirmation = self._callback_state.claim_confirmation(
+            confirmation_token or "", owner_user_id=resolved_owner_id
+        )
+        if confirmation is None:
+            return (
+                self._blocked(request, "invalid_confirmation")
+                if request is not None
+                else None
             )
-            if invalid is not None:
-                return invalid
-            assert pending is not None and token_digest is not None
-            blocked, admission = self._validate_standard(request)
+        try:
+            resolved_request = request or self._request_from_confirmation(confirmation)
+            if resolved_request is None or not self._confirmation_matches_request(
+                confirmation, resolved_request
+            ):
+                self._callback_state.consume_confirmation(
+                    confirmation, terminal_reason="invalid_confirmation"
+                )
+                return (
+                    self._blocked(request, "invalid_confirmation")
+                    if request is not None
+                    else None
+                )
+            blocked, admission = self._validate_standard(resolved_request)
             if blocked is not None:
+                self._finish_confirmation(confirmation, blocked)
                 return blocked
             assert admission is not None
-            consumed = self._pending.pop(token_digest, None)
-            if consumed is not pending:
-                return self._blocked(request, "invalid_confirmation")
-        return self._reserve_and_issue_serialized(
-            request,
-            admission,
-            event_type="self_service_issued",
-            actor_kind="user",
-            actor_id=request.telegram_id,
-            reason_code="issued",
-        )
+            result = self._reserve_and_issue_serialized(
+                resolved_request,
+                admission,
+                event_type="self_service_issued",
+                actor_kind="user",
+                actor_id=resolved_request.telegram_id,
+                reason_code="issued",
+            )
+        except BaseException:
+            self._callback_state.release_confirmation(confirmation)
+            raise
+        self._finish_confirmation(confirmation, result)
+        return result
 
     def issue_admin_pilot(
         self,
@@ -314,38 +382,94 @@ class SelfServiceIssuanceService:
             return None, None
         return admission, state
 
-    def _validate_confirmation(
+    def _request_from_selection(
         self,
-        request: SelfServiceIssuanceRequest,
-        confirmation_token: str | None,
-    ) -> tuple[
-        _PendingConfirmation | None,
-        str | None,
-        SelfServiceIssuanceResult | None,
-    ]:
-        if not isinstance(confirmation_token, str) or not confirmation_token:
-            return None, None, self._blocked(request, "invalid_confirmation")
-        token_digest = _digest(confirmation_token)
-        pending = self._pending.get(token_digest)
-        if pending is None:
-            return None, None, self._blocked(request, "invalid_confirmation")
-        if not hmac.compare_digest(
-            pending.request_fingerprint, _request_fingerprint(request)
-        ):
-            return None, None, self._blocked(request, "invalid_confirmation")
-        if self._now() > pending.expires_at:
-            self._pending.pop(token_digest, None)
-            return None, None, self._blocked(request, "confirmation_expired")
-        return pending, token_digest, None
-
-    def _prune_expired_confirmations(self, now: datetime) -> None:
-        expired = tuple(
-            token_digest
-            for token_digest, pending in self._pending.items()
-            if now > pending.expires_at
+        selection: TelegramSelectionState,
+        *,
+        telegram_id: int,
+    ) -> SelfServiceIssuanceRequest | None:
+        try:
+            user = self._repo.get_user(selection.owner_user_id)
+            request = SelfServiceIssuanceRequest(
+                user_id=selection.owner_user_id,
+                telegram_id=telegram_id,
+                passport_device_id=selection.passport_device_id,
+                protocol_version=ProtocolVersion.AWG3,
+                client=ClientIdentity(
+                    selection.client_application,
+                    selection.client_platform,
+                    selection.client_version,
+                    build_id=selection.client_build,
+                ),
+            )
+        except (LookupError, ValueError):
+            return None
+        if int(user["telegram_id"]) != telegram_id:
+            return None
+        return (
+            request
+            if selection.request_fingerprint == request_fingerprint(request)
+            else None
         )
-        for token_digest in expired:
-            self._pending.pop(token_digest, None)
+
+    def _request_from_confirmation(
+        self, confirmation: TelegramConfirmationState
+    ) -> SelfServiceIssuanceRequest | None:
+        try:
+            user = self._repo.get_user(confirmation.owner_user_id)
+            return SelfServiceIssuanceRequest(
+                user_id=confirmation.owner_user_id,
+                telegram_id=int(user["telegram_id"]),
+                passport_device_id=confirmation.passport_device_id,
+                protocol_version=ProtocolVersion.AWG3,
+                client=ClientIdentity(
+                    confirmation.client_application,
+                    confirmation.client_platform,
+                    confirmation.client_version,
+                    build_id=confirmation.client_build,
+                ),
+            )
+        except (LookupError, ValueError):
+            return None
+
+    @staticmethod
+    def _confirmation_matches_request(
+        confirmation: TelegramConfirmationState,
+        request: SelfServiceIssuanceRequest,
+    ) -> bool:
+        return (
+            confirmation.owner_user_id == request.user_id
+            and confirmation.passport_device_id == request.passport_device_id
+            and confirmation.client_platform == request.client.platform
+            and confirmation.client_application == request.client.application
+            and confirmation.client_version == request.client.version
+            and confirmation.client_build == request.client.build_id
+            and confirmation.request_fingerprint == request_fingerprint(request)
+        )
+
+    def _finish_selection(
+        self,
+        selection: TelegramSelectionState,
+        result: SelfServiceIssuanceResult,
+    ) -> None:
+        if _is_terminal_callback_result(result):
+            self._callback_state.consume_selection(
+                selection, terminal_reason=result.reason_code
+            )
+            return
+        self._callback_state.release_selection(selection)
+
+    def _finish_confirmation(
+        self,
+        confirmation: TelegramConfirmationState,
+        result: SelfServiceIssuanceResult,
+    ) -> None:
+        if result.status == "issued" or _is_terminal_callback_result(result):
+            self._callback_state.consume_confirmation(
+                confirmation, terminal_reason=result.reason_code
+            )
+            return
+        self._callback_state.release_confirmation(confirmation)
 
     def _reserve(
         self,
@@ -360,7 +484,7 @@ class SelfServiceIssuanceService:
             intended_passport_device_id=request.passport_device_id,
             passport_device_id=request.passport_device_id,
             protocol_version=request.protocol_version.value,
-            request_fingerprint=_request_fingerprint(request),
+            request_fingerprint=request_fingerprint(request),
             actor_kind=actor_kind,
             actor_id=actor_id,
             client_application=request.client.application,
@@ -613,7 +737,7 @@ def _digest(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
-def _request_fingerprint(request: SelfServiceIssuanceRequest) -> str:
+def request_fingerprint(request: SelfServiceIssuanceRequest) -> str:
     canonical = json.dumps(
         {
             "user_id": request.user_id,
@@ -629,3 +753,20 @@ def _request_fingerprint(request: SelfServiceIssuanceRequest) -> str:
         separators=(",", ":"),
     )
     return "sha256:" + _digest(canonical)
+
+
+def _is_terminal_callback_result(result: SelfServiceIssuanceResult) -> bool:
+    return result.status == "blocked" and result.reason_code in {
+        "invalid_confirmation",
+        "confirmation_expired",
+        "owner_mismatch",
+        "user_not_found",
+        "user_not_active",
+        "user_issuance_blocked",
+        "passport_not_found",
+        "passport_owner_mismatch",
+        "device_owner_mismatch",
+        "device_client_mismatch",
+        "profile_already_exists",
+        "issuance_recovery_required",
+    }

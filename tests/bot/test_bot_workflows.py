@@ -1364,6 +1364,47 @@ def test_awg3_choices_are_structured_exact_and_filtered_to_passport_owner(tmp_pa
     ) == ()
 
 
+def test_awg3_selection_callback_is_bounded_and_contains_no_client_identity(tmp_path):
+    repo = _repo(tmp_path)
+    user_id = repo.upsert_user(
+        telegram_id=700,
+        username="awg3-owner",
+        first_name="AWG3",
+        last_name="Owner",
+    )
+    passport = create_device_passport(
+        repo,
+        owner_user_id=user_id,
+        local_device_id=None,
+        platform="windows",
+        official_client_type="amnezia_vpn",
+        client_version="5.0.0.5",
+        import_method="standard_conf",
+        config_schema_version="amneziawg_v2",
+        config_text="synthetic-short-callback-source",
+    )
+    workflow = BotWorkflow(
+        repo=repo,
+        admin_telegram_ids=set(),
+        self_service_issuance_service=RecordingSelfServiceIssuanceService(),
+        awg3_client_choices=(
+            ClientIdentity(
+                "amnezia_vpn", "windows", "5.0.0.5", build_id="win-5005-stable"
+            ),
+        ),
+    )
+
+    choice = workflow.list_awg3_client_choices(
+        telegram_id=700,
+        passport_device_id=passport.device_id,
+    )[0]
+
+    assert choice.callback_data.startswith("a3s:")
+    assert len(choice.callback_data.encode("utf-8")) <= 64
+    assert passport.device_id not in choice.callback_data
+    assert "win-5005-stable" not in choice.callback_data
+
+
 def test_awg3_request_and_confirm_delegate_without_admin_approval(tmp_path):
     repo = _repo(tmp_path)
     user_id = repo.upsert_user(
@@ -1399,10 +1440,13 @@ def test_awg3_request_and_confirm_delegate_without_admin_approval(tmp_path):
         or delivery,
     )
 
-    requested = workflow.request_awg3(
+    choice = workflow.list_awg3_client_choices(
         telegram_id=700,
         passport_device_id=passport.device_id,
-        build_id="win-5005-stable",
+    )[0]
+    requested = workflow.request_awg3(
+        telegram_id=700,
+        selection_handle=choice.selection_handle,
     )
     confirmed = workflow.confirm_awg3(telegram_id=700, confirmation_token="token-1")
 
@@ -1410,7 +1454,8 @@ def test_awg3_request_and_confirm_delegate_without_admin_approval(tmp_path):
     assert requested.token == "token-1"
     assert len(service.decide_calls) == 1
     assert len(service.confirm_calls) == 1
-    assert service.confirm_calls[0][0] == service.decide_calls[0]
+    assert service.confirm_calls[0][0] == user_id
+    assert service.decide_calls[0][:2] == (user_id, 700)
     assert service.confirm_calls[0][1] == "token-1"
     assert confirmed.delivery is delivery
     assert delivery_calls == [42]
@@ -1453,10 +1498,13 @@ def test_awg3_confirm_rejects_wrong_owner_before_issuance_or_secret_loading(tmp_
         ),
         awg3_delivery_builder=build_delivery,
     )
-    workflow.request_awg3(
+    choice = workflow.list_awg3_client_choices(
         telegram_id=700,
         passport_device_id=passport.device_id,
-        build_id="win-5005-stable",
+    )[0]
+    workflow.request_awg3(
+        telegram_id=700,
+        selection_handle=choice.selection_handle,
     )
 
     result = workflow.confirm_awg3(telegram_id=701, confirmation_token="token-1")
@@ -1475,7 +1523,7 @@ def test_awg3_confirm_rejects_wrong_owner_before_issuance_or_secret_loading(tmp_
     "reason_code",
     ["profile_already_exists", "confirmation_expired", "invalid_confirmation"],
 )
-def test_awg3_terminal_confirmation_result_removes_same_owner_pending_request(
+def test_awg3_terminal_confirmation_result_is_not_replayed(
     tmp_path,
     reason_code,
 ):
@@ -1506,7 +1554,7 @@ def test_awg3_terminal_confirmation_result_removes_same_owner_pending_request(
         token=None,
     )
     service = RecordingSelfServiceIssuanceService(
-        confirmation_results=[blocked]
+        confirmation_results=[blocked, None]
     )
     workflow = BotWorkflow(
         repo=repo,
@@ -1519,10 +1567,13 @@ def test_awg3_terminal_confirmation_result_removes_same_owner_pending_request(
         ),
         awg3_delivery_builder=lambda _device_id: _synthetic_awg3_delivery(),
     )
-    workflow.request_awg3(
+    choice = workflow.list_awg3_client_choices(
         telegram_id=700,
         passport_device_id=passport.device_id,
-        build_id="win-5005-stable",
+    )[0]
+    workflow.request_awg3(
+        telegram_id=700,
+        selection_handle=choice.selection_handle,
     )
 
     first = workflow.confirm_awg3(telegram_id=700, confirmation_token="token-1")
@@ -1530,10 +1581,10 @@ def test_awg3_terminal_confirmation_result_removes_same_owner_pending_request(
 
     assert first.result.reason_code == reason_code
     assert replay is None
-    assert len(service.confirm_calls) == 1
+    assert len(service.confirm_calls) == 2
 
 
-def test_awg3_transient_confirmation_block_keeps_same_owner_pending_request(tmp_path):
+def test_awg3_transient_confirmation_block_can_be_retried(tmp_path):
     repo = _repo(tmp_path)
     user_id = repo.upsert_user(
         telegram_id=700,
@@ -1582,10 +1633,13 @@ def test_awg3_transient_confirmation_block_keeps_same_owner_pending_request(tmp_
         ),
         awg3_delivery_builder=lambda _device_id: _synthetic_awg3_delivery(),
     )
-    workflow.request_awg3(
+    choice = workflow.list_awg3_client_choices(
         telegram_id=700,
         passport_device_id=passport.device_id,
-        build_id="win-5005-stable",
+    )[0]
+    workflow.request_awg3(
+        telegram_id=700,
+        selection_handle=choice.selection_handle,
     )
 
     first = workflow.confirm_awg3(telegram_id=700, confirmation_token="token-1")
@@ -1602,8 +1656,10 @@ class RecordingSelfServiceIssuanceService:
         self.confirm_calls = []
         self.confirmation_results = list(confirmation_results or [])
 
-    def decide(self, request):
-        self.decide_calls.append(request)
+    def decide_from_selection(
+        self, *, owner_user_id, telegram_id, selection_handle
+    ):
+        self.decide_calls.append((owner_user_id, telegram_id, selection_handle))
         return SelfServiceIssuanceResult(
             status="confirmation_required",
             protocol_version=ProtocolVersion.AWG3,
@@ -1613,8 +1669,8 @@ class RecordingSelfServiceIssuanceService:
             token="token-1",
         )
 
-    def issue_after_confirmation(self, request, *, confirmation_token):
-        self.confirm_calls.append((request, confirmation_token))
+    def issue_after_confirmation(self, *, owner_user_id, confirmation_token):
+        self.confirm_calls.append((owner_user_id, confirmation_token))
         if self.confirmation_results:
             return self.confirmation_results.pop(0)
         return SelfServiceIssuanceResult(

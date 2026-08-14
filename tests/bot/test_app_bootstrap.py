@@ -52,6 +52,17 @@ def test_dispatcher_registers_admin_issue_and_safe_resend_commands():
     assert "admin_resend_issued_config" in message_handler_names
 
 
+def test_dispatcher_registers_short_awg3_callback_routes():
+    dispatcher = create_dispatcher(workflow=object())
+    router = dispatcher.sub_routers[0]
+
+    callback_handler_names = {
+        handler.callback.__name__ for handler in router.callback_query.handlers
+    }
+
+    assert {"awg3_select", "awg3_confirm"} <= callback_handler_names
+
+
 def test_create_workflow_wires_device_name_sequence_settings(tmp_path):
     workflow = create_workflow(
         database_path=tmp_path / "app.sqlite3",

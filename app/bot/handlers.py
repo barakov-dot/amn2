@@ -69,12 +69,10 @@ from app.server.peer_apply import PeerApplyError
 from app.services.config_material import ConfigMaterialUnavailable
 
 
-AWG3_SELECT_PREFIX = "awg3:select"
-AWG3_CONFIRM_PREFIX = "awg3:confirm"
-_AWG3_SELECT_RE = re.compile(
-    r"^awg3:select:(dev_[0-9a-f]{32}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})$"
-)
-_AWG3_CONFIRM_RE = re.compile(r"^awg3:confirm:([A-Za-z0-9_-]{1,128})$")
+AWG3_SELECT_PREFIX = "a3s"
+AWG3_CONFIRM_PREFIX = "a3c"
+_AWG3_SELECT_RE = re.compile(r"^a3s:([A-Za-z0-9_-]{1,60})$")
+_AWG3_CONFIRM_RE = re.compile(r"^a3c:([A-Za-z0-9_-]{1,60})$")
 
 
 async def handle_start(message, *, workflow) -> None:
@@ -144,12 +142,10 @@ async def handle_awg3_select(callback, *, workflow) -> None:
         await callback.message.answer(text("handler.awg3_invalid_selection"))
         await callback.answer()
         return
-    passport_device_id, build_id = parsed
     try:
         result = workflow.request_awg3(
             telegram_id=int(callback.from_user.id),
-            passport_device_id=passport_device_id,
-            build_id=build_id,
+            selection_handle=parsed,
         )
     except (LookupError, ValueError):
         await callback.message.answer(text("handler.awg3_invalid_selection"))
@@ -914,9 +910,9 @@ async def _send_awg3_delivery(bot, *, chat_id: int, delivery) -> None:
     )
 
 
-def _parse_awg3_select_callback(data: str) -> tuple[str, str] | None:
+def _parse_awg3_select_callback(data: str) -> str | None:
     match = _AWG3_SELECT_RE.fullmatch(data)
-    return (match.group(1), match.group(2)) if match is not None else None
+    return match.group(1) if match is not None else None
 
 
 def _parse_awg3_confirm_callback(data: str) -> str | None:

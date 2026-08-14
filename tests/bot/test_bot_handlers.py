@@ -1058,7 +1058,7 @@ def test_handle_admin_resend_issued_config_returns_safe_unavailable_response():
 
 
 def test_awg3_select_rejects_malformed_callback_ids_before_workflow():
-    callback = FakeCallback(data="awg3:select:dev_bad:build:extra", user_id=700)
+    callback = FakeCallback(data="a3s:bad:handle", user_id=700)
     workflow = FakeWorkflow(admin_ids=set())
 
     asyncio.run(bot_handlers.handle_awg3_select(callback, workflow=workflow))
@@ -1068,19 +1068,21 @@ def test_awg3_select_rejects_malformed_callback_ids_before_workflow():
     assert callback.answered is True
 
 
-def test_awg3_select_rejects_noncanonical_passport_id_before_workflow():
-    callback = FakeCallback(data="awg3:select:dev_bad:build-1", user_id=700)
+def test_awg3_select_accepts_only_short_opaque_handle():
+    callback = FakeCallback(data="a3s:opaque_handle-123", user_id=700)
     workflow = FakeWorkflow(admin_ids=set())
 
     asyncio.run(bot_handlers.handle_awg3_select(callback, workflow=workflow))
 
-    assert workflow.awg3_requests == []
-    assert callback.message.answers[0]["text"] == "Invalid AWG3 selection."
+    assert workflow.awg3_requests == [(700, "opaque_handle-123")]
+    confirmation_data = callback.message.answers[0]["reply_markup"].inline_keyboard[0][0].callback_data
+    assert confirmation_data == "a3c:token-1"
+    assert len(confirmation_data.encode("utf-8")) <= 64
 
 
 def test_awg3_confirm_rejects_non_private_chat_before_workflow_or_secret_media():
     callback = FakeCallback(
-        data="awg3:confirm:token-1",
+        data="a3c:token-1",
         user_id=700,
         chat_type="group",
     )
@@ -1095,7 +1097,7 @@ def test_awg3_confirm_rejects_non_private_chat_before_workflow_or_secret_media()
 
 
 def test_awg3_confirm_delivers_exactly_document_then_photo_to_private_owner():
-    callback = FakeCallback(data="awg3:confirm:token-1", user_id=700)
+    callback = FakeCallback(data="a3c:token-1", user_id=700)
     workflow = FakeWorkflow(admin_ids=set())
 
     asyncio.run(bot_handlers.handle_awg3_confirm(callback, workflow=workflow))
@@ -1221,8 +1223,8 @@ class FakeWorkflow:
     def is_configured_admin(self, telegram_id):
         return telegram_id in self._admin_ids
 
-    def request_awg3(self, *, telegram_id, passport_device_id, build_id):
-        self.awg3_requests.append((telegram_id, passport_device_id, build_id))
+    def request_awg3(self, *, telegram_id, selection_handle):
+        self.awg3_requests.append((telegram_id, selection_handle))
         return SimpleNamespace(
             status="confirmation_required",
             reason_code="confirmation_required",
