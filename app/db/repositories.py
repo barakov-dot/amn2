@@ -723,6 +723,228 @@ class Repository:
             (application, platform, client_version, client_build),
         ).fetchone()
 
+    def create_callback_handle(
+        self,
+        *,
+        handle_digest: str,
+        purpose: str,
+        owner_user_id: int,
+        passport_device_id: str,
+        client_platform: str | None,
+        client_application: str | None,
+        client_version: str | None,
+        client_build: str | None,
+        request_fingerprint: str,
+        created_at: str,
+        expires_at: str,
+    ) -> sqlite3.Row:
+        with self.transaction():
+            self._conn.execute(
+                """
+                INSERT INTO telegram_callback_handles (
+                    handle_digest,
+                    purpose,
+                    owner_user_id,
+                    passport_device_id,
+                    client_platform,
+                    client_application,
+                    client_version,
+                    client_build,
+                    request_fingerprint,
+                    created_at,
+                    expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    handle_digest,
+                    purpose,
+                    owner_user_id,
+                    passport_device_id,
+                    client_platform,
+                    client_application,
+                    client_version,
+                    client_build,
+                    request_fingerprint,
+                    created_at,
+                    expires_at,
+                ),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM telegram_callback_handles WHERE handle_digest = ?",
+                (handle_digest,),
+            ).fetchone()
+            assert row is not None
+            return row
+
+    def claim_callback_handle(
+        self,
+        handle_digest: str,
+        owner_user_id: int,
+        now: str,
+    ) -> sqlite3.Row | None:
+        with self.transaction():
+            return self._conn.execute(
+                """
+                SELECT *
+                FROM telegram_callback_handles
+                WHERE handle_digest = ?
+                  AND owner_user_id = ?
+                  AND consumed_at IS NULL
+                  AND expires_at > ?
+                """,
+                (handle_digest, owner_user_id, now),
+            ).fetchone()
+
+    def consume_callback_handle(
+        self,
+        handle_digest: str,
+        owner_user_id: int,
+        now: str,
+        terminal_reason: str,
+    ) -> sqlite3.Row | None:
+        with self.transaction():
+            cursor = self._conn.execute(
+                """
+                UPDATE telegram_callback_handles
+                SET consumed_at = ?, terminal_reason = ?
+                WHERE handle_digest = ?
+                  AND owner_user_id = ?
+                  AND consumed_at IS NULL
+                  AND expires_at > ?
+                """,
+                (now, terminal_reason, handle_digest, owner_user_id, now),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM telegram_callback_handles WHERE handle_digest = ?",
+                (handle_digest,),
+            ).fetchone()
+            assert row is not None
+            return row
+
+    def create_issuance_confirmation(
+        self,
+        *,
+        token_digest: str,
+        selection_handle_digest: str,
+        owner_user_id: int,
+        passport_device_id: str,
+        client_platform: str,
+        client_application: str,
+        client_version: str,
+        client_build: str,
+        request_fingerprint: str,
+        created_at: str,
+        expires_at: str,
+    ) -> sqlite3.Row:
+        with self.transaction():
+            self._conn.execute(
+                """
+                INSERT INTO protocol_issuance_confirmations (
+                    token_digest,
+                    selection_handle_digest,
+                    owner_user_id,
+                    passport_device_id,
+                    client_platform,
+                    client_application,
+                    client_version,
+                    client_build,
+                    request_fingerprint,
+                    created_at,
+                    expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    token_digest,
+                    selection_handle_digest,
+                    owner_user_id,
+                    passport_device_id,
+                    client_platform,
+                    client_application,
+                    client_version,
+                    client_build,
+                    request_fingerprint,
+                    created_at,
+                    expires_at,
+                ),
+            )
+            row = self._conn.execute(
+                "SELECT * FROM protocol_issuance_confirmations "
+                "WHERE token_digest = ?",
+                (token_digest,),
+            ).fetchone()
+            assert row is not None
+            return row
+
+    def claim_issuance_confirmation(
+        self,
+        token_digest: str,
+        owner_user_id: int,
+        now: str,
+    ) -> sqlite3.Row | None:
+        with self.transaction():
+            return self._conn.execute(
+                """
+                SELECT *
+                FROM protocol_issuance_confirmations
+                WHERE token_digest = ?
+                  AND owner_user_id = ?
+                  AND consumed_at IS NULL
+                  AND expires_at > ?
+                """,
+                (token_digest, owner_user_id, now),
+            ).fetchone()
+
+    def consume_issuance_confirmation(
+        self,
+        token_digest: str,
+        owner_user_id: int,
+        now: str,
+        terminal_reason: str,
+    ) -> sqlite3.Row | None:
+        with self.transaction():
+            cursor = self._conn.execute(
+                """
+                UPDATE protocol_issuance_confirmations
+                SET consumed_at = ?, terminal_reason = ?
+                WHERE token_digest = ?
+                  AND owner_user_id = ?
+                  AND consumed_at IS NULL
+                  AND expires_at > ?
+                """,
+                (now, terminal_reason, token_digest, owner_user_id, now),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM protocol_issuance_confirmations "
+                "WHERE token_digest = ?",
+                (token_digest,),
+            ).fetchone()
+            assert row is not None
+            return row
+
+    def prune_expired_phase15_callback_state(self, now: str) -> int:
+        with self.transaction():
+            confirmation_cursor = self._conn.execute(
+                "DELETE FROM protocol_issuance_confirmations WHERE expires_at <= ?",
+                (now,),
+            )
+            callback_cursor = self._conn.execute(
+                """
+                DELETE FROM telegram_callback_handles
+                WHERE expires_at <= ?
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM protocol_issuance_confirmations
+                      WHERE selection_handle_digest = handle_digest
+                  )
+                """,
+                (now,),
+            )
+            return confirmation_cursor.rowcount + callback_cursor.rowcount
+
     def reserve_protocol_issuance_attempt(
         self,
         *,
