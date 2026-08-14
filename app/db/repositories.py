@@ -1161,9 +1161,14 @@ class Repository:
                 """
                 DELETE FROM protocol_issuance_confirmations
                 WHERE expires_at <= ?
-                  AND claim_id_digest IS NULL
-                  AND claimed_at IS NULL
-                  AND claim_expires_at IS NULL
+                  AND (
+                      consumed_at IS NOT NULL
+                      OR (
+                          claim_id_digest IS NULL
+                          AND claimed_at IS NULL
+                          AND claim_expires_at IS NULL
+                      )
+                  )
                 """,
                 (now,),
             )
@@ -1171,9 +1176,14 @@ class Repository:
                 """
                 DELETE FROM telegram_callback_handles
                 WHERE expires_at <= ?
-                  AND claim_id_digest IS NULL
-                  AND claimed_at IS NULL
-                  AND claim_expires_at IS NULL
+                  AND (
+                      consumed_at IS NOT NULL
+                      OR (
+                          claim_id_digest IS NULL
+                          AND claimed_at IS NULL
+                          AND claim_expires_at IS NULL
+                      )
+                  )
                   AND NOT EXISTS (
                       SELECT 1
                       FROM protocol_issuance_confirmations

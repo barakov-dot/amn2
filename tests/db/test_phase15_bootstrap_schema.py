@@ -925,6 +925,62 @@ def test_prune_preserves_expired_claimed_callback_and_confirmation(
         connection.close()
 
 
+def test_prune_removes_expired_claimed_and_consumed_callback_and_confirmation(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        owner_user_id = seed_owner_and_passport(connection)
+        repo = Repository(connection)
+        claimed_callback = callback_values(owner_user_id)
+        claimed_callback["expires_at"] = "2026-08-14T10:06:00+00:00"
+        repo.create_callback_handle(**claimed_callback)
+        claimed_confirmation = confirmation_values(owner_user_id)
+        claimed_confirmation["expires_at"] = "2026-08-14T10:06:00+00:00"
+        repo.create_issuance_confirmation(**claimed_confirmation)
+        assert repo.claim_callback_handle(
+            "a" * 64,
+            owner_user_id,
+            NOW,
+            claim_id_digest=CALLBACK_CLAIM_DIGEST,
+            claim_expires_at=CLAIM_EXPIRES_AT,
+        ) is not None
+        assert repo.claim_issuance_confirmation(
+            "b" * 64,
+            owner_user_id,
+            NOW,
+            claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+            claim_expires_at=CLAIM_EXPIRES_AT,
+        ) is not None
+        after_both_ttls = "2026-08-14T10:09:00+00:00"
+        assert repo.consume_callback_handle(
+            "a" * 64,
+            owner_user_id,
+            after_both_ttls,
+            "protocol-selected",
+            claim_id_digest=CALLBACK_CLAIM_DIGEST,
+        ) is not None
+        assert repo.consume_issuance_confirmation(
+            "b" * 64,
+            owner_user_id,
+            after_both_ttls,
+            "issued",
+            claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+        ) is not None
+
+        assert repo.prune_expired_phase15_callback_state(after_both_ttls) == 2
+        assert connection.execute(
+            "SELECT 1 FROM telegram_callback_handles WHERE handle_digest = ?",
+            ("a" * 64,),
+        ).fetchone() is None
+        assert connection.execute(
+            "SELECT 1 FROM protocol_issuance_confirmations WHERE token_digest = ?",
+            ("b" * 64,),
+        ).fetchone() is None
+    finally:
+        connection.close()
+
+
 def test_callback_owner_and_passport_pair_is_database_bound(database_path) -> None:
     connection = open_connection(database_path)
     try:
