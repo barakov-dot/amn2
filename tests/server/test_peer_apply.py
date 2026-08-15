@@ -415,6 +415,74 @@ def test_server_config_peer_applier_targets_only_selected_container_and_config(t
     assert all("/opt/amnezia/awg/awg0.conf" not in command for command in commands)
 
 
+def test_runtime_targeted_host_ipam_reads_exact_quoted_interface_dump(tmp_path):
+    ssh = RecordingSshClient(
+        result=CommandResult(
+            exit_code=0,
+            stdout=(
+                "server-private\tserver-public\t30003\toff\n"
+                "peer-one\tpsk-one\t(none)\t10.9.0.2/32,10.9.0.3/32\t0\t0\t0\t25\n"
+            ),
+            stderr="",
+        )
+    )
+    targeted = ServerConfigPeerApplier(
+        _server(tmp_path),
+        ssh_client=ssh,
+    ).for_runtime(_host_awg3_runtime(interface_name="awg3 target"))
+
+    assert targeted.list_allocated_ips(server={"id": 1}) == [
+        "10.9.0.2/32",
+        "10.9.0.3/32",
+    ]
+    assert ssh.calls == [("awg show 'awg3 target' dump", None)]
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        CommandResult(exit_code=1, stdout="", stderr="permission denied"),
+        CommandResult(exit_code=0, stdout="malformed\n", stderr=""),
+        CommandResult(
+            exit_code=0,
+            stdout=(
+                "server-private\tserver-public\t30003\toff\n"
+                "peer-one\tpsk-one\t(none)\tnot-an-ip\t0\t0\t0\t25\n"
+            ),
+            stderr="",
+        ),
+    ],
+)
+def test_runtime_targeted_host_ipam_fails_closed_on_command_or_dump_parse(
+    tmp_path,
+    result,
+):
+    targeted = ServerConfigPeerApplier(
+        _server(tmp_path),
+        ssh_client=RecordingSshClient(result=result),
+    ).for_runtime(_host_awg3_runtime())
+
+    with pytest.raises(PeerApplyError):
+        targeted.list_allocated_ips(server={"id": 1})
+
+
+def _host_awg3_runtime(*, interface_name="awg3"):
+    return RuntimeInstanceSpec(
+        runtime_instance_id="spain-awg3-runtime",
+        server_id=1,
+        protocol_version=ProtocolVersion.AWG3,
+        runtime_version="awg3-runtime-1",
+        interface_name=interface_name,
+        udp_port=30003,
+        vpn_cidr="10.9.0.0/24",
+        container_name=None,
+        service_name="awg3.service",
+        config_path="/etc/amnezia/awg3.conf",
+        lifecycle_state="accepted",
+        acceptance_receipt="sha256:" + "b" * 64,
+    )
+
+
 def _server(tmp_path):
     path = tmp_path / "servers.yml"
     path.write_text(VALID_YAML, encoding="utf-8")

@@ -3214,34 +3214,42 @@ class Repository:
     def count_active_physical_devices(self, user_id: int) -> int:
         row = self._conn.execute(
             """
-            WITH active_passports AS (
-                SELECT device_id
+            WITH unrevoked_passports AS (
+                SELECT device_id, local_device_id
                 FROM device_passports
                 WHERE owner_user_id = ?
                   AND revoked_at IS NULL
             ),
             represented_devices AS (
-                SELECT local_device_id
-                FROM device_passports
-                WHERE owner_user_id = ?
-                  AND revoked_at IS NULL
-                  AND local_device_id IS NOT NULL
+                SELECT
+                    passports.device_id AS passport_device_id,
+                    passports.local_device_id
+                FROM unrevoked_passports AS passports
+                WHERE passports.local_device_id IS NOT NULL
                 UNION
-                SELECT profiles.local_device_id
+                SELECT
+                    passports.device_id AS passport_device_id,
+                    profiles.local_device_id
                 FROM device_protocol_profiles AS profiles
-                JOIN active_passports AS passports
+                JOIN unrevoked_passports AS passports
                   ON passports.device_id = profiles.passport_device_id
-                WHERE profiles.lifecycle_state != 'revoked'
             )
             SELECT
-                (SELECT COUNT(*) FROM active_passports)
+                (
+                    SELECT COUNT(DISTINCT passport_device_id)
+                    FROM represented_devices
+                )
                 + COUNT(*) AS physical_device_count
-            FROM devices
-            WHERE user_id = ?
-              AND status = 'active'
-              AND id NOT IN (SELECT local_device_id FROM represented_devices)
+            FROM devices AS candidate
+            WHERE candidate.user_id = ?
+              AND candidate.status = 'active'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM represented_devices AS represented
+                  WHERE represented.local_device_id = candidate.id
+              )
             """,
-            (user_id, user_id, user_id),
+            (user_id, user_id),
         ).fetchone()
         return int(row["physical_device_count"])
 

@@ -123,6 +123,11 @@ class RuntimeTargetedPeerApplier:
         revoke_peer(self._server, peer_public_key, ssh_client=self._ssh_client)
 
     def list_allocated_ips(self, *, server) -> list[str]:
+        if self._server.runtime.type == "host_systemd":
+            return _host_runtime_dump_allocated_ips(
+                self.runtime.interface_name,
+                ssh_client=self._ssh_client,
+            )
         return list_allocated_ips(self._server, ssh_client=self._ssh_client)
 
 
@@ -226,6 +231,55 @@ def list_allocated_ips(server: ServerConfig, *, ssh_client: SshClient) -> list[s
     config_path = _require_docker_config_path(server)
     config_text = _read_docker_config(server, config_path, ssh_client=ssh_client)
     return _docker_config_peer_allowed_ips(config_text)
+
+
+def _host_runtime_dump_allocated_ips(
+    interface_name: str,
+    *,
+    ssh_client: SshClient,
+) -> list[str]:
+    command = f"awg show {shlex.quote(interface_name)} dump"
+    result = ssh_client.run(command)
+    if result.exit_code != 0:
+        raise PeerApplyError(
+            redact(
+                "Runtime interface dump failed "
+                f"(exit_code={result.exit_code}). "
+                f"stdout={_stream_status(result.stdout)} "
+                f"stderr={result.stderr!r}"
+            )
+        )
+    return _parse_host_runtime_dump(result.stdout)
+
+
+def _parse_host_runtime_dump(dump_text: str) -> list[str]:
+    rows = dump_text.splitlines()
+    if not rows or len(rows[0].split("\t")) != 4:
+        raise PeerApplyError("Runtime interface dump header is malformed")
+
+    allocated_ips: list[str] = []
+    for row in rows[1:]:
+        fields = row.split("\t")
+        if len(fields) != 8:
+            raise PeerApplyError("Runtime interface dump peer row is malformed")
+        allowed_ips = fields[3]
+        if allowed_ips == "(none)":
+            continue
+        if not allowed_ips:
+            raise PeerApplyError("Runtime interface dump AllowedIPs is missing")
+        for raw_allowed_ip in allowed_ips.split(","):
+            try:
+                parsed = ipaddress.ip_interface(raw_allowed_ip)
+            except ValueError as exc:
+                raise PeerApplyError(
+                    "Runtime interface dump AllowedIPs is invalid"
+                ) from exc
+            if parsed.network.prefixlen != parsed.max_prefixlen:
+                raise PeerApplyError(
+                    "Runtime interface dump AllowedIPs must use host routes"
+                )
+            allocated_ips.append(str(parsed))
+    return allocated_ips
 
 
 def _build_apply_command(server: ServerConfig, peer: PeerApplyInput) -> str:

@@ -11,7 +11,7 @@ from app.db.connection import connect
 from app.db.repositories import Repository
 from app.db.schema import initialize_schema
 from app.security.crypto import SecretBox
-from app.services.access import AccessService
+from app.services.access import AccessService, OperatorDeviceContext
 from app.services.admin_config_issuance import AdminConfigIssuanceService
 from app.services.awg3_control import Awg3ControlService
 from app.services.phase15_bootstrap import (
@@ -45,6 +45,12 @@ class RecordingPeerApplier:
         self.runtime_targets.append(targeted)
         return targeted
 
+    def list_allocated_ips(self, *, server):
+        return []
+
+    def apply_peer(self, **kwargs):
+        self.calls.append(kwargs)
+
 
 class RecordingRuntimePeerApplier:
     def __init__(self, runtime):
@@ -66,6 +72,22 @@ class RecordingAccessService:
     def create_protocol_device_for_existing_passport(self, **kwargs):
         self.calls.append(kwargs)
         return SimpleNamespace(device_id=42, local_device_id=42)
+
+
+class _ReadSizeSpy:
+    def __init__(self, handle, sizes):
+        self._handle = handle
+        self._sizes = sizes
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return self._handle.__exit__(exc_type, exc_value, traceback)
+
+    def read(self, size=-1):
+        self._sizes.append(size)
+        return self._handle.read(size)
 
 
 def _material_payload(secret: str) -> dict[str, object]:
@@ -592,3 +614,87 @@ def test_runtime_provider_row_count_is_bounded_before_domain_materialization(tmp
 
     assert components.available is False
     assert components.unavailable_reason == "AWG3 bootstrap providers are invalid"
+
+
+def test_provider_and_hpk_reads_are_capped_to_limit_plus_one(tmp_path, monkeypatch):
+    from app.services import phase15_bootstrap
+
+    settings, paths = _settings(tmp_path)
+    original_open = Path.open
+    provider_read_sizes = []
+    hpk_read_sizes = []
+
+    def tracked_open(path, *args, **kwargs):
+        handle = original_open(path, *args, **kwargs)
+        if path == paths["runtime"]:
+            return _ReadSizeSpy(handle, provider_read_sizes)
+        if path == paths["hpk"]:
+            return _ReadSizeSpy(handle, hpk_read_sizes)
+        return handle
+
+    monkeypatch.setattr(Path, "open", tracked_open)
+
+    phase15_bootstrap._read_json_object(str(paths["runtime"]), "runtime provider")
+    material = load_phase15_awg3_issuer_material(settings)
+    assert material.secret_resolver.resolve(
+        material.header_protection_key.reference
+    ) == "strict-phase15-header-protection-key"
+
+    assert provider_read_sizes == [phase15_bootstrap._MAX_PROVIDER_BYTES + 1]
+    assert hpk_read_sizes == [4097]
+
+
+def test_json_nesting_walk_is_iterative_and_stops_at_bound():
+    from app.services import phase15_bootstrap
+
+    nested = 0
+    for _ in range(1500):
+        nested = {"next": nested}
+
+    assert phase15_bootstrap._json_nesting(nested) == 9
+
+
+def test_extreme_provider_nesting_disables_awg3_while_awg2_remains_buildable(tmp_path):
+    settings, paths = _settings(tmp_path)
+    _conn, repo = _accepted_repo(tmp_path)
+    paths["runtime"].write_text(
+        '{"provider_identity":"phase15-runtime-provider-001","runtimes":'
+        + "[" * 1500
+        + "0"
+        + "]" * 1500
+        + "}",
+        encoding="utf-8",
+    )
+    peer = RecordingPeerApplier()
+    access = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "phase15-deep-provider-secret-with-more-than-32-chars"
+        ),
+        peer_applier=peer,
+    )
+
+    components = build_phase15_awg3_components(settings, repo, access, peer)
+
+    assert components.available is False
+    assert components.awg3_client_choices == ()
+    owner_user_id = repo.create_operator_recipient(operator_label="AWG2 remains")
+    result = access.create_operator_device(
+        owner_user_id=owner_user_id,
+        server_id=int(repo.get_server_by_name("local")["id"]),
+        device_name="AWG2 laptop",
+        duration_days=30,
+        admin_telegram_id=9001,
+        config_version="amneziawg_v2",
+        device_context=OperatorDeviceContext(
+            platform="windows",
+            official_client_type="amnezia_vpn",
+            client_version="5.0.0.5",
+            protocol_version="awg2",
+            runtime_instance_id="legacy-awg2-runtime",
+            client_identity_evidence_status="verified",
+            compatibility_evidence_id="legacy-awg2-evidence",
+        ),
+    )
+    assert result.passport_device_id is not None
+    assert len(peer.calls) == 1

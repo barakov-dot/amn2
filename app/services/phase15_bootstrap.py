@@ -40,6 +40,7 @@ from app.vpn.protocol_versions import ProtocolVersion, config_version_for_protoc
 
 
 _MAX_PROVIDER_BYTES = 65_536
+_MAX_HPK_BYTES = 4_096
 _MAX_PROVIDER_ROWS = 100
 _MAX_PROVIDER_NESTING = 8
 _RUNTIME_FIELDS = frozenset(
@@ -89,9 +90,12 @@ class _HpkFileResolver:
         if reference != self.reference:
             raise ValueError("header_protection_key reference mismatch")
         try:
-            raw = self.path.read_bytes()
+            with self.path.open("rb") as secret_file:
+                raw = secret_file.read(_MAX_HPK_BYTES + 1)
         except OSError:
             raise ValueError("header_protection_key file is unavailable") from None
+        if len(raw) > _MAX_HPK_BYTES:
+            raise ValueError("header_protection_key file size exceeds limit")
         actual = "sha256:" + hashlib.sha256(raw).hexdigest()
         if actual != self.fingerprint:
             raise ValueError("header_protection_key fingerprint mismatch")
@@ -625,20 +629,19 @@ def _read_json_object(path: str, label: str) -> Mapping[str, object]:
         raise Phase15BootstrapUnavailable(f"{label} path is missing")
     provider_path = Path(path)
     try:
-        byte_size = provider_path.stat().st_size
+        with provider_path.open("rb") as provider_file:
+            raw = provider_file.read(_MAX_PROVIDER_BYTES + 1)
     except OSError:
         raise Phase15BootstrapUnavailable(f"{label} is unavailable") from None
-    if byte_size > _MAX_PROVIDER_BYTES:
+    if len(raw) > _MAX_PROVIDER_BYTES:
         raise Phase15BootstrapUnavailable(f"{label} size exceeds limit")
     try:
-        text = provider_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
+        text = raw.decode("utf-8")
+    except UnicodeError:
         raise Phase15BootstrapUnavailable(f"{label} is unavailable") from None
-    if len(text.encode("utf-8")) > _MAX_PROVIDER_BYTES:
-        raise Phase15BootstrapUnavailable(f"{label} size exceeds limit")
     try:
         payload = json.loads(text)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         raise Phase15BootstrapUnavailable(f"{label} is unavailable") from None
     if _json_nesting(payload) > _MAX_PROVIDER_NESTING:
         raise Phase15BootstrapUnavailable(f"{label} nesting exceeds limit")
@@ -648,11 +651,22 @@ def _read_json_object(path: str, label: str) -> Mapping[str, object]:
 
 
 def _json_nesting(value: object) -> int:
-    if isinstance(value, dict):
-        return 1 + max((_json_nesting(item) for item in value.values()), default=0)
-    if isinstance(value, list):
-        return 1 + max((_json_nesting(item) for item in value), default=0)
-    return 0
+    deepest = 0
+    pending = [(value, 0)]
+    while pending:
+        current, parent_depth = pending.pop()
+        if isinstance(current, dict):
+            children = current.values()
+        elif isinstance(current, list):
+            children = current
+        else:
+            continue
+        depth = parent_depth + 1
+        if depth > _MAX_PROVIDER_NESTING:
+            return _MAX_PROVIDER_NESTING + 1
+        deepest = max(deepest, depth)
+        pending.extend((child, depth) for child in children)
+    return deepest
 
 
 def _require_exact_fields(

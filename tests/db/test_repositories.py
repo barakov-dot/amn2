@@ -87,7 +87,7 @@ def test_repository_counts_one_physical_device_for_dual_protocol_passport_lineag
         client_identity_evidence_status="verified",
         compatibility_evidence_id="evidence-awg2",
     )
-    repo.create_device_protocol_profile(
+    profile_id = repo.create_device_protocol_profile(
         passport_device_id="dev_0123456789abcdef0123456789abcdef",
         protocol_version="awg3",
         local_device_id=awg3_device_id,
@@ -96,8 +96,69 @@ def test_repository_counts_one_physical_device_for_dual_protocol_passport_lineag
 
     assert repo.count_active_physical_devices(user_id) == 1
 
+    repo.update_device_protocol_profile(
+        profile_id=profile_id,
+        lifecycle_state="revoked",
+        replacement_device_id=None,
+    )
+    assert repo.count_active_physical_devices(user_id) == 1
+
     create_device("phone-awg2", "10.8.0.4", "key-phone", runtime="runtime-awg2")
     assert repo.count_active_physical_devices(user_id) == 2
+
+
+def test_repository_physical_count_ignores_unlinked_passport_until_linked(tmp_path):
+    conn = connect(tmp_path / "unlinked-passport-quota.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    user_id = repo.upsert_user(
+        telegram_id=1002,
+        username="bob",
+        first_name="Bob",
+        last_name=None,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+    passport_device_id = "dev_abcdef0123456789abcdef0123456789"
+    repo.create_device_passport(
+        device_id=passport_device_id,
+        owner_user_id=user_id,
+        local_device_id=None,
+        platform="windows",
+        official_client_type="amnezia_vpn",
+        client_version="5.0.0.5",
+        import_method="conf_file",
+        config_schema_version="amneziawg_v2",
+        config_fingerprint="sha256:" + "c" * 64,
+        last_seen_at=None,
+        acceptance_evidence=None,
+        protocol_version="awg2",
+        runtime_instance_id="runtime-awg2",
+        client_identity_evidence_status="verified",
+        compatibility_evidence_id="evidence-preallocated",
+    )
+
+    assert repo.count_active_physical_devices(user_id) == 0
+
+    local_device_id = repo.create_device(
+        user_id=user_id,
+        server_id=server_id,
+        name="preallocated laptop",
+        duration_days=30,
+        vpn_ip="10.8.0.2",
+        peer_public_key="key-preallocated",
+        peer_private_key_encrypted="v1:private",
+        preshared_key_encrypted="v1:psk",
+        config_version="amneziawg_v2",
+        protocol_version="awg2",
+        runtime_instance_id="runtime-awg2",
+    )
+    assert repo.count_active_physical_devices(user_id) == 1
+
+    assert repo.attach_device_passport_to_local_device(
+        passport_device_id=passport_device_id,
+        local_device_id=local_device_id,
+    )
+    assert repo.count_active_physical_devices(user_id) == 1
 
 
 def test_repository_creates_operator_recipient_without_telegram_identity(tmp_path):
