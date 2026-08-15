@@ -246,7 +246,7 @@ def _host_runtime_dump_allocated_ips(
                 "Runtime interface dump failed "
                 f"(exit_code={result.exit_code}). "
                 f"stdout={_stream_status(result.stdout)} "
-                f"stderr={result.stderr!r}"
+                f"stderr={_stream_status(result.stderr)}"
             )
         )
     return _parse_host_runtime_dump(result.stdout)

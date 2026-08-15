@@ -466,6 +466,36 @@ def test_runtime_targeted_host_ipam_fails_closed_on_command_or_dump_parse(
         targeted.list_allocated_ips(server={"id": 1})
 
 
+def test_runtime_targeted_host_ipam_nonzero_error_exposes_only_stream_status(tmp_path):
+    stdout_secret = "stdout-private-key-marker-77"
+    stderr_secret = "stderr-preshared-key-marker-88"
+    result = CommandResult(
+        exit_code=1,
+        stdout=(
+            f"{stdout_secret}\tserver-public\t30003\toff\n"
+            "peer-public\tpsk\t(none)\t10.9.0.2/32\t0\t0\t0\t25\n"
+        ),
+        stderr=(
+            "remote awg dump failed: "
+            f"peer-public\t{stderr_secret}\t(none)\t10.9.0.2/32"
+        ),
+    )
+    targeted = ServerConfigPeerApplier(
+        _server(tmp_path),
+        ssh_client=RecordingSshClient(result=result),
+    ).for_runtime(_host_awg3_runtime())
+
+    with pytest.raises(PeerApplyError) as exc_info:
+        targeted.list_allocated_ips(server={"id": 1})
+
+    message = str(exc_info.value)
+    assert "stdout=present stderr=present" in message
+    assert stdout_secret not in message
+    assert stderr_secret not in message
+    assert "peer-public" not in message
+    assert "10.9.0.2/32" not in message
+
+
 def _host_awg3_runtime(*, interface_name="awg3"):
     return RuntimeInstanceSpec(
         runtime_instance_id="spain-awg3-runtime",
