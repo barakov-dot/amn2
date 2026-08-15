@@ -10,6 +10,8 @@ from app.config.settings import Settings
 from app.db.connection import connect
 from app.db.repositories import Repository
 from app.db.schema import initialize_schema
+from app.security.crypto import SecretBox
+from app.services.access import AccessService
 from app.services.admin_config_issuance import AdminConfigIssuanceService
 from app.services.awg3_control import Awg3ControlService
 from app.services.phase15_bootstrap import (
@@ -36,6 +38,24 @@ CLIENT = ClientIdentity("amnezia_vpn", "windows", "5.0.0.5", "50005")
 class RecordingPeerApplier:
     def __init__(self):
         self.calls = []
+        self.runtime_targets = []
+
+    def for_runtime(self, runtime):
+        targeted = RecordingRuntimePeerApplier(runtime)
+        self.runtime_targets.append(targeted)
+        return targeted
+
+
+class RecordingRuntimePeerApplier:
+    def __init__(self, runtime):
+        self.runtime = runtime
+        self.calls = []
+
+    def list_allocated_ips(self, *, server):
+        return []
+
+    def apply_peer(self, **kwargs):
+        self.calls.append(kwargs)
 
 
 class RecordingAccessService:
@@ -51,11 +71,14 @@ class RecordingAccessService:
 def _material_payload(secret: str) -> dict[str, object]:
     return {
         "provider_identity": "phase15-material-provider-001",
+        "runtime_instance_id": "spain-awg3-runtime",
+        "endpoint_host": "awg3.example.test",
+        "server_public_key": "awg3-server-public",
         "s1": 12,
         "s2": 13,
         "s3": 14,
         "s4": 15,
-        "content_padding_addition": "16",
+        "content_padding_addition": "0-64",
         "rekey_after_time": "120",
         "rekey_timeout": "5",
         "reject_after_time": "180",
@@ -349,3 +372,223 @@ def test_future_admin_health_event_taxonomy_has_no_runtime_activation():
         "awg2_degraded",
         "awg3_degraded",
     }
+
+
+def test_issuer_material_is_bound_to_exact_runtime_endpoint_and_public_key(tmp_path):
+    settings, paths = _settings(tmp_path)
+    payload = _material_payload("strict-phase15-header-protection-key")
+    payload.update(
+        {
+            "runtime_instance_id": "spain-awg3-runtime",
+            "endpoint_host": "awg3.example.test",
+            "server_public_key": "awg3-server-public",
+            "content_padding_addition": "0-64",
+        }
+    )
+    paths["material"].write_text(json.dumps(payload), encoding="utf-8")
+
+    material = load_phase15_awg3_issuer_material(settings)
+
+    assert material.runtime_instance_id == "spain-awg3-runtime"
+    assert material.endpoint_host == "awg3.example.test"
+    assert material.server_public_key == "awg3-server-public"
+
+
+def test_bootstrap_rejects_multiple_or_mismatching_awg3_runtime_candidates(tmp_path):
+    settings, paths = _settings(tmp_path)
+    _conn, repo = _accepted_repo(tmp_path)
+    payload = json.loads(paths["runtime"].read_text(encoding="utf-8"))
+    second = dict(payload["runtimes"][0])
+    second.update(
+        {
+            "runtime_instance_id": "other-awg3-runtime",
+            "interface_name": "awg3-other",
+            "udp_port": 30004,
+            "vpn_cidr": "10.10.0.0/24",
+            "service_name": "awg3-other.service",
+            "config_path": "/etc/amnezia/awg3-other.conf",
+        }
+    )
+    payload["runtimes"].append(second)
+    paths["runtime"].write_text(json.dumps(payload), encoding="utf-8")
+
+    peer = RecordingPeerApplier()
+    components = build_phase15_awg3_components(
+        settings,
+        repo,
+        RecordingAccessService(peer),
+        peer,
+    )
+
+    assert components.available is False
+    assert components.awg3_client_choices == ()
+    assert components.unavailable_reason == "AWG3 bootstrap providers are invalid"
+
+
+def test_self_service_issuer_passes_only_selected_runtime_target(tmp_path):
+    settings, paths = _settings(tmp_path)
+    _conn, repo = _accepted_repo(tmp_path)
+    runtime_payload = json.loads(paths["runtime"].read_text(encoding="utf-8"))
+    awg2 = dict(runtime_payload["runtimes"][0])
+    awg2.update(
+        {
+            "runtime_instance_id": "legacy-awg2-runtime",
+            "protocol_version": "awg2",
+            "interface_name": "awg0",
+            "udp_port": 30001,
+            "vpn_cidr": "10.8.0.0/24",
+            "service_name": "awg-quick@awg0",
+            "config_path": "/etc/amnezia/awg0.conf",
+        }
+    )
+    runtime_payload["runtimes"].insert(0, awg2)
+    paths["runtime"].write_text(json.dumps(runtime_payload), encoding="utf-8")
+    peer = RecordingPeerApplier()
+    access = RecordingAccessService(peer)
+    components = build_phase15_awg3_components(settings, repo, access, peer)
+    request = AdmissionRequest(client=CLIENT, protocol_version=ProtocolVersion.AWG3)
+    admission, _state = components.admission_provider(request)
+
+    components.issuer.issue(
+        request=SelfServiceIssuanceRequest(
+            user_id=1,
+            telegram_id=1001,
+            passport_device_id="dev_0123456789abcdef0123456789abcdef",
+            protocol_version=ProtocolVersion.AWG3,
+            client=CLIENT,
+        ),
+        admission=admission,
+    )
+
+    call = access.calls[0]
+    assert call["runtime_target"].runtime_instance_id == "spain-awg3-runtime"
+    assert call["runtime_target"].interface_name == "awg3"
+    assert call["runtime_target"].vpn_cidr == "10.9.0.0/24"
+    assert call["runtime_peer_applier"].runtime.runtime_instance_id == "spain-awg3-runtime"
+    assert all(target.runtime.interface_name != "awg0" for target in peer.runtime_targets)
+
+
+def _phase15_admin_manifest(request_id, *items):
+    return {
+        "request_id": request_id,
+        "server": "local",
+        "items": list(items),
+    }
+
+
+def _phase15_admin_item(device_label):
+    return {
+        "recipient_label": "Phase15 recipient",
+        "device_label": device_label,
+        "client_application": CLIENT.application,
+        "client_platform": CLIENT.platform,
+        "client_version": CLIENT.version,
+        "client_build": CLIENT.build_id,
+        "protocol_version": "awg3",
+    }
+
+
+def test_admin_factory_uses_fresh_material_aware_runtime_issuer_success_boundary(tmp_path):
+    settings, _paths = _settings(tmp_path)
+    _conn, repo = _accepted_repo(tmp_path)
+    peer = RecordingPeerApplier()
+    access = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "phase15-admin-success-secret-with-more-than-32-chars"
+        ),
+        peer_applier=peer,
+    )
+    attachments = []
+    components = build_phase15_awg3_components(settings, repo, access, peer)
+    service = components.admin_config_issuance_factory(
+        admin_telegram_id=9001,
+        attachment_builder=lambda filename, text: attachments.append((filename, text)),
+    )
+
+    result = service.issue_manifest(
+        _phase15_admin_manifest(
+            "phase15-admin-success-001",
+            _phase15_admin_item("AWG3 laptop"),
+        )
+    )
+
+    assert result.status == "completed"
+    assert result.receipts[0].status == "completed"
+    assert len(attachments) == 1
+    assert len(peer.runtime_targets) >= 1
+    assert sum(len(target.calls) for target in peer.runtime_targets) == 1
+    assert peer.calls == []
+
+
+def test_admin_factory_reloads_providers_at_each_item_boundary(tmp_path):
+    settings, paths = _settings(tmp_path)
+    _conn, repo = _accepted_repo(tmp_path)
+    peer = RecordingPeerApplier()
+    access = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "phase15-admin-fresh-secret-with-more-than-32-chars"
+        ),
+        peer_applier=peer,
+    )
+    attachments = []
+
+    def attach_and_invalidate(filename, text):
+        attachments.append((filename, text))
+        paths["build"].write_text("{}", encoding="utf-8")
+
+    components = build_phase15_awg3_components(settings, repo, access, peer)
+    service = components.admin_config_issuance_factory(
+        admin_telegram_id=9001,
+        attachment_builder=attach_and_invalidate,
+    )
+
+    result = service.issue_manifest(
+        _phase15_admin_manifest(
+            "phase15-admin-fresh-001",
+            _phase15_admin_item("AWG3 laptop"),
+            _phase15_admin_item("AWG3 phone"),
+        )
+    )
+
+    assert result.status == "partial_failure"
+    assert [receipt.status for receipt in result.receipts] == ["completed", "partial_failure"]
+    assert len(attachments) == 1
+    assert sum(len(target.calls) for target in peer.runtime_targets) == 1
+
+
+def test_provider_json_bytes_rows_and_nesting_are_bounded(tmp_path):
+    from app.services import phase15_bootstrap
+
+    oversized = tmp_path / "oversized.json"
+    oversized.write_text('{"provider_identity":"x"}' + " " * 70_000, encoding="utf-8")
+    deeply_nested = tmp_path / "deep.json"
+    deeply_nested.write_text(
+        json.dumps({"root": {"a": {"b": {"c": {"d": {"e": {"f": {"g": {"h": 1}}}}}}}}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(Phase15BootstrapUnavailable, match="size"):
+        phase15_bootstrap._read_json_object(str(oversized), "test provider")
+    with pytest.raises(Phase15BootstrapUnavailable, match="nesting"):
+        phase15_bootstrap._read_json_object(str(deeply_nested), "test provider")
+
+
+def test_runtime_provider_row_count_is_bounded_before_domain_materialization(tmp_path):
+    settings, paths = _settings(tmp_path)
+    _conn, repo = _accepted_repo(tmp_path)
+    payload = json.loads(paths["runtime"].read_text(encoding="utf-8"))
+    payload["runtimes"] = payload["runtimes"] * 101
+    paths["runtime"].write_text(json.dumps(payload), encoding="utf-8")
+
+    peer = RecordingPeerApplier()
+    components = build_phase15_awg3_components(
+        settings,
+        repo,
+        RecordingAccessService(peer),
+        peer,
+    )
+
+    assert components.available is False
+    assert components.unavailable_reason == "AWG3 bootstrap providers are invalid"

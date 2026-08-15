@@ -11,6 +11,8 @@ from app.server.peer_apply import (
 )
 from app.server.ssh import CommandResult
 from app.server_config.loader import load_server_config, select_server
+from app.services.vpn_runtime_instances import RuntimeInstanceSpec
+from app.vpn.protocol_versions import ProtocolVersion
 from tests.server_config.test_loader import DOCKER_YAML
 from tests.server_config.test_loader import VALID_YAML
 
@@ -334,6 +336,83 @@ def test_revoke_peer_runs_docker_exec_remove_command(tmp_path):
     assert ssh.calls[1][0] == "docker exec -i amnezia-awg sh -c 'cat > \"$1\"' sh /opt/amnezia/awg/awg0.conf"
     assert "PublicKey = peer-public" not in ssh.calls[1][1]
     assert ssh.calls[2] == ("docker restart amnezia-awg", None)
+
+
+def test_server_config_peer_applier_targets_only_selected_host_runtime(tmp_path):
+    server = _server(tmp_path)
+    ssh = RecordingSshClient()
+    runtime = RuntimeInstanceSpec(
+        runtime_instance_id="spain-awg3-runtime",
+        server_id=1,
+        protocol_version=ProtocolVersion.AWG3,
+        runtime_version="awg3-runtime-1",
+        interface_name="awg3",
+        udp_port=30003,
+        vpn_cidr="10.9.0.0/24",
+        container_name=None,
+        service_name="awg3.service",
+        config_path="/etc/amnezia/awg3.conf",
+        lifecycle_state="accepted",
+        acceptance_receipt="sha256:" + "b" * 64,
+    )
+
+    targeted = ServerConfigPeerApplier(server, ssh_client=ssh).for_runtime(runtime)
+    targeted.apply_peer(
+        server={"id": 1},
+        peer_public_key="peer-public",
+        preshared_key="secret-psk",
+        vpn_ip="10.9.0.2",
+    )
+
+    assert len(ssh.calls) == 1
+    command, stdin = ssh.calls[0]
+    assert "awg set awg3 peer peer-public" in command
+    assert "systemctl reload awg3.service" in command
+    assert "awg0" not in command
+    assert "awg-quick@awg0" not in command
+    assert stdin == "secret-psk\n"
+
+
+def test_server_config_peer_applier_targets_only_selected_container_and_config(tmp_path):
+    server = _docker_server(tmp_path)
+    ssh = RecordingSshClient(
+        results=[
+            CommandResult(exit_code=0, stdout=_docker_config(address="10.9.0.1/24"), stderr=""),
+            CommandResult(exit_code=0, stdout="", stderr=""),
+            CommandResult(exit_code=0, stdout="awg3-runtime\n", stderr=""),
+        ]
+    )
+    runtime = RuntimeInstanceSpec(
+        runtime_instance_id="spain-awg3-runtime",
+        server_id=1,
+        protocol_version=ProtocolVersion.AWG3,
+        runtime_version="awg3-runtime-1",
+        interface_name="awg3",
+        udp_port=30003,
+        vpn_cidr="10.9.0.0/24",
+        container_name="awg3-runtime",
+        service_name=None,
+        config_path="/etc/amnezia/awg3.conf",
+        lifecycle_state="accepted",
+        acceptance_receipt="sha256:" + "b" * 64,
+    )
+
+    targeted = ServerConfigPeerApplier(server, ssh_client=ssh).for_runtime(runtime)
+    targeted.apply_peer(
+        server={"id": 1},
+        peer_public_key="peer-public",
+        preshared_key="secret-psk",
+        vpn_ip="10.9.0.2",
+    )
+
+    commands = [call[0] for call in ssh.calls]
+    assert commands == [
+        "docker exec awg3-runtime cat /etc/amnezia/awg3.conf",
+        "docker exec -i awg3-runtime sh -c 'cat > \"$1\"' sh /etc/amnezia/awg3.conf",
+        "docker restart awg3-runtime",
+    ]
+    assert all("amnezia-awg" not in command for command in commands)
+    assert all("/opt/amnezia/awg/awg0.conf" not in command for command in commands)
 
 
 def _server(tmp_path):

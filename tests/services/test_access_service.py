@@ -1,5 +1,6 @@
 import base64
 import sqlite3
+from dataclasses import replace
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -27,9 +28,11 @@ from app.vpn.amneziawg_v3.config import HeaderProtectionSecretRef
 from app.services.config_identity import build_config_identity
 from app.services.device_lifecycle import list_device_lifecycle_events
 from app.services.device_passports import fingerprint_config, get_device_passport
+from app.services.vpn_runtime_instances import RuntimeInstanceSpec
 from app.server.peer_apply import PeerApplyError
 import app.vpn.amneziawg_v2.config as awg_config
 from app.access_expiry import AccessExpiry, INDEFINITE
+from app.vpn.protocol_versions import ProtocolVersion
 
 
 def test_approve_order_creates_active_device_with_encrypted_secrets(tmp_path):
@@ -1298,11 +1301,14 @@ def _awg3_issuer_material(*, resolver=None, s1=12, s2=13, s3=14, s4=15):
     ).hexdigest()
     return Awg3IssuerMaterial(
         provider_identity="phase15-material-provider-001",
+        runtime_instance_id="runtime-awg3",
+        endpoint_host="awg3.example.test",
+        server_public_key="awg3-server-public",
         s1=s1,
         s2=s2,
         s3=s3,
         s4=s4,
-        content_padding_addition="16",
+        content_padding_addition="0-64",
         rekey_after_time="120",
         rekey_timeout="5",
         reject_after_time="180",
@@ -1338,6 +1344,8 @@ def test_create_protocol_device_for_existing_passport_reuses_lineage_without_rec
         client_build="50005",
         device_context=_awg3_existing_passport_context(),
         awg3_material=_awg3_issuer_material(),
+        runtime_target=_accepted_awg3_runtime(server_id),
+        runtime_peer_applier=peer_applier,
     )
 
     assert result.passport_device_id == passport_device_id
@@ -1424,6 +1432,8 @@ def test_create_protocol_device_for_existing_passport_validates_before_secrets_o
             client_build="50005",
             device_context=context,
             awg3_material=_awg3_issuer_material(),
+            runtime_target=_accepted_awg3_runtime(server_id),
+            runtime_peer_applier=peer_applier,
         )
 
     assert secret_calls == []
@@ -1474,6 +1484,8 @@ def test_create_protocol_device_resolves_hpk_before_key_repo_or_peer_mutation(
             client_build="50005",
             device_context=_awg3_existing_passport_context(),
             awg3_material=_awg3_issuer_material(resolver=resolver),
+            runtime_target=_accepted_awg3_runtime(server_id),
+            runtime_peer_applier=peer_applier,
         )
 
     assert resolver.calls == ["phase15-hpk-001"]
@@ -1481,3 +1493,183 @@ def test_create_protocol_device_resolves_hpk_before_key_repo_or_peer_mutation(
     assert peer_applier.calls == []
     assert repo.count_active_devices(owner_user_id) == 1
     assert conn.execute("SELECT COUNT(*) FROM device_passports").fetchone()[0] == 1
+
+
+def _accepted_awg3_runtime(server_id):
+    return RuntimeInstanceSpec(
+        runtime_instance_id="runtime-awg3",
+        server_id=server_id,
+        protocol_version=ProtocolVersion.AWG3,
+        runtime_version="awg3-runtime-1",
+        interface_name="awg3",
+        udp_port=30003,
+        vpn_cidr="10.9.0.0/24",
+        container_name=None,
+        service_name="awg3.service",
+        config_path="/etc/amnezia/awg3.conf",
+        lifecycle_state="accepted",
+        acceptance_receipt="sha256:" + "b" * 64,
+    )
+
+
+def test_existing_passport_awg3_uses_only_exact_runtime_config_ipam_and_peer(
+    tmp_path,
+):
+    (
+        _conn,
+        repo,
+        service,
+        awg2_peer_applier,
+        owner_user_id,
+        server_id,
+        passport_device_id,
+    ) = _existing_passport_protocol_fixture(tmp_path)
+    runtime_peer_applier = RecordingPeerApplier(
+        remote_allocated_ips=["10.9.0.2/32"]
+    )
+
+    result = service.create_protocol_device_for_existing_passport(
+        owner_user_id=owner_user_id,
+        passport_device_id=passport_device_id,
+        server_id=server_id,
+        device_name="AWG3 laptop",
+        config_version="amneziawg_v3",
+        client_build="50005",
+        device_context=_awg3_existing_passport_context(),
+        awg3_material=_awg3_issuer_material(),
+        runtime_target=_accepted_awg3_runtime(server_id),
+        runtime_peer_applier=runtime_peer_applier,
+    )
+
+    device = repo.get_device(result.device_id)
+    assert device["server_id"] == server_id
+    assert device["runtime_instance_id"] == "runtime-awg3"
+    assert device["vpn_ip"] == "10.9.0.3"
+    assert "Address = 10.9.0.3/32" in result.config_text
+    assert "Endpoint = awg3.example.test:30003" in result.config_text
+    assert "PublicKey = awg3-server-public" in result.config_text
+    assert "10.8.0." not in result.config_text
+    assert awg2_peer_applier.calls == []
+    assert len(runtime_peer_applier.calls) == 1
+    assert runtime_peer_applier.calls[0]["vpn_ip"] == "10.9.0.3"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("content_padding_addition", "65-66"),
+        ("content_padding_addition", "64-0"),
+        ("content_padding_addition", "0-65"),
+        ("content_padding_addition", "not-a-range"),
+        ("rekey_after_time", "0"),
+        ("rekey_timeout", "not-an-integer"),
+        ("reject_after_time", "119"),
+        ("keepalive_timeout", "-1"),
+        ("max_handshake_attempts", "65536"),
+    ],
+)
+def test_awg3_issuer_material_rejects_invalid_semantic_ranges(field, value):
+    material = _awg3_issuer_material()
+
+    with pytest.raises(ValueError, match=field):
+        replace(material, **{field: value})
+
+
+def test_awg3_semantic_validation_precedes_client_key_and_psk_generation(
+    tmp_path,
+    monkeypatch,
+):
+    (
+        _conn,
+        _repo,
+        service,
+        _awg2_peer_applier,
+        owner_user_id,
+        server_id,
+        passport_device_id,
+    ) = _existing_passport_protocol_fixture(tmp_path)
+    material = _awg3_issuer_material()
+    object.__setattr__(material, "max_handshake_attempts", "65536")
+    key_calls = []
+
+    def unexpected_key_generation():
+        key_calls.append("key")
+        raise AssertionError("semantic validation must precede key generation")
+
+    monkeypatch.setattr("app.services.access.generate_keypair", unexpected_key_generation)
+    monkeypatch.setattr("app.services.access.generate_key", unexpected_key_generation)
+
+    with pytest.raises(ValueError, match="max_handshake_attempts"):
+        service.create_protocol_device_for_existing_passport(
+            owner_user_id=owner_user_id,
+            passport_device_id=passport_device_id,
+            server_id=server_id,
+            device_name="AWG3 laptop",
+            config_version="amneziawg_v3",
+            client_build="50005",
+            device_context=_awg3_existing_passport_context(),
+            awg3_material=material,
+            runtime_target=_accepted_awg3_runtime(server_id),
+            runtime_peer_applier=_awg2_peer_applier,
+        )
+
+    assert key_calls == []
+
+
+def test_physical_quota_counts_dual_profile_passport_once_for_future_devices(tmp_path):
+    (
+        _conn,
+        repo,
+        service,
+        peer_applier,
+        owner_user_id,
+        server_id,
+        passport_device_id,
+    ) = _existing_passport_protocol_fixture(tmp_path)
+    awg3 = service.create_protocol_device_for_existing_passport(
+        owner_user_id=owner_user_id,
+        passport_device_id=passport_device_id,
+        server_id=server_id,
+        device_name="AWG3 laptop",
+        config_version="amneziawg_v3",
+        client_build="50005",
+        device_context=_awg3_existing_passport_context(),
+        awg3_material=_awg3_issuer_material(),
+        runtime_target=_accepted_awg3_runtime(server_id),
+        runtime_peer_applier=peer_applier,
+    )
+    repo.create_device_protocol_profile(
+        passport_device_id=passport_device_id,
+        protocol_version="awg3",
+        local_device_id=awg3.device_id,
+        lifecycle_state="active",
+    )
+    service_with_two_physical_slots = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        max_devices_per_user=2,
+        peer_applier=peer_applier,
+    )
+
+    second_physical = service_with_two_physical_slots.create_operator_device(
+        owner_user_id=owner_user_id,
+        server_id=server_id,
+        device_name="Phone",
+        duration_days=30,
+        admin_telegram_id=999,
+        config_version="amneziawg_v2",
+        device_context=OperatorDeviceContext(
+            platform="android",
+            official_client_type="amnezia_vpn",
+            client_version="5.0.0.5",
+            protocol_version="awg2",
+            runtime_instance_id="runtime-awg2",
+            client_identity_evidence_status="verified",
+            compatibility_evidence_id="evidence-awg2-phone",
+        ),
+    )
+
+    assert second_physical.device_id != awg3.device_id
+    assert repo.count_active_physical_devices(owner_user_id) == 2

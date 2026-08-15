@@ -3211,6 +3211,40 @@ class Repository:
         ).fetchone()
         return int(row["device_count"])
 
+    def count_active_physical_devices(self, user_id: int) -> int:
+        row = self._conn.execute(
+            """
+            WITH active_passports AS (
+                SELECT device_id
+                FROM device_passports
+                WHERE owner_user_id = ?
+                  AND revoked_at IS NULL
+            ),
+            represented_devices AS (
+                SELECT local_device_id
+                FROM device_passports
+                WHERE owner_user_id = ?
+                  AND revoked_at IS NULL
+                  AND local_device_id IS NOT NULL
+                UNION
+                SELECT profiles.local_device_id
+                FROM device_protocol_profiles AS profiles
+                JOIN active_passports AS passports
+                  ON passports.device_id = profiles.passport_device_id
+                WHERE profiles.lifecycle_state != 'revoked'
+            )
+            SELECT
+                (SELECT COUNT(*) FROM active_passports)
+                + COUNT(*) AS physical_device_count
+            FROM devices
+            WHERE user_id = ?
+              AND status = 'active'
+              AND id NOT IN (SELECT local_device_id FROM represented_devices)
+            """,
+            (user_id, user_id, user_id),
+        ).fetchone()
+        return int(row["physical_device_count"])
+
     def list_allocated_ips(self, server_id: int) -> list[str]:
         rows = self._conn.execute(
             """
@@ -3221,6 +3255,24 @@ class Repository:
             ORDER BY id
             """,
             (server_id,),
+        ).fetchall()
+        return [str(row["vpn_ip"]) for row in rows]
+
+    def list_allocated_ips_for_runtime(
+        self,
+        server_id: int,
+        runtime_instance_id: str,
+    ) -> list[str]:
+        rows = self._conn.execute(
+            """
+            SELECT vpn_ip
+            FROM devices
+            WHERE server_id = ?
+              AND runtime_instance_id = ?
+              AND status IN ('pending', 'active', 'disabled')
+            ORDER BY id
+            """,
+            (server_id, runtime_instance_id),
         ).fetchall()
         return [str(row["vpn_ip"]) for row in rows]
 

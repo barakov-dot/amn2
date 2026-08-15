@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import ipaddress
 import hashlib
+import ipaddress
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -23,6 +23,7 @@ from app.services.device_passports import (
     generate_device_passport_id,
     validate_device_passport_context,
 )
+from app.services.vpn_runtime_instances import RuntimeInstanceSpec
 from app.config_assignment import (
     DEDICATED_DEVICE,
     OWNER_SHARED,
@@ -38,6 +39,7 @@ from app.vpn.amneziawg_v3.config import (
     SecretResolver,
 )
 from app.vpn.config_versions import render_client_config_for_version, validate_config_version
+from app.vpn.protocol_versions import ProtocolVersion
 
 
 IP_ALLOCATION_ATTEMPTS = 3
@@ -115,6 +117,9 @@ class OperatorDeviceContext:
 @dataclass(frozen=True)
 class Awg3IssuerMaterial:
     provider_identity: str
+    runtime_instance_id: str
+    endpoint_host: str
+    server_public_key: str
     s1: int
     s2: int
     s3: int
@@ -130,24 +135,47 @@ class Awg3IssuerMaterial:
 
     def __post_init__(self) -> None:
         _require_exact_material_text(self.provider_identity, "provider_identity")
+        _require_exact_material_text(self.runtime_instance_id, "runtime_instance_id")
+        _require_exact_material_text(self.endpoint_host, "endpoint_host")
+        _require_exact_material_text(
+            self.server_public_key,
+            "server_public_key",
+            maximum=1024,
+        )
         if any(
             isinstance(value, bool) or not isinstance(value, int) or value < 12
             for value in (self.s1, self.s2, self.s3, self.s4)
         ):
             raise ValueError("AWG3 issuer material requires S1-S4 values >= 12")
+        if self.content_padding_addition != "0-64":
+            raise ValueError("content_padding_addition")
         for field_name in (
-            "content_padding_addition",
             "rekey_after_time",
             "rekey_timeout",
             "reject_after_time",
             "keepalive_timeout",
-            "max_handshake_attempts",
         ):
-            _require_exact_material_text(getattr(self, field_name), field_name)
+            _canonical_positive_decimal(
+                getattr(self, field_name),
+                field_name,
+                maximum=2_147_483_647,
+            )
+        _canonical_positive_decimal(
+            self.max_handshake_attempts,
+            "max_handshake_attempts",
+            maximum=65_535,
+        )
+        if int(self.rekey_timeout) > int(self.rekey_after_time):
+            raise ValueError("rekey_timeout")
+        if int(self.rekey_after_time) >= int(self.reject_after_time):
+            raise ValueError("reject_after_time")
         if not isinstance(self.header_protection_key, HeaderProtectionSecretRef):
             raise ValueError("header_protection_key")
         if not callable(getattr(self.secret_resolver, "resolve", None)):
             raise ValueError("secret_resolver")
+
+    def validate(self) -> None:
+        self.__post_init__()
 
 
 @dataclass(frozen=True)
@@ -268,6 +296,10 @@ class AccessService:
         device_context: OperatorDeviceContext = OperatorDeviceContext(
             platform="unknown"
         ),
+        client_build: str | None = None,
+        awg3_material: Awg3IssuerMaterial | None = None,
+        runtime_target: RuntimeInstanceSpec | None = None,
+        runtime_peer_applier: PeerApplier | None = None,
     ) -> OperatorDeviceCreateResult:
         remote_mutation: RemoteMutationResult | None = None
 
@@ -289,6 +321,10 @@ class AccessService:
                     config_artifact_writer=config_artifact_writer,
                     passport_device_id=passport_device_id,
                     device_context=device_context,
+                    client_build=client_build,
+                    awg3_material=awg3_material,
+                    runtime_target=runtime_target,
+                    runtime_peer_applier=runtime_peer_applier,
                     remote_mutation_observer=record_remote_mutation,
                 )
         except Exception as exc:
@@ -313,6 +349,8 @@ class AccessService:
         client_build: str,
         device_context: OperatorDeviceContext,
         awg3_material: Awg3IssuerMaterial,
+        runtime_target: RuntimeInstanceSpec,
+        runtime_peer_applier: PeerApplier,
     ) -> OperatorDeviceCreateResult:
         remote_mutation: RemoteMutationResult | None = None
 
@@ -331,6 +369,8 @@ class AccessService:
                     client_build=client_build,
                     device_context=device_context,
                     awg3_material=awg3_material,
+                    runtime_target=runtime_target,
+                    runtime_peer_applier=runtime_peer_applier,
                     remote_mutation_observer=record_remote_mutation,
                 )
         except Exception as exc:
@@ -349,6 +389,8 @@ class AccessService:
         client_build: str,
         device_context: OperatorDeviceContext,
         awg3_material: Awg3IssuerMaterial,
+        runtime_target: RuntimeInstanceSpec,
+        runtime_peer_applier: PeerApplier,
         remote_mutation_observer: Callable[[RemoteMutationResult], None] | None,
     ) -> OperatorDeviceCreateResult:
         normalized_device_name = device_name.strip()
@@ -376,8 +418,14 @@ class AccessService:
             or not device_context.compatibility_evidence_id
         ):
             raise ValueError("complete AWG3 client context is required")
-        if not isinstance(awg3_material, Awg3IssuerMaterial):
-            raise ValueError("strict AWG3 issuer material is required")
+        _validate_awg3_runtime_inputs(
+            server_id=server_id,
+            client_build=client_build,
+            device_context=device_context,
+            awg3_material=awg3_material,
+            runtime_target=runtime_target,
+            runtime_peer_applier=runtime_peer_applier,
+        )
 
         try:
             owner = self._repo.get_user(owner_user_id)
@@ -415,18 +463,7 @@ class AccessService:
                 "Protocol device creation requires an explicit live peer applier"
             )
 
-        reference = awg3_material.header_protection_key.reference
-        resolved_hpk = awg3_material.secret_resolver.resolve(reference)
-        _require_exact_material_text(
-            resolved_hpk,
-            "resolved header_protection_key",
-            maximum=4096,
-        )
-        resolved_fingerprint = "sha256:" + hashlib.sha256(
-            resolved_hpk.encode("utf-8")
-        ).hexdigest()
-        if resolved_fingerprint != awg3_material.header_protection_key.fingerprint:
-            raise ValueError("header_protection_key fingerprint mismatch")
+        resolved_hpk = _resolve_awg3_hpk(awg3_material)
 
         expiry_policy = str(original_device["expiry_policy"])
         expiry = AccessExpiry(
@@ -465,6 +502,8 @@ class AccessService:
             client_identity_evidence_status=device_context.client_identity_evidence_status,
             awg3_material=awg3_material,
             resolved_hpk=resolved_hpk,
+            runtime_target=runtime_target,
+            runtime_peer_applier=runtime_peer_applier,
         )
         return OperatorDeviceCreateResult(
             device_id=device_id,
@@ -490,6 +529,10 @@ class AccessService:
         config_artifact_writer: Callable[[str], str | Path] | None,
         passport_device_id: str | None,
         device_context: OperatorDeviceContext,
+        client_build: str | None,
+        awg3_material: Awg3IssuerMaterial | None,
+        runtime_target: RuntimeInstanceSpec | None,
+        runtime_peer_applier: PeerApplier | None,
         remote_mutation_observer: Callable[[RemoteMutationResult], None] | None,
     ) -> OperatorDeviceCreateResult:
         normalized_device_display_name = device_name.strip()
@@ -511,6 +554,15 @@ class AccessService:
                 import_method=device_context.import_method,
                 config_schema_version=config_version,
             )
+        if config_version == "amneziawg_v3":
+            _validate_awg3_runtime_inputs(
+                server_id=server_id,
+                client_build=client_build,
+                device_context=device_context,
+                awg3_material=awg3_material,
+                runtime_target=runtime_target,
+                runtime_peer_applier=runtime_peer_applier,
+            )
 
         try:
             owner = self._repo.get_user(owner_user_id)
@@ -528,13 +580,20 @@ class AccessService:
             )
         if (
             assignment_policy.physical_device_count_enforceable
-            and self._repo.count_active_devices(owner_user_id) >= self._max_devices_per_user
+            and self._repo.count_active_physical_devices(owner_user_id)
+            >= self._max_devices_per_user
         ):
             raise MaxDevicesReached("User has reached the maximum number of active devices")
         if self._peer_applier is None:
             raise OperatorPeerApplierRequired(
                 "Operator device creation requires an explicit live peer applier"
             )
+
+        resolved_hpk = (
+            _resolve_awg3_hpk(awg3_material)
+            if config_version == "amneziawg_v3"
+            else None
+        )
 
         user_label = _operator_config_user_label(owner, user_id=owner_user_id)
         config_identity = build_config_identity(
@@ -570,6 +629,10 @@ class AccessService:
             client_identity_evidence_status=(
                 device_context.client_identity_evidence_status
             ),
+            awg3_material=awg3_material,
+            resolved_hpk=resolved_hpk,
+            runtime_target=runtime_target,
+            runtime_peer_applier=runtime_peer_applier,
         )
 
         self._repo.record_admin_action(
@@ -672,7 +735,7 @@ class AccessService:
         effective_device_limit = self._max_devices_per_user
         if plan is not None and plan["max_devices"] is not None:
             effective_device_limit = min(effective_device_limit, int(plan["max_devices"]))
-        if self._repo.count_active_devices(user_id) >= effective_device_limit:
+        if self._repo.count_active_physical_devices(user_id) >= effective_device_limit:
             raise MaxDevicesReached("User has reached the maximum number of active devices")
 
         server = self._repo.get_server(server_id)
@@ -740,64 +803,102 @@ class AccessService:
         client_identity_evidence_status: str | None = None,
         awg3_material: Awg3IssuerMaterial | None = None,
         resolved_hpk: str | None = None,
-    ) -> tuple[int, str]:
+        runtime_target: RuntimeInstanceSpec | None = None,
+        runtime_peer_applier: PeerApplier | None = None,
+    ) -> tuple[int, str, str]:
         last_error: sqlite3.IntegrityError | None = None
+        active_peer_applier = (
+            runtime_peer_applier if runtime_target is not None else self._peer_applier
+        )
+        network_cidr = (
+            runtime_target.vpn_cidr
+            if runtime_target is not None
+            else str(server["vpn_network_cidr"])
+        )
+        server_address = (
+            _runtime_server_address(runtime_target.vpn_cidr)
+            if runtime_target is not None
+            else server["server_address"]
+        )
+        endpoint_host = (
+            awg3_material.endpoint_host
+            if runtime_target is not None and awg3_material is not None
+            else str(server["endpoint_host"])
+        )
+        endpoint_port = (
+            runtime_target.udp_port
+            if runtime_target is not None
+            else server["vpn_port"]
+        )
+        server_public_key = (
+            awg3_material.server_public_key
+            if runtime_target is not None and awg3_material is not None
+            else str(server["server_public_key"])
+        )
 
         for _ in range(IP_ALLOCATION_ATTEMPTS):
+            allocated_ips = (
+                self._repo.list_allocated_ips_for_runtime(
+                    server_id,
+                    runtime_target.runtime_instance_id,
+                )
+                if runtime_target is not None
+                else self._repo.list_allocated_ips(server_id)
+            )
             try:
                 vpn_ip = _allocate_vpn_ip(
-                    network_cidr=str(server["vpn_network_cidr"]),
-                    server_address=server["server_address"],
-                    allocated_ips=self._repo.list_allocated_ips(server_id),
+                    network_cidr=network_cidr,
+                    server_address=server_address,
+                    allocated_ips=allocated_ips,
                     remote_allocated_ips=_list_remote_allocated_ips(
-                        self._peer_applier,
+                        active_peer_applier,
                         server=server,
                     ),
                 )
             except RuntimeError as exc:
                 raise IpAllocationConflict("Could not allocate a unique VPN IP address") from exc
             client_config = ClientConfigInput(
-                    private_key=private_key,
-                    address=f"{vpn_ip}/32",
-                    dns=self._client_config_defaults.dns,
-                    server_public_key=str(server["server_public_key"]),
-                    preshared_key=preshared_key,
-                    endpoint=f"{server['endpoint_host']}:{server['vpn_port']}",
-                    allowed_ips=self._client_config_defaults.allowed_ips,
-                    persistent_keepalive=self._client_config_defaults.persistent_keepalive,
-                    jc=self._client_config_defaults.jc,
-                    jmin=self._client_config_defaults.jmin,
-                    jmax=self._client_config_defaults.jmax,
-                    s1=(
-                        awg3_material.s1
-                        if awg3_material is not None
-                        else self._client_config_defaults.s1
-                    ),
-                    s2=(
-                        awg3_material.s2
-                        if awg3_material is not None
-                        else self._client_config_defaults.s2
-                    ),
-                    s3=(
-                        awg3_material.s3
-                        if awg3_material is not None
-                        else self._client_config_defaults.s3
-                    ),
-                    s4=(
-                        awg3_material.s4
-                        if awg3_material is not None
-                        else self._client_config_defaults.s4
-                    ),
-                    h1=self._client_config_defaults.h1,
-                    h2=self._client_config_defaults.h2,
-                    h3=self._client_config_defaults.h3,
-                    h4=self._client_config_defaults.h4,
-                    i1=self._client_config_defaults.i1,
-                    i2=self._client_config_defaults.i2,
-                    i3=self._client_config_defaults.i3,
-                    i4=self._client_config_defaults.i4,
-                    i5=self._client_config_defaults.i5,
-                )
+                private_key=private_key,
+                address=f"{vpn_ip}/32",
+                dns=self._client_config_defaults.dns,
+                server_public_key=server_public_key,
+                preshared_key=preshared_key,
+                endpoint=f"{endpoint_host}:{endpoint_port}",
+                allowed_ips=self._client_config_defaults.allowed_ips,
+                persistent_keepalive=self._client_config_defaults.persistent_keepalive,
+                jc=self._client_config_defaults.jc,
+                jmin=self._client_config_defaults.jmin,
+                jmax=self._client_config_defaults.jmax,
+                s1=(
+                    awg3_material.s1
+                    if awg3_material is not None
+                    else self._client_config_defaults.s1
+                ),
+                s2=(
+                    awg3_material.s2
+                    if awg3_material is not None
+                    else self._client_config_defaults.s2
+                ),
+                s3=(
+                    awg3_material.s3
+                    if awg3_material is not None
+                    else self._client_config_defaults.s3
+                ),
+                s4=(
+                    awg3_material.s4
+                    if awg3_material is not None
+                    else self._client_config_defaults.s4
+                ),
+                h1=self._client_config_defaults.h1,
+                h2=self._client_config_defaults.h2,
+                h3=self._client_config_defaults.h3,
+                h4=self._client_config_defaults.h4,
+                i1=self._client_config_defaults.i1,
+                i2=self._client_config_defaults.i2,
+                i3=self._client_config_defaults.i3,
+                i4=self._client_config_defaults.i4,
+                i5=self._client_config_defaults.i5,
+            )
             resolver = None
             render_input: ClientConfigInput | Awg3ClientConfigInput = client_config
             template_dir = self._client_config_template_dir
@@ -852,8 +953,8 @@ class AccessService:
                     raise
                 last_error = exc
             else:
-                if self._peer_applier is not None:
-                    self._peer_applier.apply_peer(
+                if active_peer_applier is not None:
+                    active_peer_applier.apply_peer(
                         server=server,
                         peer_public_key=public_key,
                         preshared_key=preshared_key,
@@ -869,6 +970,70 @@ class AccessService:
                 return device_id, config_text, config_fingerprint
 
         raise IpAllocationConflict("Could not allocate a unique VPN IP address") from last_error
+
+
+def _validate_awg3_runtime_inputs(
+    *,
+    server_id: int,
+    client_build: str | None,
+    device_context: OperatorDeviceContext,
+    awg3_material: Awg3IssuerMaterial | None,
+    runtime_target: RuntimeInstanceSpec | None,
+    runtime_peer_applier: PeerApplier | None,
+) -> None:
+    if not isinstance(awg3_material, Awg3IssuerMaterial):
+        raise ValueError("strict AWG3 issuer material is required")
+    awg3_material.validate()
+    if (
+        not isinstance(runtime_target, RuntimeInstanceSpec)
+        or runtime_target.protocol_version is not ProtocolVersion.AWG3
+        or runtime_target.lifecycle_state != "accepted"
+        or runtime_target.server_id != server_id
+    ):
+        raise ValueError("accepted AWG3 runtime target is required")
+    if (
+        awg3_material.runtime_instance_id != runtime_target.runtime_instance_id
+        or device_context.runtime_instance_id != runtime_target.runtime_instance_id
+    ):
+        raise ValueError("runtime_instance_id mismatch")
+    if (
+        not isinstance(client_build, str)
+        or not client_build
+        or client_build != client_build.strip()
+        or client_build.casefold() in {"latest", "current", "unknown"}
+    ):
+        raise ValueError("exact client_build is required")
+    if (
+        runtime_peer_applier is None
+        or not callable(getattr(runtime_peer_applier, "apply_peer", None))
+        or not callable(getattr(runtime_peer_applier, "list_allocated_ips", None))
+    ):
+        raise ValueError("runtime-targeted peer applier is required")
+
+
+def _resolve_awg3_hpk(material: Awg3IssuerMaterial) -> str:
+    reference = material.header_protection_key.reference
+    resolved_hpk = material.secret_resolver.resolve(reference)
+    _require_exact_material_text(
+        resolved_hpk,
+        "resolved header_protection_key",
+        maximum=4096,
+    )
+    resolved_fingerprint = "sha256:" + hashlib.sha256(
+        resolved_hpk.encode("utf-8")
+    ).hexdigest()
+    if resolved_fingerprint != material.header_protection_key.fingerprint:
+        raise ValueError("header_protection_key fingerprint mismatch")
+    return resolved_hpk
+
+
+def _runtime_server_address(vpn_cidr: str) -> str:
+    network = ipaddress.ip_network(vpn_cidr, strict=False)
+    try:
+        first_host = next(network.hosts())
+    except StopIteration:
+        raise ValueError("runtime vpn_cidr has no server address") from None
+    return f"{first_host}/{network.prefixlen}"
 
 
 def _allocate_vpn_ip(
@@ -975,3 +1140,17 @@ def _require_exact_material_text(
     ):
         raise ValueError(field_name)
     return value
+
+
+def _canonical_positive_decimal(
+    value: object,
+    field_name: str,
+    *,
+    maximum: int,
+) -> int:
+    if not isinstance(value, str) or not value.isascii() or not value.isdecimal():
+        raise ValueError(field_name)
+    parsed = int(value)
+    if str(parsed) != value or not 1 <= parsed <= maximum:
+        raise ValueError(field_name)
+    return parsed

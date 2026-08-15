@@ -1,10 +1,13 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import ipaddress
 import shlex
 
 from app.security.redaction import redact
 from app.server.ssh import SshClient, SystemSshClient
 from app.server_config.models import ServerConfig
+from app.server_config.models import RuntimeConfig
+from app.services.vpn_runtime_instances import RuntimeInstanceSpec
+from app.vpn.protocol_versions import ProtocolVersion
 
 
 @dataclass(frozen=True)
@@ -28,6 +31,75 @@ class ServerConfigPeerApplier:
     ) -> None:
         self._server = server
         self._ssh_client = ssh_client or SystemSshClient(server, password=password)
+
+    def apply_peer(
+        self,
+        *,
+        server,
+        peer_public_key: str,
+        preshared_key: str,
+        vpn_ip: str,
+    ) -> None:
+        apply_peer(
+            self._server,
+            PeerApplyInput(
+                public_key=peer_public_key,
+                preshared_key=preshared_key,
+                vpn_ip=vpn_ip,
+            ),
+            ssh_client=self._ssh_client,
+        )
+
+    def remove_peer(self, *, server, peer_public_key: str) -> None:
+        revoke_peer(self._server, peer_public_key, ssh_client=self._ssh_client)
+
+    def list_allocated_ips(self, *, server) -> list[str]:
+        return list_allocated_ips(self._server, ssh_client=self._ssh_client)
+
+    def for_runtime(
+        self,
+        runtime: RuntimeInstanceSpec,
+    ) -> "RuntimeTargetedPeerApplier":
+        return RuntimeTargetedPeerApplier(
+            self._server,
+            runtime,
+            ssh_client=self._ssh_client,
+        )
+
+
+class RuntimeTargetedPeerApplier:
+    def __init__(
+        self,
+        server: ServerConfig,
+        runtime: RuntimeInstanceSpec,
+        *,
+        ssh_client: SshClient,
+    ) -> None:
+        if (
+            not isinstance(runtime, RuntimeInstanceSpec)
+            or runtime.protocol_version is not ProtocolVersion.AWG3
+            or runtime.lifecycle_state != "accepted"
+        ):
+            raise ValueError("accepted AWG3 runtime target is required")
+        if runtime.container_name is None and not runtime.service_name:
+            raise ValueError("host runtime requires service_name")
+        self.runtime = runtime
+        self._server = replace(
+            server,
+            vpn=replace(
+                server.vpn,
+                port=runtime.udp_port,
+                interface=runtime.interface_name,
+                network_cidr=runtime.vpn_cidr,
+            ),
+            runtime=RuntimeConfig(
+                type=("docker" if runtime.container_name is not None else "host_systemd"),
+                service_name=runtime.service_name,
+                container_name=runtime.container_name,
+                config_path=runtime.config_path,
+            ),
+        )
+        self._ssh_client = ssh_client
 
     def apply_peer(
         self,

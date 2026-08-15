@@ -39,6 +39,67 @@ def test_repository_creates_user_server_order_and_device(tmp_path):
     assert repo.get_device(device_id)["assignment_mode"] == "dedicated_device"
 
 
+def test_repository_counts_one_physical_device_for_dual_protocol_passport_lineage(
+    tmp_path,
+):
+    conn = connect(tmp_path / "physical-quota.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="alice",
+        first_name="Alice",
+        last_name=None,
+    )
+    server_id = repo.ensure_default_server(name="local", network_cidr="10.8.0.0/24")
+
+    def create_device(name, vpn_ip, key, *, runtime):
+        return repo.create_device(
+            user_id=user_id,
+            server_id=server_id,
+            name=name,
+            duration_days=30,
+            vpn_ip=vpn_ip,
+            peer_public_key=key,
+            peer_private_key_encrypted=f"v1:{key}:private",
+            preshared_key_encrypted=f"v1:{key}:psk",
+            config_version=("amneziawg_v3" if runtime == "runtime-awg3" else "amneziawg_v2"),
+            protocol_version=("awg3" if runtime == "runtime-awg3" else "awg2"),
+            runtime_instance_id=runtime,
+        )
+
+    awg2_device_id = create_device("laptop-awg2", "10.8.0.2", "key-awg2", runtime="runtime-awg2")
+    awg3_device_id = create_device("laptop-awg3", "10.8.0.3", "key-awg3", runtime="runtime-awg3")
+    repo.create_device_passport(
+        device_id="dev_0123456789abcdef0123456789abcdef",
+        owner_user_id=user_id,
+        local_device_id=awg2_device_id,
+        platform="windows",
+        official_client_type="amnezia_vpn",
+        client_version="5.0.0.5",
+        import_method="conf_file",
+        config_schema_version="amneziawg_v2",
+        config_fingerprint="sha256:" + "a" * 64,
+        last_seen_at=None,
+        acceptance_evidence=None,
+        protocol_version="awg2",
+        runtime_instance_id="runtime-awg2",
+        client_identity_evidence_status="verified",
+        compatibility_evidence_id="evidence-awg2",
+    )
+    repo.create_device_protocol_profile(
+        passport_device_id="dev_0123456789abcdef0123456789abcdef",
+        protocol_version="awg3",
+        local_device_id=awg3_device_id,
+        lifecycle_state="active",
+    )
+
+    assert repo.count_active_physical_devices(user_id) == 1
+
+    create_device("phone-awg2", "10.8.0.4", "key-phone", runtime="runtime-awg2")
+    assert repo.count_active_physical_devices(user_id) == 2
+
+
 def test_repository_creates_operator_recipient_without_telegram_identity(tmp_path):
     conn = connect(tmp_path / "test.sqlite3")
     initialize_schema(conn)

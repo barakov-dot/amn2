@@ -39,6 +39,27 @@ from app.vpn.amneziawg_v3.config import HeaderProtectionSecretRef
 from app.vpn.protocol_versions import ProtocolVersion, config_version_for_protocol
 
 
+_MAX_PROVIDER_BYTES = 65_536
+_MAX_PROVIDER_ROWS = 100
+_MAX_PROVIDER_NESTING = 8
+_RUNTIME_FIELDS = frozenset(
+    {
+        "runtime_instance_id",
+        "server_id",
+        "protocol_version",
+        "runtime_version",
+        "interface_name",
+        "udp_port",
+        "vpn_cidr",
+        "container_name",
+        "service_name",
+        "config_path",
+        "lifecycle_state",
+        "acceptance_receipt",
+    }
+)
+
+
 class Phase15BootstrapUnavailable(RuntimeError):
     pass
 
@@ -91,6 +112,9 @@ class _HpkFileResolver:
 _MATERIAL_FIELDS = frozenset(
     {
         "provider_identity",
+        "runtime_instance_id",
+        "endpoint_host",
+        "server_public_key",
         "s1",
         "s2",
         "s3",
@@ -115,12 +139,23 @@ def load_phase15_awg3_issuer_material(settings: Settings) -> Awg3IssuerMaterial:
     try:
         _require_exact_fields(payload, _MATERIAL_FIELDS, "AWG3 issuer material")
         identity = _exact_text(payload["provider_identity"], "provider_identity")
+        runtime_instance_id = _exact_text(
+            payload["runtime_instance_id"],
+            "runtime_instance_id",
+        )
+        endpoint_host = _exact_text(payload["endpoint_host"], "endpoint_host")
+        server_public_key = _exact_text(
+            payload["server_public_key"],
+            "server_public_key",
+        )
         reference = _exact_text(
             payload["header_protection_key_ref"],
             "header_protection_key reference",
         )
         if identity != settings.awg3_issuer_material_provider_identity:
             raise ValueError("provider identity mismatch")
+        if runtime_instance_id != settings.awg3_expected_runtime_instance_id:
+            raise ValueError("runtime_instance_id mismatch")
         if reference != settings.awg3_hpk_secret_reference:
             raise Phase15BootstrapUnavailable(
                 "header_protection_key reference mismatch"
@@ -136,6 +171,9 @@ def load_phase15_awg3_issuer_material(settings: Settings) -> Awg3IssuerMaterial:
         )
         return Awg3IssuerMaterial(
             provider_identity=identity,
+            runtime_instance_id=runtime_instance_id,
+            endpoint_host=endpoint_host,
+            server_public_key=server_public_key,
             s1=payload["s1"],
             s2=payload["s2"],
             s3=payload["s3"],
@@ -161,6 +199,14 @@ class _BootstrapSnapshot:
     control_state: Awg3ControlState
     client: ClientIdentity
     material: Awg3IssuerMaterial
+    runtime: RuntimeInstanceSpec
+
+
+@dataclass(frozen=True)
+class _FreshAwg3Boundary:
+    snapshot: _BootstrapSnapshot
+    admission: AdmissionResult
+    runtime_peer_applier: object
 
 
 class ProductionAwg3ConfigIssuer(ConfigIssuer):
@@ -179,25 +225,25 @@ class ProductionAwg3ConfigIssuer(ConfigIssuer):
         self._peer_applier = peer_applier
         self._snapshot_loader = snapshot_loader
 
-    def issue(
+    def fresh_boundary(
         self,
         *,
-        request: SelfServiceIssuanceRequest,
-        admission: AdmissionResult,
-    ) -> object:
+        client: ClientIdentity | None = None,
+        expected_admission: AdmissionResult | None = None,
+    ) -> _FreshAwg3Boundary:
         snapshot = self._snapshot_loader()
+        exact_client = snapshot.client if client is None else client
         fresh = snapshot.admission_service.decide(
             AdmissionRequest(
-                client=request.client,
-                protocol_version=request.protocol_version,
+                client=exact_client,
+                protocol_version=ProtocolVersion.AWG3,
             )
         )
         if (
-            request.protocol_version is not ProtocolVersion.AWG3
-            or not fresh.admitted
-            or fresh != admission
+            not fresh.admitted
+            or (expected_admission is not None and fresh != expected_admission)
             or not snapshot.control_state.permits_new_issuance
-            or request.client != snapshot.client
+            or exact_client != snapshot.client
         ):
             raise Phase15BootstrapUnavailable("AWG3 issuance gates changed")
         if (
@@ -207,6 +253,31 @@ class ProductionAwg3ConfigIssuer(ConfigIssuer):
             is not self._peer_applier
         ):
             raise Phase15BootstrapUnavailable("AWG3 issuer boundary is unavailable")
+        targeter = getattr(self._peer_applier, "for_runtime", None)
+        if not callable(targeter):
+            raise Phase15BootstrapUnavailable(
+                "AWG3 runtime-targeted peer boundary is unavailable"
+            )
+        try:
+            runtime_peer_applier = targeter(snapshot.runtime)
+        except Exception:
+            raise Phase15BootstrapUnavailable(
+                "AWG3 runtime-targeted peer boundary is unavailable"
+            ) from None
+        return _FreshAwg3Boundary(snapshot, fresh, runtime_peer_applier)
+
+    def issue(
+        self,
+        *,
+        request: SelfServiceIssuanceRequest,
+        admission: AdmissionResult,
+    ) -> object:
+        if request.protocol_version is not ProtocolVersion.AWG3:
+            raise Phase15BootstrapUnavailable("AWG3 issuance gates changed")
+        boundary = self.fresh_boundary(
+            client=request.client,
+            expected_admission=admission,
+        )
         try:
             server = self._repo.get_server_by_name(self._settings.server_name)
         except LookupError:
@@ -225,11 +296,52 @@ class ProductionAwg3ConfigIssuer(ConfigIssuer):
                 official_client_type=request.client.application,
                 client_version=request.client.version,
                 protocol_version="awg3",
-                runtime_instance_id=fresh.runtime_instance_id,
+                runtime_instance_id=boundary.admission.runtime_instance_id,
                 client_identity_evidence_status="verified",
-                compatibility_evidence_id=fresh.compatibility_evidence_id,
+                compatibility_evidence_id=boundary.admission.compatibility_evidence_id,
             ),
-            awg3_material=snapshot.material,
+            awg3_material=boundary.snapshot.material,
+            runtime_target=boundary.snapshot.runtime,
+            runtime_peer_applier=boundary.runtime_peer_applier,
+        )
+
+
+class _FreshAwg3AdminAccessAdapter:
+    def __init__(
+        self,
+        *,
+        access_service: AccessService,
+        issuer: ProductionAwg3ConfigIssuer,
+    ) -> None:
+        self._access_service = access_service
+        self._issuer = issuer
+
+    def create_operator_device(self, **kwargs):
+        if kwargs.get("config_version") != config_version_for_protocol(
+            ProtocolVersion.AWG3
+        ):
+            return self._access_service.create_operator_device(**kwargs)
+        context = kwargs.get("device_context")
+        if not isinstance(context, OperatorDeviceContext):
+            raise Phase15BootstrapUnavailable("AWG3 admin client context is invalid")
+        boundary = self._issuer.fresh_boundary()
+        client = boundary.snapshot.client
+        if (
+            context.official_client_type != client.application
+            or context.platform != client.platform
+            or context.client_version != client.version
+            or context.runtime_instance_id != boundary.admission.runtime_instance_id
+            or context.compatibility_evidence_id
+            != boundary.admission.compatibility_evidence_id
+            or context.client_identity_evidence_status != "verified"
+        ):
+            raise Phase15BootstrapUnavailable("AWG3 admin issuance gates changed")
+        return self._access_service.create_operator_device(
+            **kwargs,
+            client_build=client.build_id,
+            awg3_material=boundary.snapshot.material,
+            runtime_target=boundary.snapshot.runtime,
+            runtime_peer_applier=boundary.runtime_peer_applier,
         )
 
 
@@ -311,9 +423,14 @@ def build_phase15_awg3_components(
         if admin_telegram_id not in set(settings.admin_ids):
             raise Phase15BootstrapUnavailable("configured admin is required")
         snapshot = snapshot_loader()
+        if access_service is None:
+            raise Phase15BootstrapUnavailable("AWG3 issuer boundary is unavailable")
         return AdminConfigIssuanceService(
             repo=repo,
-            access_service=access_service,
+            access_service=_FreshAwg3AdminAccessAdapter(
+                access_service=access_service,
+                issuer=issuer,
+            ),
             admission_service=snapshot.admission_service,
             admin_telegram_id=admin_telegram_id,
             attachment_builder=attachment_builder,
@@ -362,15 +479,28 @@ def _load_snapshot(settings: Settings, repo: Repository) -> _BootstrapSnapshot:
         if runtime_payload["provider_identity"] != settings.awg3_runtime_provider_identity:
             raise ValueError("runtime provider identity mismatch")
         runtime_rows = runtime_payload["runtimes"]
-        if not isinstance(runtime_rows, list) or not runtime_rows:
+        if (
+            not isinstance(runtime_rows, list)
+            or not 1 <= len(runtime_rows) <= _MAX_PROVIDER_ROWS
+        ):
             raise ValueError("runtimes")
-        runtimes = tuple(runtime_spec_from_row(_mapping(row, "runtime")) for row in runtime_rows)
-        runtime = next(
-            item
-            for item in runtimes
-            if item.runtime_instance_id == settings.awg3_expected_runtime_instance_id
-            and item.protocol_version is ProtocolVersion.AWG3
+        runtime_mappings = tuple(_mapping(row, "runtime") for row in runtime_rows)
+        for row in runtime_mappings:
+            _require_exact_fields(row, _RUNTIME_FIELDS, "runtime")
+        runtimes = tuple(runtime_spec_from_row(row) for row in runtime_mappings)
+        awg3_candidates = tuple(
+            item for item in runtimes if item.protocol_version is ProtocolVersion.AWG3
         )
+        if (
+            len(awg3_candidates) != 1
+            or awg3_candidates[0].runtime_instance_id
+            != settings.awg3_expected_runtime_instance_id
+        ):
+            raise ValueError("exact AWG3 runtime candidate")
+        runtime = awg3_candidates[0]
+        physical_server = repo.get_server_by_name(settings.server_name)
+        if runtime.server_id != int(physical_server["id"]):
+            raise ValueError("runtime physical server mismatch")
 
         evidence_payload = _read_json_object(
             settings.awg3_evidence_provider_path,
@@ -384,7 +514,10 @@ def _load_snapshot(settings: Settings, repo: Repository) -> _BootstrapSnapshot:
         if evidence_payload["provider_identity"] != settings.awg3_evidence_provider_identity:
             raise ValueError("evidence provider identity mismatch")
         evidence_rows = evidence_payload["evidence"]
-        if not isinstance(evidence_rows, list) or not evidence_rows:
+        if (
+            not isinstance(evidence_rows, list)
+            or not 1 <= len(evidence_rows) <= _MAX_PROVIDER_ROWS
+        ):
             raise ValueError("evidence")
         evidence = tuple(_evidence_from_json(_mapping(row, "evidence")) for row in evidence_rows)
 
@@ -421,12 +554,12 @@ def _load_snapshot(settings: Settings, repo: Repository) -> _BootstrapSnapshot:
         material = load_phase15_awg3_issuer_material(settings)
         admission = ProtocolAdmissionService(
             evidence=evidence,
-            runtimes=runtimes,
+            runtimes=(runtime,),
             now=datetime.now(timezone.utc),
             awg3_control_state=state,
             accepted_awg3_builds=frozenset({client}),
         )
-        return _BootstrapSnapshot(admission, state, client, material)
+        return _BootstrapSnapshot(admission, state, client, material, runtime)
     except (KeyError, StopIteration, TypeError, ValueError, OSError, json.JSONDecodeError):
         raise Phase15BootstrapUnavailable("AWG3 bootstrap providers are invalid") from None
 
@@ -490,13 +623,36 @@ def _client_from_json(row: Mapping[str, object]) -> ClientIdentity:
 def _read_json_object(path: str, label: str) -> Mapping[str, object]:
     if not path:
         raise Phase15BootstrapUnavailable(f"{label} path is missing")
+    provider_path = Path(path)
     try:
-        payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
+        byte_size = provider_path.stat().st_size
+    except OSError:
         raise Phase15BootstrapUnavailable(f"{label} is unavailable") from None
+    if byte_size > _MAX_PROVIDER_BYTES:
+        raise Phase15BootstrapUnavailable(f"{label} size exceeds limit")
+    try:
+        text = provider_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        raise Phase15BootstrapUnavailable(f"{label} is unavailable") from None
+    if len(text.encode("utf-8")) > _MAX_PROVIDER_BYTES:
+        raise Phase15BootstrapUnavailable(f"{label} size exceeds limit")
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        raise Phase15BootstrapUnavailable(f"{label} is unavailable") from None
+    if _json_nesting(payload) > _MAX_PROVIDER_NESTING:
+        raise Phase15BootstrapUnavailable(f"{label} nesting exceeds limit")
     if not isinstance(payload, dict):
         raise Phase15BootstrapUnavailable(f"{label} must be an object")
     return payload
+
+
+def _json_nesting(value: object) -> int:
+    if isinstance(value, dict):
+        return 1 + max((_json_nesting(item) for item in value.values()), default=0)
+    if isinstance(value, list):
+        return 1 + max((_json_nesting(item) for item in value), default=0)
+    return 0
 
 
 def _require_exact_fields(
