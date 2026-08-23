@@ -925,6 +925,158 @@ def test_prune_preserves_expired_claimed_callback_and_confirmation(
         connection.close()
 
 
+def test_restart_terminally_consumes_abandoned_claims_with_owner_boundary(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        owner_user_id = seed_owner_and_passport(connection)
+        other_owner_id = Repository(connection).upsert_user(
+            telegram_id=15002,
+            username="other",
+            first_name="Other",
+            last_name="Owner",
+        )
+        live_repo = Repository(connection)
+        callback = callback_values(owner_user_id)
+        callback["expires_at"] = "2026-08-14T10:06:00+00:00"
+        confirmation = confirmation_values(owner_user_id)
+        confirmation["expires_at"] = "2026-08-14T10:06:00+00:00"
+        live_repo.create_callback_handle(**callback)
+        live_repo.create_issuance_confirmation(**confirmation)
+        assert live_repo.claim_callback_handle(
+            "a" * 64,
+            owner_user_id,
+            NOW,
+            claim_id_digest=CALLBACK_CLAIM_DIGEST,
+            claim_expires_at=CLAIM_EXPIRES_AT,
+        ) is not None
+        assert live_repo.claim_issuance_confirmation(
+            "b" * 64,
+            owner_user_id,
+            NOW,
+            claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+            claim_expires_at=CLAIM_EXPIRES_AT,
+        ) is not None
+        after_both_ttls = "2026-08-14T10:09:00+00:00"
+
+        assert live_repo.prune_expired_phase15_callback_state(after_both_ttls) == 0
+        restarted_repo = Repository(connection)
+        assert restarted_repo.consume_expired_callback_handle(
+            "a" * 64,
+            other_owner_id,
+            after_both_ttls,
+            expected_purpose="select_protocol",
+        ) is None
+        assert restarted_repo.consume_expired_issuance_confirmation(
+            "b" * 64,
+            other_owner_id,
+            after_both_ttls,
+        ) is None
+
+        expired_callback = restarted_repo.consume_expired_callback_handle(
+            "a" * 64,
+            owner_user_id,
+            after_both_ttls,
+            expected_purpose="select_protocol",
+        )
+        expired_confirmation = restarted_repo.consume_expired_issuance_confirmation(
+            "b" * 64,
+            owner_user_id,
+            after_both_ttls,
+        )
+
+        assert expired_callback is not None
+        assert expired_callback["terminal_reason"] == "expired"
+        assert expired_confirmation is not None
+        assert expired_confirmation["terminal_reason"] == "expired"
+        assert restarted_repo.prune_expired_phase15_callback_state(after_both_ttls) == 2
+    finally:
+        connection.close()
+
+
+def test_restart_directly_prunes_abandoned_expired_claims(database_path) -> None:
+    connection = open_connection(database_path)
+    try:
+        owner_user_id = seed_owner_and_passport(connection)
+        live_repo = Repository(connection)
+        callback = callback_values(owner_user_id)
+        callback["expires_at"] = "2026-08-14T10:06:00+00:00"
+        confirmation = confirmation_values(owner_user_id)
+        confirmation["expires_at"] = "2026-08-14T10:06:00+00:00"
+        live_repo.create_callback_handle(**callback)
+        live_repo.create_issuance_confirmation(**confirmation)
+        assert live_repo.claim_callback_handle(
+            "a" * 64,
+            owner_user_id,
+            NOW,
+            claim_id_digest=CALLBACK_CLAIM_DIGEST,
+            claim_expires_at=CLAIM_EXPIRES_AT,
+        ) is not None
+        assert live_repo.claim_issuance_confirmation(
+            "b" * 64,
+            owner_user_id,
+            NOW,
+            claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+            claim_expires_at=CLAIM_EXPIRES_AT,
+        ) is not None
+
+        restarted_repo = Repository(connection)
+        assert restarted_repo.prune_expired_phase15_callback_state(
+            "2026-08-14T10:09:00+00:00"
+        ) == 2
+        assert connection.execute(
+            "SELECT COUNT(*) FROM telegram_callback_handles"
+        ).fetchone()[0] == 0
+        assert connection.execute(
+            "SELECT COUNT(*) FROM protocol_issuance_confirmations"
+        ).fetchone()[0] == 0
+    finally:
+        connection.close()
+
+
+def test_replaced_claim_digests_are_not_protected_by_old_registration(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        owner_user_id = seed_owner_and_passport(connection)
+        repo = Repository(connection)
+        repo.create_callback_handle(**callback_values(owner_user_id))
+        repo.create_issuance_confirmation(**confirmation_values(owner_user_id))
+        assert repo.claim_callback_handle(
+            "a" * 64,
+            owner_user_id,
+            NOW,
+            claim_id_digest=CALLBACK_CLAIM_DIGEST,
+            claim_expires_at="2026-08-14T10:06:00+00:00",
+        ) is not None
+        assert repo.claim_issuance_confirmation(
+            "b" * 64,
+            owner_user_id,
+            NOW,
+            claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+            claim_expires_at="2026-08-14T10:06:00+00:00",
+        ) is not None
+        connection.execute(
+            "UPDATE telegram_callback_handles "
+            "SET claim_id_digest = ?, claimed_at = ?, claim_expires_at = ?",
+            ("3" * 64, "2026-08-14T10:07:00+00:00", "2026-08-14T10:09:00+00:00"),
+        )
+        connection.execute(
+            "UPDATE protocol_issuance_confirmations "
+            "SET claim_id_digest = ?, claimed_at = ?, claim_expires_at = ?",
+            ("4" * 64, "2026-08-14T10:07:00+00:00", "2026-08-14T10:09:00+00:00"),
+        )
+        connection.commit()
+
+        assert repo.prune_expired_phase15_callback_state(
+            "2026-08-14T10:11:00+00:00"
+        ) == 2
+    finally:
+        connection.close()
+
+
 def test_prune_removes_expired_claimed_and_consumed_callback_and_confirmation(
     database_path,
 ) -> None:

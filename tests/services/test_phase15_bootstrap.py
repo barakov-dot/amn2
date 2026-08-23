@@ -463,6 +463,99 @@ def test_provider_change_before_access_returns_retryable_blocked_result(
     assert peer.calls == []
 
 
+@pytest.mark.parametrize("hpk_failure", ["resolver", "fingerprint"])
+def test_hpk_failure_before_access_side_effects_is_retryable(
+    tmp_path,
+    monkeypatch,
+    hpk_failure,
+):
+    settings, paths = _settings(tmp_path)
+    _conn, repo = _accepted_repo(tmp_path)
+    user_id = repo.upsert_user(
+        telegram_id=1002,
+        username="phase15-hpk-user",
+        first_name="Phase",
+        last_name="HPK",
+    )
+    server_id = int(repo.get_server_by_name("local")["id"])
+    awg2_device_id = repo.create_device(
+        user_id=user_id,
+        server_id=server_id,
+        name="phase15-hpk-existing-awg2",
+        duration_days=30,
+        vpn_ip="10.8.0.3",
+        peer_public_key="phase15-hpk-existing-public",
+        peer_private_key_encrypted="phase15-hpk-existing-encrypted-private",
+        preshared_key_encrypted="phase15-hpk-existing-encrypted-psk",
+        config_version="amneziawg_v2",
+        protocol_version="awg2",
+    )
+    passport = create_device_passport(
+        repo,
+        owner_user_id=user_id,
+        local_device_id=awg2_device_id,
+        platform=CLIENT.platform,
+        official_client_type=CLIENT.application,
+        import_method="conf_file",
+        config_schema_version="amneziawg_v2",
+        config_text="phase15-hpk-existing-config-fingerprint-source",
+        protocol_version="awg2",
+    )
+    peer = RecordingPeerApplier()
+    access = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "phase15-hpk-boundary-secret-with-more-than-32-chars"
+        ),
+        peer_applier=peer,
+    )
+    components = build_phase15_awg3_components(settings, repo, access, peer)
+    request = SelfServiceIssuanceRequest(
+        user_id=user_id,
+        telegram_id=1002,
+        passport_device_id=passport.device_id,
+        protocol_version=ProtocolVersion.AWG3,
+        client=CLIENT,
+    )
+    token = components.self_service_issuance_service.decide(request).token
+    if hpk_failure == "resolver":
+        paths["hpk"].unlink()
+    else:
+        paths["hpk"].write_text("wrong-hpk", encoding="utf-8")
+    key_calls = []
+
+    def unexpected_key_generation():
+        key_calls.append("key")
+        raise AssertionError("key generation must follow HPK resolution")
+
+    monkeypatch.setattr("app.services.access.generate_keypair", unexpected_key_generation)
+    monkeypatch.setattr("app.services.access.generate_key", unexpected_key_generation)
+
+    result = components.self_service_issuance_service.issue_after_confirmation(
+        request,
+        confirmation_token=token,
+    )
+
+    assert result.status == "blocked"
+    assert result.reason_code == "admission_view_unavailable"
+    attempt = repo.list_protocol_issuance_attempts(
+        passport_device_id=passport.device_id,
+        protocol_version="awg3",
+    )[0]
+    assert attempt["state"] == "cancelled"
+    assert attempt["reason_code"] == "issuer_unavailable_before_side_effect"
+    confirmation = components.callback_state.claim_confirmation(
+        token,
+        owner_user_id=user_id,
+    )
+    assert confirmation is not None
+    assert components.callback_state.release_confirmation(confirmation) is True
+    assert key_calls == []
+    assert repo.count_active_devices(user_id) == 1
+    assert peer.calls == []
+    assert sum(len(target.calls) for target in peer.runtime_targets) == 0
+
+
 def test_global_acceptance_needs_no_per_user_admin_but_admin_factory_is_configured_only(
     tmp_path,
 ):

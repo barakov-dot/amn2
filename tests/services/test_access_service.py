@@ -10,6 +10,7 @@ from app.db.connection import connect
 from app.db.repositories import Repository
 from app.db.schema import initialize_schema
 from app.security.crypto import SecretBox
+from app.services import access as access_module
 from app.services.access import (
     AccessService,
     Awg3IssuerMaterial,
@@ -1451,9 +1452,14 @@ def test_awg3_issuer_material_rejects_each_nonce_below_12(field):
         _awg3_issuer_material(**values)
 
 
-def test_create_protocol_device_resolves_hpk_before_key_repo_or_peer_mutation(
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["resolver", "invalid_text", "fingerprint"],
+)
+def test_hpk_resolution_failures_use_narrow_safe_pre_side_effect_type(
     tmp_path,
     monkeypatch,
+    failure_kind,
 ):
     (
         conn,
@@ -1464,7 +1470,20 @@ def test_create_protocol_device_resolves_hpk_before_key_repo_or_peer_mutation(
         server_id,
         passport_device_id,
     ) = _existing_passport_protocol_fixture(tmp_path)
-    resolver = _RecordingAwg3SecretResolver(error=ValueError("HPK unavailable"))
+    resolver = _RecordingAwg3SecretResolver()
+    if failure_kind == "resolver":
+        resolver.error = RuntimeError("raw provider detail must not escape")
+    elif failure_kind == "invalid_text":
+        resolver.secret = " invalid-header-protection-key"
+    material = _awg3_issuer_material(resolver=resolver)
+    if failure_kind == "fingerprint":
+        material = replace(
+            material,
+            header_protection_key=HeaderProtectionSecretRef(
+                reference="phase15-hpk-001",
+                fingerprint="sha256:" + "f" * 64,
+            ),
+        )
     key_calls = []
 
     def unexpected_key_generation():
@@ -1474,7 +1493,57 @@ def test_create_protocol_device_resolves_hpk_before_key_repo_or_peer_mutation(
     monkeypatch.setattr("app.services.access.generate_keypair", unexpected_key_generation)
     monkeypatch.setattr("app.services.access.generate_key", unexpected_key_generation)
 
-    with pytest.raises(ValueError, match="HPK unavailable"):
+    with pytest.raises(Exception) as raised:
+        service.create_protocol_device_for_existing_passport(
+            owner_user_id=owner_user_id,
+            passport_device_id=passport_device_id,
+            server_id=server_id,
+            device_name="AWG3 laptop",
+            config_version="amneziawg_v3",
+            client_build="50005",
+            device_context=_awg3_existing_passport_context(),
+            awg3_material=material,
+            runtime_target=_accepted_awg3_runtime(server_id),
+            runtime_peer_applier=peer_applier,
+        )
+
+    narrow_type = getattr(
+        access_module,
+        "Awg3HeaderProtectionKeyUnavailable",
+        None,
+    )
+    assert narrow_type is not None
+    assert type(raised.value) is narrow_type
+    assert str(raised.value) == "AWG3 header protection key is unavailable"
+    assert "raw provider detail" not in str(raised.value)
+    assert resolver.calls == ["phase15-hpk-001"]
+    assert key_calls == []
+    assert peer_applier.calls == []
+    assert repo.count_active_devices(owner_user_id) == 1
+    assert conn.execute("SELECT COUNT(*) FROM device_passports").fetchone()[0] == 1
+
+
+def test_failure_after_hpk_resolution_remains_outside_narrow_type(
+    tmp_path,
+    monkeypatch,
+):
+    (
+        _conn,
+        _repo,
+        service,
+        peer_applier,
+        owner_user_id,
+        server_id,
+        passport_device_id,
+    ) = _existing_passport_protocol_fixture(tmp_path)
+    resolver = _RecordingAwg3SecretResolver()
+
+    def fail_after_resolution():
+        raise ValueError("post-resolution failure")
+
+    monkeypatch.setattr("app.services.access.generate_keypair", fail_after_resolution)
+
+    with pytest.raises(ValueError, match="post-resolution failure") as raised:
         service.create_protocol_device_for_existing_passport(
             owner_user_id=owner_user_id,
             passport_device_id=passport_device_id,
@@ -1488,11 +1557,15 @@ def test_create_protocol_device_resolves_hpk_before_key_repo_or_peer_mutation(
             runtime_peer_applier=peer_applier,
         )
 
+    narrow_type = getattr(
+        access_module,
+        "Awg3HeaderProtectionKeyUnavailable",
+        None,
+    )
+    assert narrow_type is not None
+    assert not isinstance(raised.value, narrow_type)
     assert resolver.calls == ["phase15-hpk-001"]
-    assert key_calls == []
     assert peer_applier.calls == []
-    assert repo.count_active_devices(owner_user_id) == 1
-    assert conn.execute("SELECT COUNT(*) FROM device_passports").fetchone()[0] == 1
 
 
 def _accepted_awg3_runtime(server_id):

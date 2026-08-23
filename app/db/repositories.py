@@ -84,6 +84,7 @@ class Repository:
         self._transaction_depth = 0
         self._active_outer_transaction_identity: object | None = None
         self._protocol_issuance_execution_leases: dict[object, dict[str, Any]] = {}
+        self._active_phase15_claims: set[tuple[str, str, str]] = set()
 
     @contextmanager
     def transaction(self) -> Iterator[None]:
@@ -832,7 +833,10 @@ class Repository:
                 (handle_digest,),
             ).fetchone()
             assert row is not None
-            return row
+        self._active_phase15_claims.add(
+            ("callback", handle_digest, claim_id_digest)
+        )
+        return row
 
     def release_callback_handle_claim(
         self,
@@ -866,7 +870,10 @@ class Repository:
                 (handle_digest,),
             ).fetchone()
             assert row is not None
-            return row
+        self._active_phase15_claims.discard(
+            ("callback", handle_digest, claim_id_digest)
+        )
+        return row
 
     def consume_callback_handle(
         self,
@@ -904,7 +911,10 @@ class Repository:
                 (handle_digest,),
             ).fetchone()
             assert row is not None
-            return row
+        self._active_phase15_claims.discard(
+            ("callback", handle_digest, claim_id_digest)
+        )
+        return row
 
     def consume_expired_callback_handle(
         self,
@@ -918,6 +928,24 @@ class Repository:
         if not expected_purpose:
             raise ValueError("expected_purpose")
         with self.transaction():
+            current = self._conn.execute(
+                "SELECT * FROM telegram_callback_handles WHERE handle_digest = ?",
+                (handle_digest,),
+            ).fetchone()
+            if (
+                current is None
+                or int(current["owner_user_id"]) != owner_user_id
+                or str(current["purpose"]) != expected_purpose
+                or current["consumed_at"] is not None
+                or str(current["expires_at"]) > now
+                or not self._phase15_claim_is_abandoned(
+                    "callback",
+                    handle_digest,
+                    current,
+                    now,
+                )
+            ):
+                return None
             cursor = self._conn.execute(
                 """
                 UPDATE telegram_callback_handles
@@ -927,11 +955,20 @@ class Repository:
                   AND purpose = ?
                   AND consumed_at IS NULL
                   AND expires_at <= ?
-                  AND claim_id_digest IS NULL
-                  AND claimed_at IS NULL
-                  AND claim_expires_at IS NULL
+                  AND claim_id_digest IS ?
+                  AND claimed_at IS ?
+                  AND claim_expires_at IS ?
                 """,
-                (now, handle_digest, owner_user_id, expected_purpose, now),
+                (
+                    now,
+                    handle_digest,
+                    owner_user_id,
+                    expected_purpose,
+                    now,
+                    current["claim_id_digest"],
+                    current["claimed_at"],
+                    current["claim_expires_at"],
+                ),
             )
             if cursor.rowcount != 1:
                 return None
@@ -940,7 +977,12 @@ class Repository:
                 (handle_digest,),
             ).fetchone()
             assert row is not None
-            return row
+        claim_digest = current["claim_id_digest"]
+        if claim_digest is not None:
+            self._active_phase15_claims.discard(
+                ("callback", handle_digest, str(claim_digest))
+            )
+        return row
 
     def create_issuance_confirmation(
         self,
@@ -1047,7 +1089,10 @@ class Repository:
                 (token_digest,),
             ).fetchone()
             assert row is not None
-            return row
+        self._active_phase15_claims.add(
+            ("confirmation", token_digest, claim_id_digest)
+        )
+        return row
 
     def release_issuance_confirmation_claim(
         self,
@@ -1082,7 +1127,10 @@ class Repository:
                 (token_digest,),
             ).fetchone()
             assert row is not None
-            return row
+        self._active_phase15_claims.discard(
+            ("confirmation", token_digest, claim_id_digest)
+        )
+        return row
 
     def consume_issuance_confirmation(
         self,
@@ -1121,7 +1169,10 @@ class Repository:
                 (token_digest,),
             ).fetchone()
             assert row is not None
-            return row
+        self._active_phase15_claims.discard(
+            ("confirmation", token_digest, claim_id_digest)
+        )
+        return row
 
     def consume_expired_issuance_confirmation(
         self,
@@ -1131,6 +1182,24 @@ class Repository:
     ) -> sqlite3.Row | None:
         _require_sha256_digest(token_digest, "token_digest")
         with self.transaction():
+            current = self._conn.execute(
+                "SELECT * FROM protocol_issuance_confirmations "
+                "WHERE token_digest = ?",
+                (token_digest,),
+            ).fetchone()
+            if (
+                current is None
+                or int(current["owner_user_id"]) != owner_user_id
+                or current["consumed_at"] is not None
+                or str(current["expires_at"]) > now
+                or not self._phase15_claim_is_abandoned(
+                    "confirmation",
+                    token_digest,
+                    current,
+                    now,
+                )
+            ):
+                return None
             cursor = self._conn.execute(
                 """
                 UPDATE protocol_issuance_confirmations
@@ -1139,11 +1208,19 @@ class Repository:
                   AND owner_user_id = ?
                   AND consumed_at IS NULL
                   AND expires_at <= ?
-                  AND claim_id_digest IS NULL
-                  AND claimed_at IS NULL
-                  AND claim_expires_at IS NULL
+                  AND claim_id_digest IS ?
+                  AND claimed_at IS ?
+                  AND claim_expires_at IS ?
                 """,
-                (now, token_digest, owner_user_id, now),
+                (
+                    now,
+                    token_digest,
+                    owner_user_id,
+                    now,
+                    current["claim_id_digest"],
+                    current["claimed_at"],
+                    current["claim_expires_at"],
+                ),
             )
             if cursor.rowcount != 1:
                 return None
@@ -1153,37 +1230,54 @@ class Repository:
                 (token_digest,),
             ).fetchone()
             assert row is not None
-            return row
+        claim_digest = current["claim_id_digest"]
+        if claim_digest is not None:
+            self._active_phase15_claims.discard(
+                ("confirmation", token_digest, str(claim_digest))
+            )
+        return row
 
     def prune_expired_phase15_callback_state(self, now: str) -> int:
+        pruned_claims: list[tuple[str, str, str]] = []
+        deleted = 0
         with self.transaction():
-            confirmation_cursor = self._conn.execute(
+            confirmation_rows = self._conn.execute(
                 """
-                DELETE FROM protocol_issuance_confirmations
+                SELECT * FROM protocol_issuance_confirmations
                 WHERE expires_at <= ?
-                  AND (
-                      consumed_at IS NOT NULL
-                      OR (
-                          claim_id_digest IS NULL
-                          AND claimed_at IS NULL
-                          AND claim_expires_at IS NULL
-                      )
-                  )
                 """,
                 (now,),
-            )
-            callback_cursor = self._conn.execute(
+            ).fetchall()
+            for row in confirmation_rows:
+                token_digest = str(row["token_digest"])
+                if (
+                    row["consumed_at"] is None
+                    and not self._phase15_claim_is_abandoned(
+                        "confirmation",
+                        token_digest,
+                        row,
+                        now,
+                    )
+                ):
+                    continue
+                cursor = self._conn.execute(
+                    "DELETE FROM protocol_issuance_confirmations "
+                    "WHERE token_digest = ?",
+                    (token_digest,),
+                )
+                deleted += int(cursor.rowcount)
+                if row["claim_id_digest"] is not None:
+                    pruned_claims.append(
+                        (
+                            "confirmation",
+                            token_digest,
+                            str(row["claim_id_digest"]),
+                        )
+                    )
+            callback_rows = self._conn.execute(
                 """
-                DELETE FROM telegram_callback_handles
+                SELECT * FROM telegram_callback_handles
                 WHERE expires_at <= ?
-                  AND (
-                      consumed_at IS NOT NULL
-                      OR (
-                          claim_id_digest IS NULL
-                          AND claimed_at IS NULL
-                          AND claim_expires_at IS NULL
-                      )
-                  )
                   AND NOT EXISTS (
                       SELECT 1
                       FROM protocol_issuance_confirmations
@@ -1191,8 +1285,53 @@ class Repository:
                   )
                 """,
                 (now,),
+            ).fetchall()
+            for row in callback_rows:
+                handle_digest = str(row["handle_digest"])
+                if (
+                    row["consumed_at"] is None
+                    and not self._phase15_claim_is_abandoned(
+                        "callback",
+                        handle_digest,
+                        row,
+                        now,
+                    )
+                ):
+                    continue
+                cursor = self._conn.execute(
+                    "DELETE FROM telegram_callback_handles "
+                    "WHERE handle_digest = ?",
+                    (handle_digest,),
+                )
+                deleted += int(cursor.rowcount)
+                if row["claim_id_digest"] is not None:
+                    pruned_claims.append(
+                        ("callback", handle_digest, str(row["claim_id_digest"]))
+                    )
+        for claim in pruned_claims:
+            self._active_phase15_claims.discard(claim)
+        return deleted
+
+    def _phase15_claim_is_abandoned(
+        self,
+        row_kind: str,
+        row_digest: str,
+        row: Mapping[str, Any],
+        now: str,
+    ) -> bool:
+        claim_digest = row["claim_id_digest"]
+        if claim_digest is None:
+            return (
+                row["claimed_at"] is None
+                and row["claim_expires_at"] is None
             )
-            return confirmation_cursor.rowcount + callback_cursor.rowcount
+        claim_expires_at = row["claim_expires_at"]
+        return (
+            claim_expires_at is not None
+            and str(claim_expires_at) <= now
+            and (row_kind, row_digest, str(claim_digest))
+            not in self._active_phase15_claims
+        )
 
     def reserve_protocol_issuance_attempt(
         self,

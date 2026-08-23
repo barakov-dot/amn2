@@ -77,6 +77,10 @@ class OperatorPeerApplierRequired(RuntimeError):
     pass
 
 
+class Awg3HeaderProtectionKeyUnavailable(ValueError):
+    pass
+
+
 class RemoteOperationPartialFailure(RuntimeError):
     def __init__(self, result: RemoteMutationResult, cause: Exception) -> None:
         super().__init__(f"{result.operation_id} partial failure: {result.recovery_note}")
@@ -1012,19 +1016,24 @@ def _validate_awg3_runtime_inputs(
 
 
 def _resolve_awg3_hpk(material: Awg3IssuerMaterial) -> str:
-    reference = material.header_protection_key.reference
-    resolved_hpk = material.secret_resolver.resolve(reference)
-    _require_exact_material_text(
-        resolved_hpk,
-        "resolved header_protection_key",
-        maximum=4096,
-    )
-    resolved_fingerprint = "sha256:" + hashlib.sha256(
-        resolved_hpk.encode("utf-8")
-    ).hexdigest()
-    if resolved_fingerprint != material.header_protection_key.fingerprint:
-        raise ValueError("header_protection_key fingerprint mismatch")
-    return resolved_hpk
+    try:
+        reference = material.header_protection_key.reference
+        resolved_hpk = material.secret_resolver.resolve(reference)
+        _require_exact_material_text(
+            resolved_hpk,
+            "resolved header_protection_key",
+            maximum=4096,
+        )
+        resolved_fingerprint = "sha256:" + hashlib.sha256(
+            resolved_hpk.encode("utf-8")
+        ).hexdigest()
+        if resolved_fingerprint != material.header_protection_key.fingerprint:
+            raise ValueError("header_protection_key fingerprint mismatch")
+        return resolved_hpk
+    except Exception:
+        raise Awg3HeaderProtectionKeyUnavailable(
+            "AWG3 header protection key is unavailable"
+        ) from None
 
 
 def _runtime_server_address(vpn_cidr: str) -> str:

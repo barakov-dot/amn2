@@ -12,7 +12,12 @@ from typing import Protocol
 from app.config.settings import Settings
 from app.db.repositories import Repository
 from app.security.crypto import SecretBox
-from app.services.access import AccessService, Awg3IssuerMaterial, OperatorDeviceContext
+from app.services.access import (
+    AccessService,
+    Awg3HeaderProtectionKeyUnavailable,
+    Awg3IssuerMaterial,
+    OperatorDeviceContext,
+)
 from app.services.admin_config_issuance import AdminConfigIssuanceService
 from app.services.awg3_control import Awg3ControlService, Awg3ControlState
 from app.services.client_compatibility import (
@@ -296,28 +301,35 @@ class ProductionAwg3ConfigIssuer(ConfigIssuer):
             raise _Phase15IssuerUnavailableBeforeSideEffect(
                 "AWG3 issuer is unavailable before side effects"
             ) from None
-        return self._access_service.create_protocol_device_for_existing_passport(
-            owner_user_id=request.user_id,
-            passport_device_id=request.passport_device_id,
-            server_id=int(server["id"]),
-            device_name=(
-                f"{request.client.application}-{request.client.platform}-AWG3"
-            ),
-            config_version=config_version_for_protocol(ProtocolVersion.AWG3),
-            client_build=str(request.client.build_id),
-            device_context=OperatorDeviceContext(
-                platform=request.client.platform,
-                official_client_type=request.client.application,
-                client_version=request.client.version,
-                protocol_version="awg3",
-                runtime_instance_id=boundary.admission.runtime_instance_id,
-                client_identity_evidence_status="verified",
-                compatibility_evidence_id=boundary.admission.compatibility_evidence_id,
-            ),
-            awg3_material=boundary.snapshot.material,
-            runtime_target=boundary.snapshot.runtime,
-            runtime_peer_applier=boundary.runtime_peer_applier,
-        )
+        try:
+            return self._access_service.create_protocol_device_for_existing_passport(
+                owner_user_id=request.user_id,
+                passport_device_id=request.passport_device_id,
+                server_id=int(server["id"]),
+                device_name=(
+                    f"{request.client.application}-{request.client.platform}-AWG3"
+                ),
+                config_version=config_version_for_protocol(ProtocolVersion.AWG3),
+                client_build=str(request.client.build_id),
+                device_context=OperatorDeviceContext(
+                    platform=request.client.platform,
+                    official_client_type=request.client.application,
+                    client_version=request.client.version,
+                    protocol_version="awg3",
+                    runtime_instance_id=boundary.admission.runtime_instance_id,
+                    client_identity_evidence_status="verified",
+                    compatibility_evidence_id=(
+                        boundary.admission.compatibility_evidence_id
+                    ),
+                ),
+                awg3_material=boundary.snapshot.material,
+                runtime_target=boundary.snapshot.runtime,
+                runtime_peer_applier=boundary.runtime_peer_applier,
+            )
+        except Awg3HeaderProtectionKeyUnavailable:
+            raise _Phase15IssuerUnavailableBeforeSideEffect(
+                "AWG3 issuer is unavailable before side effects"
+            ) from None
 
 
 class _FreshAwg3AdminAccessAdapter:
