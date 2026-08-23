@@ -67,6 +67,31 @@ COMPILED_TARGET_HASHES = {
         "f08c7513ecef5aad65687bfdf6bc601ae9fccd04a42904501f8f7141abad9eb9",
     ),
 }
+EXPECTED_LINUX_PLATFORM_LADDER = (
+    "manylinux_2_39_x86_64",
+    "manylinux_2_38_x86_64",
+    "manylinux_2_37_x86_64",
+    "manylinux_2_36_x86_64",
+    "manylinux_2_35_x86_64",
+    "manylinux_2_34_x86_64",
+    "manylinux_2_33_x86_64",
+    "manylinux_2_32_x86_64",
+    "manylinux_2_31_x86_64",
+    "manylinux_2_30_x86_64",
+    "manylinux_2_29_x86_64",
+    "manylinux_2_28_x86_64",
+    "manylinux_2_27_x86_64",
+    "manylinux_2_26_x86_64",
+    "manylinux_2_25_x86_64",
+    "manylinux_2_24_x86_64",
+    "manylinux_2_23_x86_64",
+    "manylinux_2_22_x86_64",
+    "manylinux_2_21_x86_64",
+    "manylinux_2_20_x86_64",
+    "manylinux_2_19_x86_64",
+    "manylinux_2_18_x86_64",
+    "manylinux_2_17_x86_64",
+)
 
 
 def _load_generator():
@@ -317,6 +342,7 @@ def test_resolver_runs_explicit_windows_and_linux_targets_and_merges_hashes(
 
     monkeypatch.setattr(generator.venv.EnvBuilder, "create", fake_create)
     monkeypatch.setattr(generator.subprocess, "run", fake_run)
+    monkeypatch.setattr(generator, "ensure_python_312", lambda: None)
 
     resolved = generator.resolve_for_targets(["demo-package==1.0"])
 
@@ -324,16 +350,33 @@ def test_resolver_runs_explicit_windows_and_linux_targets_and_merges_hashes(
         generator.ResolvedPackage("demo-package", "1.0", ("a" * 64, "b" * 64))
     ]
     assert len(commands) == 2
-    for command, platform_name in zip(
+    for command, expected_platforms in zip(
         commands,
-        ("win_amd64", "manylinux_2_39_x86_64"),
+        (("win_amd64",), EXPECTED_LINUX_PLATFORM_LADDER),
         strict=True,
     ):
-        assert command[command.index("--platform") + 1] == platform_name
-        assert command[command.index("--implementation") + 1] == "cp"
-        assert command[command.index("--python-version") + 1] == "3.12"
-        assert command[command.index("--abi") + 1] == "cp312"
-        assert "--only-binary=:all:" in command
+        target_args = command[
+            command.index("--only-binary=:all:") + 1 : command.index("--index-url")
+        ]
+        expected_args = [
+            *(
+                item
+                for platform_name in expected_platforms
+                for item in ("--platform", platform_name)
+            ),
+            "--implementation",
+            "cp",
+            "--python-version",
+            "3.12",
+            "--abi",
+            "cp312",
+        ]
+        assert target_args == expected_args
+    assert {
+        "manylinux_2_34_x86_64",
+        "manylinux_2_28_x86_64",
+        "manylinux_2_17_x86_64",
+    } <= set(EXPECTED_LINUX_PLATFORM_LADDER)
 
 
 def test_cross_target_version_disagreement_fails_closed() -> None:
@@ -347,17 +390,24 @@ def test_cross_target_version_disagreement_fails_closed() -> None:
 
 
 @pytest.mark.parametrize(
-    ("platform_name", "python_version", "abi"),
+    ("target_name", "platforms", "python_version", "abi"),
     [
-        ("win32", "3.12", "cp312"),
-        ("manylinux_2_39_aarch64", "3.12", "cp312"),
-        ("win_amd64", "3.11", "cp311"),
-        ("win_amd64", "3.12", "abi3"),
+        ("unapproved", ("win32",), "3.12", "cp312"),
+        ("unapproved", ("manylinux_2_39_aarch64",), "3.12", "cp312"),
+        ("unapproved", ("win_amd64",), "3.11", "cp311"),
+        ("unapproved", ("win_amd64",), "3.12", "abi3"),
+        (
+            "linux-x86-64-glibc-2.39",
+            EXPECTED_LINUX_PLATFORM_LADDER[:-1],
+            "3.12",
+            "cp312",
+        ),
     ],
 )
 def test_resolver_rejects_incompatible_target_declarations_before_pip(
     monkeypatch: pytest.MonkeyPatch,
-    platform_name: str,
+    target_name: str,
+    platforms: tuple[str, ...],
     python_version: str,
     abi: str,
 ) -> None:
@@ -371,8 +421,8 @@ def test_resolver_rejects_incompatible_target_declarations_before_pip(
     monkeypatch.setattr(generator.venv.EnvBuilder, "create", forbidden_boundary)
     monkeypatch.setattr(generator.subprocess, "run", forbidden_boundary)
     target = generator.ResolverTarget(
-        "unapproved",
-        platform_name,
+        target_name,
+        platforms,
         "cp",
         python_version,
         abi,

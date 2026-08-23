@@ -62,18 +62,42 @@ class ResolvedPackage(NamedTuple):
 
 class ResolverTarget(NamedTuple):
     name: str
-    platform: str
+    platforms: tuple[str, ...]
     implementation: str
     python_version: str
     abi: str
 
 
 WINDOWS_AMD64_TARGET = ResolverTarget(
-    "windows-amd64", "win_amd64", "cp", "3.12", "cp312"
+    "windows-amd64", ("win_amd64",), "cp", "3.12", "cp312"
 )
 LINUX_X86_64_GLIBC_239_TARGET = ResolverTarget(
     "linux-x86-64-glibc-2.39",
-    "manylinux_2_39_x86_64",
+    (
+        "manylinux_2_39_x86_64",
+        "manylinux_2_38_x86_64",
+        "manylinux_2_37_x86_64",
+        "manylinux_2_36_x86_64",
+        "manylinux_2_35_x86_64",
+        "manylinux_2_34_x86_64",
+        "manylinux_2_33_x86_64",
+        "manylinux_2_32_x86_64",
+        "manylinux_2_31_x86_64",
+        "manylinux_2_30_x86_64",
+        "manylinux_2_29_x86_64",
+        "manylinux_2_28_x86_64",
+        "manylinux_2_27_x86_64",
+        "manylinux_2_26_x86_64",
+        "manylinux_2_25_x86_64",
+        "manylinux_2_24_x86_64",
+        "manylinux_2_23_x86_64",
+        "manylinux_2_22_x86_64",
+        "manylinux_2_21_x86_64",
+        "manylinux_2_20_x86_64",
+        "manylinux_2_19_x86_64",
+        "manylinux_2_18_x86_64",
+        "manylinux_2_17_x86_64",
+    ),
     "cp",
     "3.12",
     "cp312",
@@ -230,8 +254,11 @@ def _resolver_target_args(target: ResolverTarget) -> list[str]:
     if target not in RESOLVER_TARGETS:
         raise RuntimeError(f"unapproved resolver target declaration: {target!r}")
     return [
-        "--platform",
-        target.platform,
+        *(
+            item
+            for platform_name in target.platforms
+            for item in ("--platform", platform_name)
+        ),
         "--implementation",
         target.implementation,
         "--python-version",
@@ -245,9 +272,9 @@ def resolve(
     requirements: Sequence[str],
     target: ResolverTarget,
 ) -> list[ResolvedPackage]:
+    target_args = _resolver_target_args(target)
     ensure_python_312()
     validate_source_requirements(requirements)
-    target_args = _resolver_target_args(target)
     with tempfile.TemporaryDirectory(prefix="phase15-lock-") as raw_directory:
         directory = Path(raw_directory)
         venv.EnvBuilder(with_pip=True, clear=True).create(directory)
