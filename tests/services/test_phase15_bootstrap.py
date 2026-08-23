@@ -336,6 +336,63 @@ def test_build_components_wires_real_services_without_startup_effects(tmp_path):
     assert peer.calls == []
 
 
+@pytest.mark.parametrize(
+    ("setting_name", "provider_field", "invalid_identity"),
+    [
+        ("awg3_expected_package_id", "package_id", "other-package"),
+        ("awg3_expected_source_head", "source_head", "A" * 40),
+        ("awg3_expected_source_head", "source_head", "a" * 39),
+        ("awg3_expected_source_head", "source_head", "g" * 40),
+    ],
+)
+def test_noncanonical_matching_build_identity_disables_only_awg3(
+    tmp_path,
+    setting_name,
+    provider_field,
+    invalid_identity,
+):
+    settings, paths = _settings(tmp_path, **{setting_name: invalid_identity})
+    build_payload = json.loads(paths["build"].read_text(encoding="utf-8"))
+    build_payload[provider_field] = invalid_identity
+    paths["build"].write_text(json.dumps(build_payload), encoding="utf-8")
+    _conn, repo = _accepted_repo(tmp_path)
+    peer = RecordingPeerApplier()
+    access = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "phase15-invalid-identity-secret-with-more-than-32-chars"
+        ),
+        peer_applier=peer,
+    )
+
+    components = build_phase15_awg3_components(settings, repo, access, peer)
+
+    assert components.available is False
+    assert components.awg3_client_choices == ()
+    owner_user_id = repo.create_operator_recipient(
+        operator_label="AWG2 identity isolation"
+    )
+    result = access.create_operator_device(
+        owner_user_id=owner_user_id,
+        server_id=int(repo.get_server_by_name("local")["id"]),
+        device_name="AWG2 laptop",
+        duration_days=30,
+        admin_telegram_id=9001,
+        config_version="amneziawg_v2",
+        device_context=OperatorDeviceContext(
+            platform="windows",
+            official_client_type="amnezia_vpn",
+            client_version="5.0.0.5",
+            protocol_version="awg2",
+            runtime_instance_id="legacy-awg2-runtime",
+            client_identity_evidence_status="verified",
+            compatibility_evidence_id="legacy-awg2-evidence",
+        ),
+    )
+    assert result.passport_device_id is not None
+    assert len(peer.calls) == 1
+
+
 def test_missing_server_dependency_returns_unavailable_components(tmp_path):
     settings, _paths = _settings(tmp_path)
     conn, repo = _accepted_repo(tmp_path)

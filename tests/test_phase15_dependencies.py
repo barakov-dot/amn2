@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import re
 import tomllib
 from pathlib import Path
@@ -20,6 +21,52 @@ GENERATION_COMMAND = (
     "--test requirements/phase15-test-py312.lock"
 )
 SHA256_RE = re.compile(r"--hash=sha256:([0-9a-f]{64})(?:\s|$)")
+COMPILED_TARGET_HASHES = {
+    "aiohttp==3.14.3": (
+        "33a2d7c28d33797a2e99923dffa63f83d908a19b6bf26cfe80fa790aa5e1a75a",
+        "543906c127fb1d929b95076db19b83fa2d46751006ff1e23b093aa5ac4d8db42",
+    ),
+    "cffi==2.1.1": (
+        "f53e442b08449d42821fa4a4fba000095af9f62742a500f978a9f557ec44339a",
+        "c1453022f490d2459a11819d83ad1d586e9ff65a12ac3e705ffebd46d3685dcf",
+    ),
+    "cryptography==45.0.7": (
+        "3808e6b2e5f0b46d981c24d79648e5c25c35e59902ea4391a0dcb3e667bf7443",
+        "b6a0e535baec27b528cb07a119f321ac024592388c5681a5ced167ae98e9fff3",
+    ),
+    "frozenlist==1.8.0": (
+        "34187385b08f866104f0c0617404c8eb08165ab1272e884abc89c112e9c00746",
+        "494a5952b1c597ba44e0e78113a7266e656b9794eec897b19ead706bd7074383",
+    ),
+    "markupsafe==3.0.3": (
+        "26a5784ded40c9e318cfc2bdb30fe164bdb8665ded9cd64d500a34fb42067b1c",
+        "d6dd0be5b5b189d31db7cda48b91d7e0a9795f31430b7f271219ab30f1d3ac9d",
+    ),
+    "multidict==6.7.1": (
+        "fcee94dfbd638784645b066074b338bc9cc155d4b4bffa4adce1615c5a426c19",
+        "bfde23ef6ed9db7eaee6c37dcec08524cb43903c60b285b172b6c094711b3961",
+    ),
+    "pillow==12.3.0": (
+        "a2b55dd6b2a4c4b7d87ffa56bdb33fdc5fdb9a462173861a7bc097f17d91cb09",
+        "78cb2c6865a35ab8ff8b75fd122f6033b92a62c82801110e48ddd6c936a45d91",
+    ),
+    "propcache==0.5.2": (
+        "d9ee8826a7d47863a08ac44e1a5f611a462eefc3a194b492da242128bec75b42",
+        "6f328175a2cde1f0ff2c4ed8ce968b9dcfb55f3a7153f39e2957ed994da13476",
+    ),
+    "pydantic-core==2.46.4": (
+        "e9c26f834c65f5752f3f06cb08cb86a913ceb7274d0db6e267808a708b46bc89",
+        "926c9541b14b12b1681dca8a0b75feb510b06c6341b70a8e500c2fdcff837cce",
+    ),
+    "pyyaml==6.0.3": (
+        "5fcd34e47f6e0b794d17de1b4ff496c00986e1c83f7ab2fb8fcfe9616ff7477b",
+        "ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc",
+    ),
+    "yarl==1.24.5": (
+        "a929d878fec099030c292803b31e5d5540a7b6a31e6a3cc76cb4685fc2a2f51b",
+        "f08c7513ecef5aad65687bfdf6bc601ae9fccd04a42904501f8f7141abad9eb9",
+    ),
+}
 
 
 def _load_generator():
@@ -97,6 +144,19 @@ def test_project_targets_only_python_312_and_httpx2() -> None:
 @pytest.mark.parametrize("path", [RUNTIME_LOCK, TEST_LOCK])
 def test_lock_is_exact_hashed_deterministic_utf8_lf(path: Path) -> None:
     _assert_lock_contract(path)
+
+
+@pytest.mark.parametrize("path", [RUNTIME_LOCK, TEST_LOCK])
+def test_lock_covers_windows_and_linux_compiled_artifacts(path: Path) -> None:
+    requirements = _logical_requirements(path.read_text(encoding="utf-8"))
+    by_pin = {requirement.split()[0]: requirement for requirement in requirements}
+
+    for pin, expected_hashes in COMPILED_TARGET_HASHES.items():
+        assert set(SHA256_RE.findall(by_pin[pin])) == set(expected_hashes)
+    assert (
+        "# Platform policy: CPython 3.12 on Windows AMD64 and Linux x86_64 "
+        "(glibc 2.39); binary wheels only"
+    ) in path.read_text(encoding="utf-8")
 
 
 def test_test_lock_contains_runtime_and_exact_httpx2() -> None:
@@ -212,7 +272,114 @@ def test_resolver_rejects_unsafe_requirements_before_environment_or_pip(
     monkeypatch.setattr(generator.subprocess, "run", forbidden_boundary)
 
     with pytest.raises(ValueError, match="unsafe requirement"):
-        generator.resolve([unsafe_requirement])
+        generator.resolve([unsafe_requirement], generator.WINDOWS_AMD64_TARGET)
+    assert boundary_calls == []
+
+
+def test_resolver_runs_explicit_windows_and_linux_targets_and_merges_hashes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generator = _load_generator()
+    commands: list[list[str]] = []
+    target_hashes = {
+        "win_amd64": "a" * 64,
+        "manylinux_2_39_x86_64": "b" * 64,
+    }
+
+    def fake_create(_builder, directory: Path) -> None:
+        (directory / "Scripts").mkdir(parents=True)
+
+    def fake_run(command, **kwargs) -> None:
+        commands.append(command)
+        platform_name = command[command.index("--platform") + 1]
+        report_path = Path(command[command.index("--report") + 1])
+        report_path.write_text(
+            json.dumps(
+                {
+                    "install": [
+                        {
+                            "metadata": {"name": "Demo_Package", "version": "1.0"},
+                            "download_info": {
+                                "url": (
+                                    "https://files.pythonhosted.org/packages/"
+                                    f"demo-{platform_name}.whl"
+                                ),
+                                "archive_info": {
+                                    "hashes": {"sha256": target_hashes[platform_name]}
+                                },
+                            },
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(generator.venv.EnvBuilder, "create", fake_create)
+    monkeypatch.setattr(generator.subprocess, "run", fake_run)
+
+    resolved = generator.resolve_for_targets(["demo-package==1.0"])
+
+    assert resolved == [
+        generator.ResolvedPackage("demo-package", "1.0", ("a" * 64, "b" * 64))
+    ]
+    assert len(commands) == 2
+    for command, platform_name in zip(
+        commands,
+        ("win_amd64", "manylinux_2_39_x86_64"),
+        strict=True,
+    ):
+        assert command[command.index("--platform") + 1] == platform_name
+        assert command[command.index("--implementation") + 1] == "cp"
+        assert command[command.index("--python-version") + 1] == "3.12"
+        assert command[command.index("--abi") + 1] == "cp312"
+        assert "--only-binary=:all:" in command
+
+
+def test_cross_target_version_disagreement_fails_closed() -> None:
+    generator = _load_generator()
+
+    with pytest.raises(RuntimeError, match="different versions"):
+        generator.merge_resolved_packages(
+            [generator.ResolvedPackage("Demo_Package", "1.0", ("a" * 64,))],
+            [generator.ResolvedPackage("demo-package", "2.0", ("b" * 64,))],
+        )
+
+
+@pytest.mark.parametrize(
+    ("platform_name", "python_version", "abi"),
+    [
+        ("win32", "3.12", "cp312"),
+        ("manylinux_2_39_aarch64", "3.12", "cp312"),
+        ("win_amd64", "3.11", "cp311"),
+        ("win_amd64", "3.12", "abi3"),
+    ],
+)
+def test_resolver_rejects_incompatible_target_declarations_before_pip(
+    monkeypatch: pytest.MonkeyPatch,
+    platform_name: str,
+    python_version: str,
+    abi: str,
+) -> None:
+    generator = _load_generator()
+    boundary_calls: list[str] = []
+
+    def forbidden_boundary(*args, **kwargs):
+        boundary_calls.append("called")
+        raise AssertionError("resolver boundary must not run")
+
+    monkeypatch.setattr(generator.venv.EnvBuilder, "create", forbidden_boundary)
+    monkeypatch.setattr(generator.subprocess, "run", forbidden_boundary)
+    target = generator.ResolverTarget(
+        "unapproved",
+        platform_name,
+        "cp",
+        python_version,
+        abi,
+    )
+
+    with pytest.raises(RuntimeError, match="approved resolver target"):
+        generator.resolve(["demo==1.0"], target)
     assert boundary_calls == []
 
 
@@ -338,7 +505,7 @@ def test_main_resolves_and_renders_both_locks_before_publication(
             raise RuntimeError("injected test-lock resolution failure")
         return [package]
 
-    monkeypatch.setattr(generator, "resolve", fail_second_resolve)
+    monkeypatch.setattr(generator, "resolve_for_targets", fail_second_resolve)
 
     with pytest.raises(RuntimeError, match="injected test-lock resolution failure"):
         generator.main(["--runtime", str(runtime), "--test", str(test)])

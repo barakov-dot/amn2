@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -45,6 +46,8 @@ from app.vpn.amneziawg_v3.config import HeaderProtectionSecretRef
 from app.vpn.protocol_versions import ProtocolVersion, config_version_for_protocol
 
 
+_PHASE15_PACKAGE_ID = "phase15-dual-protocol-bootstrap-20260811-001"
+_CANONICAL_GIT_SOURCE_HEAD = re.compile(r"[0-9a-f]{40}\Z")
 _MAX_PROVIDER_BYTES = 65_536
 _MAX_HPK_BYTES = 4_096
 _MAX_PROVIDER_ROWS = 100
@@ -493,6 +496,12 @@ def build_phase15_awg3_components(
 
 def _load_snapshot(settings: Settings, repo: Repository) -> _BootstrapSnapshot:
     try:
+        if settings.awg3_expected_package_id != _PHASE15_PACKAGE_ID:
+            raise ValueError("package identity")
+        if _CANONICAL_GIT_SOURCE_HEAD.fullmatch(
+            settings.awg3_expected_source_head
+        ) is None:
+            raise ValueError("source identity")
         runtime_payload = _read_json_object(
             settings.awg3_runtime_provider_path,
             "AWG3 runtime provider",

@@ -24,7 +24,10 @@ GENERATION_COMMAND = (
     "--runtime requirements/phase15-runtime-py312.lock "
     "--test requirements/phase15-test-py312.lock"
 )
-PLATFORM_POLICY = "CPython 3.12 on Windows AMD64; binary wheels only"
+PLATFORM_POLICY = (
+    "CPython 3.12 on Windows AMD64 and Linux x86_64 (glibc 2.39); "
+    "binary wheels only"
+)
 PIN_RE = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:\[[A-Za-z0-9,._-]+\])?==[^\s<>=!~@]+$"
 )
@@ -55,6 +58,30 @@ class ResolvedPackage(NamedTuple):
     name: str
     version: str
     hashes: tuple[str, ...]
+
+
+class ResolverTarget(NamedTuple):
+    name: str
+    platform: str
+    implementation: str
+    python_version: str
+    abi: str
+
+
+WINDOWS_AMD64_TARGET = ResolverTarget(
+    "windows-amd64", "win_amd64", "cp", "3.12", "cp312"
+)
+LINUX_X86_64_GLIBC_239_TARGET = ResolverTarget(
+    "linux-x86-64-glibc-2.39",
+    "manylinux_2_39_x86_64",
+    "cp",
+    "3.12",
+    "cp312",
+)
+RESOLVER_TARGETS = (
+    WINDOWS_AMD64_TARGET,
+    LINUX_X86_64_GLIBC_239_TARGET,
+)
 
 
 def canonicalize_name(name: str) -> str:
@@ -199,9 +226,28 @@ def _resolver_environment() -> dict[str, str]:
     return environment
 
 
-def resolve(requirements: Sequence[str]) -> list[ResolvedPackage]:
+def _resolver_target_args(target: ResolverTarget) -> list[str]:
+    if target not in RESOLVER_TARGETS:
+        raise RuntimeError(f"unapproved resolver target declaration: {target!r}")
+    return [
+        "--platform",
+        target.platform,
+        "--implementation",
+        target.implementation,
+        "--python-version",
+        target.python_version,
+        "--abi",
+        target.abi,
+    ]
+
+
+def resolve(
+    requirements: Sequence[str],
+    target: ResolverTarget,
+) -> list[ResolvedPackage]:
     ensure_python_312()
     validate_source_requirements(requirements)
+    target_args = _resolver_target_args(target)
     with tempfile.TemporaryDirectory(prefix="phase15-lock-") as raw_directory:
         directory = Path(raw_directory)
         venv.EnvBuilder(with_pip=True, clear=True).create(directory)
@@ -217,6 +263,7 @@ def resolve(requirements: Sequence[str]) -> list[ResolvedPackage]:
             "--dry-run",
             "--ignore-installed",
             "--only-binary=:all:",
+            *target_args,
             "--index-url",
             INDEX_URL,
             "--report",
@@ -247,6 +294,36 @@ def resolve(requirements: Sequence[str]) -> list[ResolvedPackage]:
             ResolvedPackage(metadata["name"], metadata["version"], (digest,))
         )
     return resolved
+
+
+def merge_resolved_packages(
+    *target_packages: Sequence[ResolvedPackage],
+) -> list[ResolvedPackage]:
+    merged: dict[str, tuple[str, set[str]]] = {}
+    for packages in target_packages:
+        for package in packages:
+            name = canonicalize_name(package.name)
+            current = merged.get(name)
+            if current is None:
+                merged[name] = (package.version, set(package.hashes))
+                continue
+            version, hashes = current
+            if package.version != version:
+                raise RuntimeError(
+                    f"resolver targets selected different versions for {name}: "
+                    f"{version} != {package.version}"
+                )
+            hashes.update(package.hashes)
+    return [
+        ResolvedPackage(name, version, tuple(sorted(hashes)))
+        for name, (version, hashes) in sorted(merged.items())
+    ]
+
+
+def resolve_for_targets(requirements: Sequence[str]) -> list[ResolvedPackage]:
+    return merge_resolved_packages(
+        *(resolve(requirements, target) for target in RESOLVER_TARGETS)
+    )
 
 
 def _project_requirements() -> tuple[list[str], list[str]]:
@@ -341,8 +418,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     ensure_python_312()
     _ensure_distinct_destinations(args.runtime, args.test)
     runtime_requirements, test_requirements = _project_requirements()
-    runtime_packages = resolve(runtime_requirements)
-    test_packages = resolve(test_requirements)
+    runtime_packages = resolve_for_targets(runtime_requirements)
+    test_packages = resolve_for_targets(test_requirements)
     runtime_content = render_lock(runtime_packages, "runtime")
     test_content = render_lock(test_packages, "test")
     publish_lock_pair(args.runtime, args.test, runtime_content, test_content)
