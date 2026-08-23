@@ -130,7 +130,6 @@ CREATE TABLE protocol_issuance_confirmations (
         REFERENCES telegram_callback_handles(
             handle_digest, owner_user_id, passport_device_id
     ),
-    FOREIGN KEY(issuance_attempt_id) REFERENCES protocol_issuance_attempts(id),
     FOREIGN KEY(owner_user_id) REFERENCES users(id),
     FOREIGN KEY(passport_device_id) REFERENCES device_passports(device_id)
 )
@@ -156,11 +155,6 @@ D827_CALLBACK_TABLE_SQL = (
 PRE_BINDING_CONFIRMATION_TABLE_SQL = (
     CREATE_CONFIRMATION_TABLE_SQL.replace("    issuance_attempt_id INTEGER,\n", "")
     .replace("    UNIQUE(issuance_attempt_id),\n", "")
-    .replace(
-        "    FOREIGN KEY(issuance_attempt_id) "
-        "REFERENCES protocol_issuance_attempts(id),\n",
-        "",
-    )
 )
 D827_CONFIRMATION_TABLE_SQL = (
     PRE_BINDING_CONFIRMATION_TABLE_SQL.replace(
@@ -299,8 +293,9 @@ def _ensure_phase15_bootstrap_schema_locked(conn: sqlite3.Connection) -> None:
         callback_columns == CALLBACK_COLUMNS
         and confirmation_columns == CONFIRMATION_COLUMNS
     ):
-        if _is_exact_d827_predecessor_shape(conn):
-            _upgrade_d827_schema(conn)
+        if _issuance_attempt_foreign_key_targets(conn):
+            _validate_fix6_predecessor_shape(conn)
+            _upgrade_fix6_confirmation_schema(conn)
             return
         _validate_canonical_shape(conn)
         _ensure_phase15_objects(conn)
@@ -369,6 +364,41 @@ def _upgrade_prebinding_schema(conn: sqlite3.Connection) -> None:
         include_claim_state=True,
         drop_d827_device_owner_index=False,
     )
+
+
+def _upgrade_fix6_confirmation_schema(conn: sqlite3.Connection) -> None:
+    _, confirmation_count = _prevalidate_rows(conn, include_claim_state=True)
+    for index_name in (
+        "idx_protocol_issuance_confirmations_owner_passport",
+        "idx_protocol_issuance_confirmations_selection_handle",
+        "idx_protocol_issuance_confirmations_expires_at",
+    ):
+        conn.execute(f"DROP INDEX IF EXISTS {index_name}")
+    conn.execute(
+        "ALTER TABLE protocol_issuance_confirmations "
+        "RENAME TO protocol_issuance_confirmations_legacy"
+    )
+    conn.execute(CREATE_CONFIRMATION_TABLE_SQL)
+    confirmation_columns = ", ".join(CONFIRMATION_COLUMNS)
+    conn.execute(
+        f"INSERT INTO protocol_issuance_confirmations ({confirmation_columns}) "
+        f"SELECT {confirmation_columns} "
+        "FROM protocol_issuance_confirmations_legacy"
+    )
+    copied_confirmation_count = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM protocol_issuance_confirmations"
+        ).fetchone()[0]
+    )
+    if copied_confirmation_count != confirmation_count:
+        raise RuntimeError("phase15 bootstrap migration row count mismatch")
+    conn.execute("DROP TABLE protocol_issuance_confirmations_legacy")
+    _ensure_phase15_objects(conn)
+    violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if violations:
+        raise sqlite3.IntegrityError(
+            f"foreign key violations after phase15 migration: {violations!r}"
+        )
 
 
 def _rebuild_phase15_schema(
@@ -642,16 +672,44 @@ def _validate_legacy_shape(conn: sqlite3.Connection) -> None:
 
 
 def _validate_prebinding_shape(conn: sqlite3.Connection) -> None:
-    _validate_claimed_shape(conn, require_attempt_binding=False)
+    _validate_claimed_shape(conn)
 
 
 def _validate_canonical_shape(conn: sqlite3.Connection) -> None:
-    _validate_claimed_shape(conn, require_attempt_binding=True)
+    _validate_claimed_shape(conn)
+    if _issuance_attempt_foreign_key_targets(conn):
+        raise RuntimeError("unsupported phase15 cross-phase attempt binding")
+    _validate_attempt_binding_unique(conn)
 
 
-def _validate_claimed_shape(
-    conn: sqlite3.Connection, *, require_attempt_binding: bool
-) -> None:
+def _validate_fix6_predecessor_shape(conn: sqlite3.Connection) -> None:
+    _validate_claimed_shape(conn)
+    attempt_targets = _issuance_attempt_foreign_key_targets(conn)
+    if attempt_targets not in (
+        ("protocol_issuance_attempts",),
+        ("protocol_issuance_attempts_legacy",),
+    ):
+        raise RuntimeError("unsupported phase15 issuance attempt binding")
+    if not _has_foreign_key(
+        conn,
+        "protocol_issuance_confirmations",
+        attempt_targets[0],
+        (("issuance_attempt_id", "id"),),
+    ):
+        raise RuntimeError("unsupported phase15 issuance attempt binding")
+    _validate_attempt_binding_unique(conn)
+
+
+def _validate_attempt_binding_unique(conn: sqlite3.Connection) -> None:
+    if not _has_unique_index(
+        conn,
+        "protocol_issuance_confirmations",
+        ("issuance_attempt_id",),
+    ):
+        raise RuntimeError("unsupported phase15 issuance attempt binding")
+
+
+def _validate_claimed_shape(conn: sqlite3.Connection) -> None:
     if not _has_unique_index(
         conn,
         "telegram_callback_handles",
@@ -694,20 +752,6 @@ def _validate_claimed_shape(
         for table, target, columns in required_foreign_keys
     ):
         raise RuntimeError("unsupported phase15 owner binding constraints")
-    if require_attempt_binding and (
-        not _has_foreign_key(
-            conn,
-            "protocol_issuance_confirmations",
-            "protocol_issuance_attempts",
-            (("issuance_attempt_id", "id"),),
-        )
-        or not _has_unique_index(
-            conn,
-            "protocol_issuance_confirmations",
-            ("issuance_attempt_id",),
-        )
-    ):
-        raise RuntimeError("unsupported phase15 issuance attempt binding")
     required_triggers = {
         "trg_phase15_callback_owner_passport_insert",
         "trg_phase15_callback_owner_passport_update",
@@ -774,11 +818,25 @@ def _has_foreign_key(
     return any(group == expected for group in groups.values())
 
 
+def _issuance_attempt_foreign_key_targets(
+    conn: sqlite3.Connection,
+) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            str(row[2])
+            for row in conn.execute(
+                "PRAGMA foreign_key_list(protocol_issuance_confirmations)"
+            )
+            if str(row[3]) == "issuance_attempt_id"
+        )
+    )
+
+
 def _has_unique_index(
     conn: sqlite3.Connection, table: str, columns: tuple[str, ...]
 ) -> bool:
     for row in conn.execute(f"PRAGMA index_list({table})"):
-        if not int(row[2]):
+        if not int(row[2]) or int(row[4]):
             continue
         actual = tuple(
             str(index_row[2])

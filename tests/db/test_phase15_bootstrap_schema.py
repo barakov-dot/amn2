@@ -271,6 +271,114 @@ def reserve_attempt(
     )
 
 
+def install_fix6_confirmation_schema(
+    connection: sqlite3.Connection, *, partial_attempt_unique: bool = False
+) -> None:
+    connection.execute("DROP TABLE protocol_issuance_confirmations")
+    confirmation_sql = phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL
+    attempt_foreign_key = (
+        "    FOREIGN KEY(issuance_attempt_id) "
+        "REFERENCES protocol_issuance_attempts(id),\n"
+    )
+    if attempt_foreign_key not in confirmation_sql:
+        confirmation_sql = confirmation_sql.replace(
+            "    FOREIGN KEY(owner_user_id) REFERENCES users(id),\n",
+            attempt_foreign_key
+            + "    FOREIGN KEY(owner_user_id) REFERENCES users(id),\n",
+        )
+    if partial_attempt_unique:
+        confirmation_sql = confirmation_sql.replace(
+            "    UNIQUE(issuance_attempt_id),\n", ""
+        )
+    connection.execute(confirmation_sql)
+    if partial_attempt_unique:
+        connection.execute(
+            "CREATE UNIQUE INDEX uq_phase15_attempt_binding_partial "
+            "ON protocol_issuance_confirmations(issuance_attempt_id) "
+            "WHERE issuance_attempt_id IS NULL"
+        )
+    phase15_bootstrap._ensure_phase15_objects(connection)
+    connection.commit()
+
+
+def replace_attempt_table_with_legacy(
+    connection: sqlite3.Connection, attempt: sqlite3.Row
+) -> None:
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.execute("DROP INDEX uq_protocol_issuance_blocking_attempt")
+    connection.execute("DROP TABLE protocol_issuance_attempts")
+    connection.executescript(
+        """
+        CREATE TABLE protocol_issuance_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            passport_device_id TEXT NOT NULL,
+            protocol_version TEXT NOT NULL,
+            request_fingerprint TEXT NOT NULL,
+            actor_kind TEXT NOT NULL,
+            actor_id INTEGER NOT NULL,
+            client_application TEXT NOT NULL,
+            client_platform TEXT NOT NULL,
+            client_version TEXT NOT NULL,
+            client_build TEXT,
+            runtime_instance_id TEXT,
+            compatibility_evidence_id TEXT,
+            state TEXT NOT NULL DEFAULT 'reserved',
+            local_device_id INTEGER,
+            reason_code TEXT,
+            reserved_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            completed_at TEXT,
+            cancelled_at TEXT,
+            recovery_required_at TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE UNIQUE INDEX uq_protocol_issuance_blocking_attempt
+        ON protocol_issuance_attempts(passport_device_id, protocol_version)
+        WHERE state IN ('reserved','recovery_required');
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO protocol_issuance_attempts (
+            id, passport_device_id, protocol_version, request_fingerprint,
+            actor_kind, actor_id, client_application, client_platform,
+            client_version, client_build, runtime_instance_id,
+            compatibility_evidence_id, state, local_device_id, reason_code,
+            reserved_at, completed_at, cancelled_at, recovery_required_at,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        tuple(
+            attempt[column]
+            for column in (
+                "id",
+                "passport_device_id",
+                "protocol_version",
+                "request_fingerprint",
+                "actor_kind",
+                "actor_id",
+                "client_application",
+                "client_platform",
+                "client_version",
+                "client_build",
+                "runtime_instance_id",
+                "compatibility_evidence_id",
+                "state",
+                "local_device_id",
+                "reason_code",
+                "reserved_at",
+                "completed_at",
+                "cancelled_at",
+                "recovery_required_at",
+                "created_at",
+                "updated_at",
+            )
+        ),
+    )
+    connection.commit()
+
+
 def seed_exact_d827_schema(connection: sqlite3.Connection) -> int:
     owner_user_id = seed_owner_and_passport(connection)
     connection.executescript(
@@ -485,7 +593,7 @@ def test_phase15_schema_is_idempotent_additive_and_indexed(database_path) -> Non
             "protocol_issuance_attempts",
             "issuance_attempt_id",
             "id",
-        ) in confirmation_foreign_keys
+        ) not in confirmation_foreign_keys
         assert connection.execute(
             "SELECT owner_user_id FROM device_passports "
             "WHERE device_id = 'passport-phase15'"
@@ -939,6 +1047,184 @@ def test_two_initializers_classify_after_lock_and_preserve_claim_values(
         )
     finally:
         verified.close()
+
+
+def test_phase14_legacy_attempt_migration_preserves_fix6_confirmation_binding(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        owner_user_id = seed_owner_and_passport(connection)
+        repo = Repository(connection)
+        repo.create_callback_handle(**callback_values(owner_user_id))
+        repo.create_issuance_confirmation(**confirmation_values(owner_user_id))
+        assert repo.claim_issuance_confirmation(
+            "b" * 64,
+            owner_user_id,
+            NOW,
+            claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+            claim_expires_at=CLAIM_EXPIRES_AT,
+        ) is not None
+        attempt = reserve_attempt(repo, owner_user_id, protocol_version="awg3")
+        assert attempt is not None
+        assert repo.bind_issuance_confirmation_attempt(
+            "b" * 64,
+            owner_user_id,
+            claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+            attempt_id=int(attempt["id"]),
+        ) is not None
+        confirmation_before = tuple(
+            connection.execute(
+                "SELECT * FROM protocol_issuance_confirmations"
+            ).fetchone()
+        )
+        replace_attempt_table_with_legacy(connection, attempt)
+
+        initialize_schema(connection)
+        initialize_schema(connection)
+
+        confirmation_after = connection.execute(
+            "SELECT * FROM protocol_issuance_confirmations"
+        ).fetchone()
+        migrated_attempt = connection.execute(
+            "SELECT * FROM protocol_issuance_attempts WHERE id = ?",
+            (attempt["id"],),
+        ).fetchone()
+        assert tuple(confirmation_after) == confirmation_before
+        assert confirmation_after["issuance_attempt_id"] == migrated_attempt["id"]
+        assert migrated_attempt["owner_user_id"] == owner_user_id
+        assert migrated_attempt["intended_passport_device_id"] == "passport-phase15"
+        assert connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'protocol_issuance_attempts_legacy'"
+        ).fetchone() is None
+        assert {
+            str(row[2])
+            for row in connection.execute(
+                "PRAGMA foreign_key_list(protocol_issuance_confirmations)"
+            )
+        }.isdisjoint(
+            {"protocol_issuance_attempts", "protocol_issuance_attempts_legacy"}
+        )
+        assert int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) == 0
+        connection.execute("PRAGMA foreign_keys = ON")
+        assert list(connection.execute("PRAGMA foreign_key_check")) == []
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("foreign_keys_enabled", [0, 1])
+def test_fix6_confirmation_fk_predecessor_upgrades_without_value_loss(
+    database_path, foreign_keys_enabled
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        owner_user_id = seed_owner_and_passport(connection)
+        install_fix6_confirmation_schema(connection)
+        repo = Repository(connection)
+        repo.create_callback_handle(**callback_values(owner_user_id))
+        repo.create_issuance_confirmation(**confirmation_values(owner_user_id))
+        assert repo.claim_issuance_confirmation(
+            "b" * 64,
+            owner_user_id,
+            NOW,
+            claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+            claim_expires_at=CLAIM_EXPIRES_AT,
+        ) is not None
+        attempt = reserve_attempt(repo, owner_user_id, protocol_version="awg3")
+        assert attempt is not None
+        assert repo.bind_issuance_confirmation_attempt(
+            "b" * 64,
+            owner_user_id,
+            claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+            attempt_id=int(attempt["id"]),
+        ) is not None
+        before = tuple(
+            connection.execute(
+                "SELECT * FROM protocol_issuance_confirmations"
+            ).fetchone()
+        )
+        connection.execute(f"PRAGMA foreign_keys = {foreign_keys_enabled}")
+
+        phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+        phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+
+        after = connection.execute(
+            "SELECT * FROM protocol_issuance_confirmations"
+        ).fetchone()
+        assert tuple(after) == before
+        assert after["issuance_attempt_id"] == attempt["id"]
+        assert {
+            str(row[2])
+            for row in connection.execute(
+                "PRAGMA foreign_key_list(protocol_issuance_confirmations)"
+            )
+        }.isdisjoint(
+            {"protocol_issuance_attempts", "protocol_issuance_attempts_legacy"}
+        )
+        assert int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) == (
+            foreign_keys_enabled
+        )
+        assert list(connection.execute("PRAGMA foreign_key_check")) == []
+    finally:
+        connection.close()
+
+
+def test_partial_attempt_binding_unique_is_rejected(database_path) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        install_fix6_confirmation_schema(connection, partial_attempt_unique=True)
+
+        with pytest.raises(RuntimeError, match="issuance attempt binding"):
+            phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+    finally:
+        connection.close()
+
+
+def test_canonical_attempt_binding_unique_rejects_second_non_null_binding(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        owner_user_id = seed_owner_and_passport(connection)
+        repo = Repository(connection)
+        repo.create_callback_handle(**callback_values(owner_user_id))
+        repo.create_issuance_confirmation(**confirmation_values(owner_user_id))
+        second_callback = callback_values(owner_user_id, suffix="c")
+        repo.create_callback_handle(**second_callback)
+        second_confirmation = confirmation_values(
+            owner_user_id,
+            suffix="d",
+            selection_handle_digest="c" * 64,
+        )
+        repo.create_issuance_confirmation(**second_confirmation)
+        attempt = reserve_attempt(repo, owner_user_id, protocol_version="awg3")
+        assert attempt is not None
+
+        connection.execute(
+            "UPDATE protocol_issuance_confirmations SET issuance_attempt_id = ? "
+            "WHERE token_digest = ?",
+            (attempt["id"], "b" * 64),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE protocol_issuance_confirmations "
+                "SET issuance_attempt_id = ? WHERE token_digest = ?",
+                (attempt["id"], "d" * 64),
+            )
+        assert connection.execute(
+            "SELECT issuance_attempt_id FROM protocol_issuance_confirmations "
+            "WHERE token_digest = ?",
+            ("b" * 64,),
+        ).fetchone()[0] == attempt["id"]
+        assert connection.execute(
+            "SELECT issuance_attempt_id FROM protocol_issuance_confirmations "
+            "WHERE token_digest = ?",
+            ("d" * 64,),
+        ).fetchone()[0] is None
+    finally:
+        connection.close()
 
 
 def test_expired_callback_state_terminal_consume_is_owner_bound(database_path) -> None:
