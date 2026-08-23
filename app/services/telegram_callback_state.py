@@ -243,6 +243,19 @@ class TelegramCallbackStateService:
             is not None
         )
 
+    def renew_confirmation(self, state: TelegramConfirmationState) -> bool:
+        now = self._utc_now()
+        return (
+            self._repo.renew_issuance_confirmation_claim(
+                state.token_digest,
+                state.owner_user_id,
+                _timestamp(now),
+                claim_id_digest=state.claim_id_digest,
+                claim_expires_at=_timestamp(now + _CLAIM_TTL),
+            )
+            is not None
+        )
+
     def consume_confirmation(
         self, state: TelegramConfirmationState, *, terminal_reason: str
     ) -> bool:

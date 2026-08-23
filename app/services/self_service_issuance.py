@@ -266,6 +266,13 @@ class SelfServiceIssuanceService:
                     else None
                 )
             assert admission is not None
+            if not self._callback_state.renew_confirmation(confirmation):
+                expired = self._blocked(resolved_request, "confirmation_expired")
+                return (
+                    expired
+                    if self._finish_confirmation(confirmation, expired)
+                    else None
+                )
             result = self._reserve_and_issue_serialized(
                 resolved_request,
                 admission,

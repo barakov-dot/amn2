@@ -1132,6 +1132,51 @@ class Repository:
         )
         return row
 
+    def renew_issuance_confirmation_claim(
+        self,
+        token_digest: str,
+        owner_user_id: int,
+        now: str,
+        *,
+        claim_id_digest: str,
+        claim_expires_at: str,
+    ) -> sqlite3.Row | None:
+        _require_sha256_digest(token_digest, "token_digest")
+        _require_sha256_digest(claim_id_digest, "claim_id_digest")
+        if claim_expires_at <= now:
+            raise ValueError("claim_expires_at must be later than now")
+        with self.transaction():
+            cursor = self._conn.execute(
+                """
+                UPDATE protocol_issuance_confirmations
+                SET claim_expires_at = ?
+                WHERE token_digest = ?
+                  AND owner_user_id = ?
+                  AND consumed_at IS NULL
+                  AND expires_at > ?
+                  AND claim_id_digest = ?
+                """,
+                (
+                    claim_expires_at,
+                    token_digest,
+                    owner_user_id,
+                    now,
+                    claim_id_digest,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM protocol_issuance_confirmations "
+                "WHERE token_digest = ?",
+                (token_digest,),
+            ).fetchone()
+            assert row is not None
+        self._active_phase15_claims.add(
+            ("confirmation", token_digest, claim_id_digest)
+        )
+        return row
+
     def consume_issuance_confirmation(
         self,
         token_digest: str,
@@ -1319,6 +1364,8 @@ class Repository:
         row: Mapping[str, Any],
         now: str,
     ) -> bool:
+        if row_kind == "confirmation" and self._confirmation_has_durable_attempt(row):
+            return False
         claim_digest = row["claim_id_digest"]
         if claim_digest is None:
             return (
@@ -1331,6 +1378,28 @@ class Repository:
             and str(claim_expires_at) <= now
             and (row_kind, row_digest, str(claim_digest))
             not in self._active_phase15_claims
+        )
+
+    def _confirmation_has_durable_attempt(self, row: Mapping[str, Any]) -> bool:
+        return (
+            self._conn.execute(
+                """
+                SELECT 1
+                FROM protocol_issuance_attempts
+                WHERE owner_user_id = ?
+                  AND intended_passport_device_id = ?
+                  AND protocol_version = 'awg3'
+                  AND request_fingerprint = ?
+                  AND state IN ('reserved', 'recovery_required', 'completed')
+                LIMIT 1
+                """,
+                (
+                    row["owner_user_id"],
+                    row["passport_device_id"],
+                    row["request_fingerprint"],
+                ),
+            ).fetchone()
+            is not None
         )
 
     def reserve_protocol_issuance_attempt(

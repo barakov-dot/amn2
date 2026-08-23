@@ -248,6 +248,24 @@ TRIGGER_SQL = (
 
 
 def ensure_phase15_bootstrap_schema(conn: sqlite3.Connection) -> None:
+    if conn.in_transaction:
+        raise RuntimeError("phase15 bootstrap schema requires no active transaction")
+
+    foreign_keys_enabled = int(conn.execute("PRAGMA foreign_keys").fetchone()[0])
+    try:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("BEGIN IMMEDIATE")
+        _ensure_phase15_bootstrap_schema_locked(conn)
+        conn.commit()
+    except BaseException:
+        if conn.in_transaction:
+            conn.rollback()
+        raise
+    finally:
+        conn.execute(f"PRAGMA foreign_keys = {foreign_keys_enabled}")
+
+
+def _ensure_phase15_bootstrap_schema_locked(conn: sqlite3.Connection) -> None:
     callback_columns = _column_names(conn, "telegram_callback_handles")
     confirmation_columns = _column_names(conn, "protocol_issuance_confirmations")
     legacy_copy_exists = any(
@@ -327,85 +345,71 @@ def _rebuild_phase15_schema(
     include_claim_state: bool,
     drop_d827_device_owner_index: bool,
 ) -> None:
-    if conn.in_transaction:
-        raise RuntimeError("phase15 bootstrap upgrade requires no active transaction")
+    if drop_d827_device_owner_index:
+        _validate_exact_d827_predecessor_shape(conn)
+    callback_count, confirmation_count = _prevalidate_rows(
+        conn,
+        include_claim_state=include_claim_state,
+    )
 
-    foreign_keys_enabled = int(conn.execute("PRAGMA foreign_keys").fetchone()[0])
-    try:
-        conn.execute("PRAGMA foreign_keys = OFF")
-        conn.execute("BEGIN IMMEDIATE")
-        if drop_d827_device_owner_index:
-            _validate_exact_d827_predecessor_shape(conn)
-        callback_count, confirmation_count = _prevalidate_rows(
-            conn,
-            include_claim_state=include_claim_state,
-        )
+    for index_name in (
+        "idx_protocol_issuance_confirmations_owner_passport",
+        "idx_protocol_issuance_confirmations_selection_handle",
+        "idx_protocol_issuance_confirmations_expires_at",
+        "idx_telegram_callback_handles_owner_passport",
+        "idx_telegram_callback_handles_expires_at",
+    ):
+        conn.execute(f"DROP INDEX IF EXISTS {index_name}")
+    if drop_d827_device_owner_index:
+        conn.execute("DROP INDEX uq_device_passports_device_owner")
+        _validate_d827_index_drop(conn)
 
-        for index_name in (
-            "idx_protocol_issuance_confirmations_owner_passport",
-            "idx_protocol_issuance_confirmations_selection_handle",
-            "idx_protocol_issuance_confirmations_expires_at",
-            "idx_telegram_callback_handles_owner_passport",
-            "idx_telegram_callback_handles_expires_at",
-        ):
-            conn.execute(f"DROP INDEX IF EXISTS {index_name}")
-        if drop_d827_device_owner_index:
-            conn.execute("DROP INDEX uq_device_passports_device_owner")
-            _validate_d827_index_drop(conn)
+    conn.execute(
+        "ALTER TABLE protocol_issuance_confirmations "
+        "RENAME TO protocol_issuance_confirmations_legacy"
+    )
+    conn.execute(
+        "ALTER TABLE telegram_callback_handles "
+        "RENAME TO telegram_callback_handles_legacy"
+    )
+    conn.execute(CREATE_CALLBACK_TABLE_SQL)
+    conn.execute(CREATE_CONFIRMATION_TABLE_SQL)
 
+    callback_columns = ", ".join(callback_source_columns)
+    confirmation_columns = ", ".join(confirmation_source_columns)
+    conn.execute(
+        f"INSERT INTO telegram_callback_handles ({callback_columns}) "
+        f"SELECT {callback_columns} FROM telegram_callback_handles_legacy"
+    )
+    conn.execute(
+        f"INSERT INTO protocol_issuance_confirmations ({confirmation_columns}) "
+        f"SELECT {confirmation_columns} "
+        "FROM protocol_issuance_confirmations_legacy"
+    )
+
+    copied_callback_count = int(
+        conn.execute("SELECT COUNT(*) FROM telegram_callback_handles").fetchone()[0]
+    )
+    copied_confirmation_count = int(
         conn.execute(
-            "ALTER TABLE protocol_issuance_confirmations "
-            "RENAME TO protocol_issuance_confirmations_legacy"
-        )
-        conn.execute(
-            "ALTER TABLE telegram_callback_handles "
-            "RENAME TO telegram_callback_handles_legacy"
-        )
-        conn.execute(CREATE_CALLBACK_TABLE_SQL)
-        conn.execute(CREATE_CONFIRMATION_TABLE_SQL)
+            "SELECT COUNT(*) FROM protocol_issuance_confirmations"
+        ).fetchone()[0]
+    )
+    if (
+        copied_callback_count != callback_count
+        or copied_confirmation_count != confirmation_count
+    ):
+        raise RuntimeError("phase15 bootstrap migration row count mismatch")
 
-        callback_columns = ", ".join(callback_source_columns)
-        confirmation_columns = ", ".join(confirmation_source_columns)
-        conn.execute(
-            f"INSERT INTO telegram_callback_handles ({callback_columns}) "
-            f"SELECT {callback_columns} FROM telegram_callback_handles_legacy"
-        )
-        conn.execute(
-            f"INSERT INTO protocol_issuance_confirmations ({confirmation_columns}) "
-            f"SELECT {confirmation_columns} "
-            "FROM protocol_issuance_confirmations_legacy"
-        )
+    conn.execute("DROP TABLE protocol_issuance_confirmations_legacy")
+    conn.execute("DROP TABLE telegram_callback_handles_legacy")
+    _ensure_phase15_objects(conn)
 
-        copied_callback_count = int(
-            conn.execute("SELECT COUNT(*) FROM telegram_callback_handles").fetchone()[0]
+    violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+    if violations:
+        raise sqlite3.IntegrityError(
+            f"foreign key violations after phase15 migration: {violations!r}"
         )
-        copied_confirmation_count = int(
-            conn.execute(
-                "SELECT COUNT(*) FROM protocol_issuance_confirmations"
-            ).fetchone()[0]
-        )
-        if (
-            copied_callback_count != callback_count
-            or copied_confirmation_count != confirmation_count
-        ):
-            raise RuntimeError("phase15 bootstrap migration row count mismatch")
-
-        conn.execute("DROP TABLE protocol_issuance_confirmations_legacy")
-        conn.execute("DROP TABLE telegram_callback_handles_legacy")
-        _ensure_phase15_objects(conn)
-
-        violations = conn.execute("PRAGMA foreign_key_check").fetchall()
-        if violations:
-            raise sqlite3.IntegrityError(
-                f"foreign key violations after phase15 migration: {violations!r}"
-            )
-        conn.commit()
-    except BaseException:
-        if conn.in_transaction:
-            conn.rollback()
-        raise
-    finally:
-        conn.execute(f"PRAGMA foreign_keys = {foreign_keys_enabled}")
 
 
 def _prevalidate_rows(

@@ -91,6 +91,21 @@ EXPECTED_LINUX_PLATFORM_LADDER = (
     "manylinux_2_19_x86_64",
     "manylinux_2_18_x86_64",
     "manylinux_2_17_x86_64",
+    "manylinux2014_x86_64",
+    "manylinux_2_16_x86_64",
+    "manylinux_2_15_x86_64",
+    "manylinux_2_14_x86_64",
+    "manylinux_2_13_x86_64",
+    "manylinux_2_12_x86_64",
+    "manylinux2010_x86_64",
+    "manylinux_2_11_x86_64",
+    "manylinux_2_10_x86_64",
+    "manylinux_2_9_x86_64",
+    "manylinux_2_8_x86_64",
+    "manylinux_2_7_x86_64",
+    "manylinux_2_6_x86_64",
+    "manylinux_2_5_x86_64",
+    "manylinux1_x86_64",
 )
 
 

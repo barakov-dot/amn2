@@ -1126,6 +1126,36 @@ def test_awg3_claimed_confirmation_finalizes_after_row_and_claim_ttl(harness):
     )
 
 
+def test_awg3_confirmation_renewal_failure_stops_before_reservation(
+    harness, monkeypatch
+):
+    issuer = SyntheticIssuer(
+        harness.repo, user_id=harness.user_id, server_id=harness.server_id
+    )
+    service = _service(harness, issuer=issuer)
+    request = _request(harness)
+    token = service.decide(request).token
+    monkeypatch.setattr(
+        service._callback_state,
+        "renew_confirmation",
+        lambda _confirmation: False,
+    )
+
+    result = service.issue_after_confirmation(
+        request, confirmation_token=token
+    )
+
+    assert result.status == "blocked"
+    assert result.reason_code == "confirmation_expired"
+    assert issuer.calls == []
+    assert _attempts(harness) == []
+    row = harness.conn.execute(
+        "SELECT consumed_at, terminal_reason FROM protocol_issuance_confirmations"
+    ).fetchone()
+    assert row["consumed_at"] is not None
+    assert row["terminal_reason"] == "confirmation_expired"
+
+
 def test_awg3_issued_result_fails_closed_when_exact_claim_is_lost(harness):
     issuer = SyntheticIssuer(
         harness.repo, user_id=harness.user_id, server_id=harness.server_id

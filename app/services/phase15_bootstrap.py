@@ -26,6 +26,7 @@ from app.services.client_compatibility import (
     ClientIdentity,
     CompatibilityEvidenceStatus,
     SourceReleaseKind,
+    current_awg3_compatibility_evidence,
 )
 from app.services.config_delivery import build_device_config_delivery
 from app.services.dual_protocol_profiles import DualProtocolProfileService
@@ -157,8 +158,21 @@ def load_phase15_awg3_issuer_material(settings: Settings) -> Awg3IssuerMaterial:
         "AWG3 issuer material provider",
     )
     try:
+        if settings.awg3_expected_package_id != _PHASE15_PACKAGE_ID:
+            raise ValueError("package identity")
+        if _CANONICAL_GIT_SOURCE_HEAD.fullmatch(
+            settings.awg3_expected_source_head
+        ) is None:
+            raise ValueError("source identity")
         _require_exact_fields(payload, _MATERIAL_FIELDS, "AWG3 issuer material")
         identity = _exact_text(payload["provider_identity"], "provider_identity")
+        _require_content_identity(
+            payload,
+            kind="issuer_material",
+            expected_identity=settings.awg3_issuer_material_provider_identity,
+            package_id=settings.awg3_expected_package_id,
+            source_head=settings.awg3_expected_source_head,
+        )
         runtime_instance_id = _exact_text(
             payload["runtime_instance_id"],
             "runtime_instance_id",
@@ -172,8 +186,6 @@ def load_phase15_awg3_issuer_material(settings: Settings) -> Awg3IssuerMaterial:
             payload["header_protection_key_ref"],
             "header_protection_key reference",
         )
-        if identity != settings.awg3_issuer_material_provider_identity:
-            raise ValueError("provider identity mismatch")
         if runtime_instance_id != settings.awg3_expected_runtime_instance_id:
             raise ValueError("runtime_instance_id mismatch")
         if reference != settings.awg3_hpk_secret_reference:
@@ -511,8 +523,13 @@ def _load_snapshot(settings: Settings, repo: Repository) -> _BootstrapSnapshot:
             frozenset({"provider_identity", "runtimes"}),
             "AWG3 runtime provider",
         )
-        if runtime_payload["provider_identity"] != settings.awg3_runtime_provider_identity:
-            raise ValueError("runtime provider identity mismatch")
+        _require_content_identity(
+            runtime_payload,
+            kind="runtime_provider",
+            expected_identity=settings.awg3_runtime_provider_identity,
+            package_id=settings.awg3_expected_package_id,
+            source_head=settings.awg3_expected_source_head,
+        )
         runtime_rows = runtime_payload["runtimes"]
         if (
             not isinstance(runtime_rows, list)
@@ -533,6 +550,23 @@ def _load_snapshot(settings: Settings, repo: Repository) -> _BootstrapSnapshot:
         ):
             raise ValueError("exact AWG3 runtime candidate")
         runtime = awg3_candidates[0]
+        selected_runtime_row = next(
+            row
+            for row in runtime_mappings
+            if row["runtime_instance_id"] == runtime.runtime_instance_id
+            and row["protocol_version"] == "awg3"
+        )
+        runtime_receipt = _exact_text(
+            selected_runtime_row["acceptance_receipt"],
+            "runtime acceptance receipt",
+        )
+        if runtime_receipt != _content_identity(
+            "runtime_acceptance",
+            _without_field(selected_runtime_row, "acceptance_receipt"),
+            package_id=settings.awg3_expected_package_id,
+            source_head=settings.awg3_expected_source_head,
+        ):
+            raise ValueError("runtime acceptance receipt mismatch")
         physical_server = repo.get_server_by_name(settings.server_name)
         if runtime.server_id != int(physical_server["id"]):
             raise ValueError("runtime physical server mismatch")
@@ -546,15 +580,30 @@ def _load_snapshot(settings: Settings, repo: Repository) -> _BootstrapSnapshot:
             frozenset({"provider_identity", "evidence"}),
             "AWG3 evidence provider",
         )
-        if evidence_payload["provider_identity"] != settings.awg3_evidence_provider_identity:
-            raise ValueError("evidence provider identity mismatch")
+        _require_content_identity(
+            evidence_payload,
+            kind="evidence_provider",
+            expected_identity=settings.awg3_evidence_provider_identity,
+            package_id=settings.awg3_expected_package_id,
+            source_head=settings.awg3_expected_source_head,
+        )
         evidence_rows = evidence_payload["evidence"]
         if (
             not isinstance(evidence_rows, list)
             or not 1 <= len(evidence_rows) <= _MAX_PROVIDER_ROWS
         ):
             raise ValueError("evidence")
-        evidence = tuple(_evidence_from_json(_mapping(row, "evidence")) for row in evidence_rows)
+        evidence_mappings = tuple(_mapping(row, "evidence") for row in evidence_rows)
+        for row in evidence_mappings:
+            evidence_id = _exact_text(row.get("evidence_id"), "evidence_id")
+            if evidence_id != _content_identity(
+                "compatibility_evidence",
+                _without_field(row, "evidence_id"),
+                package_id=settings.awg3_expected_package_id,
+                source_head=settings.awg3_expected_source_head,
+            ):
+                raise ValueError("compatibility evidence identity mismatch")
+        evidence = tuple(_evidence_from_json(row) for row in evidence_mappings)
 
         build_payload = _read_json_object(
             settings.awg3_exact_build_provider_path,
@@ -565,8 +614,13 @@ def _load_snapshot(settings: Settings, repo: Repository) -> _BootstrapSnapshot:
             frozenset({"provider_identity", "package_id", "source_head", "client"}),
             "AWG3 exact build provider",
         )
-        if build_payload["provider_identity"] != settings.awg3_exact_build_provider_identity:
-            raise ValueError("build provider identity mismatch")
+        _require_content_identity(
+            build_payload,
+            kind="build_provider",
+            expected_identity=settings.awg3_exact_build_provider_identity,
+            package_id=settings.awg3_expected_package_id,
+            source_head=settings.awg3_expected_source_head,
+        )
         if build_payload["package_id"] != settings.awg3_expected_package_id:
             raise ValueError("package identity mismatch")
         if build_payload["source_head"] != settings.awg3_expected_source_head:
@@ -584,6 +638,18 @@ def _load_snapshot(settings: Settings, repo: Repository) -> _BootstrapSnapshot:
         )
         if accepted is None or str(accepted["state"]) != "accepted":
             raise ValueError("exact build acceptance")
+        accepted_evidence_ids = _accepted_evidence_ids(
+            accepted["evidence_ids_json"]
+        )
+        current_evidence_ids = tuple(
+            item.evidence_id
+            for item in current_awg3_compatibility_evidence(
+                evidence,
+                client=client,
+            )
+        )
+        if accepted_evidence_ids != current_evidence_ids:
+            raise ValueError("exact build evidence acceptance mismatch")
         if state.runtime_receipt != runtime.acceptance_receipt:
             raise ValueError("runtime acceptance receipt mismatch")
         material = load_phase15_awg3_issuer_material(settings)
@@ -616,6 +682,72 @@ def _control_state(repo: Repository) -> Awg3ControlState:
         emergency_suspended=bool(row["emergency_suspended"]),
         runtime_receipt=row["runtime_receipt"],
     )
+
+
+def _content_identity(
+    kind: str,
+    payload: object,
+    *,
+    package_id: str,
+    source_head: str,
+) -> str:
+    canonical = json.dumps(
+        {
+            "kind": kind,
+            "package_id": package_id,
+            "source_head": source_head,
+            "payload": payload,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
+
+
+def _without_field(
+    payload: Mapping[str, object], field: str
+) -> dict[str, object]:
+    return {key: value for key, value in payload.items() if key != field}
+
+
+def _require_content_identity(
+    payload: Mapping[str, object],
+    *,
+    kind: str,
+    expected_identity: str,
+    package_id: str,
+    source_head: str,
+) -> None:
+    identity = _exact_text(payload.get("provider_identity"), "provider_identity")
+    canonical_identity = _content_identity(
+        kind,
+        _without_field(payload, "provider_identity"),
+        package_id=package_id,
+        source_head=source_head,
+    )
+    if identity != canonical_identity or identity != expected_identity:
+        raise ValueError("provider identity mismatch")
+
+
+def _accepted_evidence_ids(raw: object) -> tuple[str, ...]:
+    if not isinstance(raw, str) or len(raw) > _MAX_PROVIDER_BYTES:
+        raise ValueError("accepted evidence identities")
+    values = json.loads(raw)
+    if (
+        not isinstance(values, list)
+        or not 1 <= len(values) <= _MAX_PROVIDER_ROWS
+        or any(
+            not isinstance(value, str)
+            or not value
+            or value != value.strip()
+            or any(ord(character) < 32 for character in value)
+            for value in values
+        )
+        or len(set(values)) != len(values)
+    ):
+        raise ValueError("accepted evidence identities")
+    return tuple(values)
 
 
 def _evidence_from_json(row: Mapping[str, object]) -> ClientCompatibilityEvidence:

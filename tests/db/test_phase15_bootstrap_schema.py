@@ -635,6 +635,99 @@ def test_issuance_confirmation_is_unique_exact_and_terminal(database_path) -> No
         connection.close()
 
 
+def test_confirmation_claim_renewal_is_exact_and_attempt_protects_restart_cleanup(
+    database_path,
+) -> None:
+    first = open_connection(database_path)
+    owner_user_id = seed_owner_and_passport(first)
+    first_repo = Repository(first)
+    first_repo.create_callback_handle(**callback_values(owner_user_id))
+    first_repo.create_issuance_confirmation(**confirmation_values(owner_user_id))
+    assert first_repo.claim_issuance_confirmation(
+        "b" * 64,
+        owner_user_id,
+        NOW,
+        claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+        claim_expires_at=CLAIM_EXPIRES_AT,
+    ) is not None
+
+    assert first_repo.renew_issuance_confirmation_claim(
+        "b" * 64,
+        owner_user_id,
+        "2026-08-14T10:07:00+00:00",
+        claim_id_digest="4" * 64,
+        claim_expires_at="2026-08-14T10:12:00+00:00",
+    ) is None
+    renewed = first_repo.renew_issuance_confirmation_claim(
+        "b" * 64,
+        owner_user_id,
+        "2026-08-14T10:07:00+00:00",
+        claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+        claim_expires_at="2026-08-14T10:12:00+00:00",
+    )
+    assert renewed is not None
+    assert renewed["claim_id_digest"] == CONFIRMATION_CLAIM_DIGEST
+    assert renewed["claim_expires_at"] == "2026-08-14T10:12:00+00:00"
+
+    attempt = first_repo.reserve_protocol_issuance_attempt(
+        passport_device_id="passport-phase15",
+        protocol_version="awg3",
+        request_fingerprint="sha256:" + "b" * 64,
+        actor_kind="user",
+        actor_id=15001,
+        client_application="amnezia_vpn",
+        client_platform="windows",
+        client_version="5.0.0.5",
+        client_build="exact-build",
+        runtime_instance_id="spain-awg3-runtime",
+        compatibility_evidence_id="exact-evidence",
+        owner_user_id=owner_user_id,
+        intended_passport_device_id="passport-phase15",
+    )
+    assert attempt is not None
+
+    restarted = open_connection(database_path)
+    try:
+        restarted_repo = Repository(restarted)
+        after_ttls = "2026-08-14T10:13:00+00:00"
+        assert restarted_repo.consume_expired_issuance_confirmation(
+            "b" * 64, owner_user_id, after_ttls
+        ) is None
+        assert restarted_repo.prune_expired_phase15_callback_state(after_ttls) == 0
+        consumed = first_repo.consume_issuance_confirmation(
+            "b" * 64,
+            owner_user_id,
+            after_ttls,
+            "issued",
+            claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+        )
+        assert consumed is not None
+        assert consumed["terminal_reason"] == "issued"
+    finally:
+        restarted.close()
+        first.close()
+
+
+def test_schema_classification_runs_under_immediate_transaction(
+    database_path, monkeypatch
+) -> None:
+    connection = open_connection(database_path)
+    seed_owner_and_passport(connection)
+    observed: list[bool] = []
+    original = phase15_bootstrap._column_names
+
+    def observe_transaction(conn, table):
+        observed.append(conn.in_transaction)
+        return original(conn, table)
+
+    monkeypatch.setattr(phase15_bootstrap, "_column_names", observe_transaction)
+    phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+
+    assert observed
+    assert all(observed)
+    connection.close()
+
+
 def test_expired_callback_state_terminal_consume_is_owner_bound(database_path) -> None:
     connection = open_connection(database_path)
     try:

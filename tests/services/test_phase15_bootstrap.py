@@ -32,8 +32,22 @@ from app.services.device_passports import create_device_passport
 NOW = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
 SOURCE_HEAD = "a" * 40
 PACKAGE_ID = "phase15-dual-protocol-bootstrap-20260811-001"
-RUNTIME_RECEIPT = "sha256:" + "b" * 64
 CLIENT = ClientIdentity("amnezia_vpn", "windows", "5.0.0.5", "50005")
+
+
+def _content_identity(kind: str, payload: object) -> str:
+    canonical = json.dumps(
+        {
+            "kind": kind,
+            "package_id": PACKAGE_ID,
+            "source_head": SOURCE_HEAD,
+            "payload": payload,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(canonical).hexdigest()
 
 
 class RecordingPeerApplier:
@@ -92,8 +106,7 @@ class _ReadSizeSpy:
 
 
 def _material_payload(secret: str) -> dict[str, object]:
-    return {
-        "provider_identity": "phase15-material-provider-001",
+    payload = {
         "runtime_instance_id": "spain-awg3-runtime",
         "endpoint_host": "awg3.example.test",
         "server_public_key": "awg3-server-public",
@@ -111,6 +124,74 @@ def _material_payload(secret: str) -> dict[str, object]:
         "header_protection_key_fingerprint": "sha256:"
         + hashlib.sha256(secret.encode("utf-8")).hexdigest(),
     }
+    return {
+        "provider_identity": _content_identity("issuer_material", payload),
+        **payload,
+    }
+
+
+def _provider_payloads(secret: str) -> dict[str, dict[str, object]]:
+    runtime_row = {
+        "runtime_instance_id": "spain-awg3-runtime",
+        "server_id": 1,
+        "protocol_version": "awg3",
+        "runtime_version": "awg3-runtime-1",
+        "interface_name": "awg3",
+        "udp_port": 30003,
+        "vpn_cidr": "10.9.0.0/24",
+        "container_name": None,
+        "service_name": "awg3.service",
+        "config_path": "/etc/amnezia/awg3.conf",
+        "lifecycle_state": "accepted",
+    }
+    runtime_row["acceptance_receipt"] = _content_identity(
+        "runtime_acceptance", runtime_row
+    )
+    evidence = []
+    for source_kind in ("official_release", "local_import", "full_data"):
+        evidence_row = {
+            "client": {
+                "application": CLIENT.application,
+                "platform": CLIENT.platform,
+                "version": CLIENT.version,
+                "build_id": CLIENT.build_id,
+            },
+            "protocol_version": "awg3",
+            "source_kind": source_kind,
+            "status": "passed",
+            "observed_at": NOW.isoformat(),
+            "safe_reference": f"local:{source_kind}",
+            "scope": "exact stable build",
+            "release_kind": "stable",
+        }
+        evidence.append(
+            {
+                "evidence_id": _content_identity("compatibility_evidence", evidence_row),
+                **evidence_row,
+            }
+        )
+    build_body = {
+        "package_id": PACKAGE_ID,
+        "source_head": SOURCE_HEAD,
+        "client": {
+            "application": CLIENT.application,
+            "platform": CLIENT.platform,
+            "version": CLIENT.version,
+            "build_id": CLIENT.build_id,
+        },
+    }
+    provider_bodies = {
+        "runtime": {"runtimes": [runtime_row]},
+        "evidence": {"evidence": evidence},
+        "build": build_body,
+    }
+    return {
+        name: {
+            "provider_identity": _content_identity(f"{name}_provider", body),
+            **body,
+        }
+        for name, body in provider_bodies.items()
+    } | {"material": _material_payload(secret)}
 
 
 def _write_provider_files(tmp_path):
@@ -122,85 +203,19 @@ def _write_provider_files(tmp_path):
         "material": tmp_path / "material.json",
         "hpk": tmp_path / "hpk.secret",
     }
-    paths["runtime"].write_text(
-        json.dumps(
-            {
-                "provider_identity": "phase15-runtime-provider-001",
-                "runtimes": [
-                    {
-                        "runtime_instance_id": "spain-awg3-runtime",
-                        "server_id": 1,
-                        "protocol_version": "awg3",
-                        "runtime_version": "awg3-runtime-1",
-                        "interface_name": "awg3",
-                        "udp_port": 30003,
-                        "vpn_cidr": "10.9.0.0/24",
-                        "container_name": None,
-                        "service_name": "awg3.service",
-                        "config_path": "/etc/amnezia/awg3.conf",
-                        "lifecycle_state": "accepted",
-                        "acceptance_receipt": RUNTIME_RECEIPT,
-                    }
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    evidence = []
-    for source_kind in ("official_release", "local_import", "full_data"):
-        evidence.append(
-            {
-                "evidence_id": f"evidence-{source_kind}",
-                "client": {
-                    "application": CLIENT.application,
-                    "platform": CLIENT.platform,
-                    "version": CLIENT.version,
-                    "build_id": CLIENT.build_id,
-                },
-                "protocol_version": "awg3",
-                "source_kind": source_kind,
-                "status": "passed",
-                "observed_at": NOW.isoformat(),
-                "safe_reference": f"local:{source_kind}",
-                "scope": "exact stable build",
-                "release_kind": "stable",
-            }
-        )
-    paths["evidence"].write_text(
-        json.dumps(
-            {
-                "provider_identity": "phase15-evidence-provider-001",
-                "evidence": evidence,
-            }
-        ),
-        encoding="utf-8",
-    )
-    paths["build"].write_text(
-        json.dumps(
-            {
-                "provider_identity": "phase15-build-provider-001",
-                "package_id": PACKAGE_ID,
-                "source_head": SOURCE_HEAD,
-                "client": {
-                    "application": CLIENT.application,
-                    "platform": CLIENT.platform,
-                    "version": CLIENT.version,
-                    "build_id": CLIENT.build_id,
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
-    paths["material"].write_text(
-        json.dumps(_material_payload(secret)),
-        encoding="utf-8",
-    )
+    payloads = _provider_payloads(secret)
+    for name in ("runtime", "evidence", "build", "material"):
+        paths[name].write_text(json.dumps(payloads[name]), encoding="utf-8")
     paths["hpk"].write_text(secret, encoding="utf-8")
     return paths
 
 
 def _settings(tmp_path, **updates):
     paths = _write_provider_files(tmp_path)
+    payloads = {
+        name: json.loads(paths[name].read_text(encoding="utf-8"))
+        for name in ("runtime", "evidence", "build", "material")
+    }
     values = {
         "_env_file": None,
         "telegram_bot_token": "TEST_TOKEN",
@@ -209,16 +224,16 @@ def _settings(tmp_path, **updates):
         "server_name": "local",
         "awg3_bootstrap_enabled": True,
         "awg3_runtime_provider_path": str(paths["runtime"]),
-        "awg3_runtime_provider_identity": "phase15-runtime-provider-001",
+        "awg3_runtime_provider_identity": payloads["runtime"]["provider_identity"],
         "awg3_evidence_provider_path": str(paths["evidence"]),
-        "awg3_evidence_provider_identity": "phase15-evidence-provider-001",
+        "awg3_evidence_provider_identity": payloads["evidence"]["provider_identity"],
         "awg3_exact_build_provider_path": str(paths["build"]),
-        "awg3_exact_build_provider_identity": "phase15-build-provider-001",
+        "awg3_exact_build_provider_identity": payloads["build"]["provider_identity"],
         "awg3_expected_runtime_instance_id": "spain-awg3-runtime",
         "awg3_expected_package_id": PACKAGE_ID,
         "awg3_expected_source_head": SOURCE_HEAD,
         "awg3_issuer_material_provider_path": str(paths["material"]),
-        "awg3_issuer_material_provider_identity": "phase15-material-provider-001",
+        "awg3_issuer_material_provider_identity": payloads["material"]["provider_identity"],
         "awg3_hpk_secret_path": str(paths["hpk"]),
         "awg3_hpk_secret_reference": "phase15-hpk-001",
     }
@@ -227,6 +242,11 @@ def _settings(tmp_path, **updates):
 
 
 def _accepted_repo(tmp_path):
+    payloads = _provider_payloads("strict-phase15-header-protection-key")
+    runtime_receipt = payloads["runtime"]["runtimes"][0]["acceptance_receipt"]
+    evidence_ids = tuple(
+        row["evidence_id"] for row in payloads["evidence"]["evidence"]
+    )
     conn = connect(tmp_path / "phase15.sqlite3")
     initialize_schema(conn)
     repo = Repository(conn)
@@ -236,7 +256,7 @@ def _accepted_repo(tmp_path):
         global_accepted=True,
         issuance_enabled=True,
         emergency_suspended=False,
-        runtime_receipt=RUNTIME_RECEIPT,
+        runtime_receipt=runtime_receipt,
         actor_id=9001,
         reason="test acceptance",
     )
@@ -246,11 +266,7 @@ def _accepted_repo(tmp_path):
         client_version=CLIENT.version,
         client_build=CLIENT.build_id,
         state="accepted",
-        evidence_ids=(
-            "evidence-official_release",
-            "evidence-local_import",
-            "evidence-full_data",
-        ),
+        evidence_ids=evidence_ids,
         actor_id=9001,
         reason="test acceptance",
     )
@@ -279,6 +295,15 @@ def test_issuer_material_rejects_wrong_hpk_reference_before_secret_read(tmp_path
     settings, paths = _settings(tmp_path)
     payload = _material_payload("strict-phase15-header-protection-key")
     payload["header_protection_key_ref"] = "other-hpk"
+    payload["provider_identity"] = _content_identity(
+        "issuer_material",
+        {key: value for key, value in payload.items() if key != "provider_identity"},
+    )
+    settings = settings.model_copy(
+        update={
+            "awg3_issuer_material_provider_identity": payload["provider_identity"]
+        }
+    )
     paths["material"].write_text(json.dumps(payload), encoding="utf-8")
     monkeypatch.setattr(Path, "read_bytes", lambda self: pytest.fail("secret read"))
 
@@ -334,6 +359,80 @@ def test_build_components_wires_real_services_without_startup_effects(tmp_path):
     assert len(components.awg3_client_choices) == 1
     assert access.calls == []
     assert peer.calls == []
+
+
+@pytest.mark.parametrize(
+    ("provider_name", "mutate"),
+    [
+        ("runtime", lambda payload: payload["runtimes"][0].__setitem__("udp_port", 30004)),
+        (
+            "evidence",
+            lambda payload: payload["evidence"][0].__setitem__(
+                "safe_reference", "local:changed"
+            ),
+        ),
+        (
+            "build",
+            lambda payload: payload["client"].__setitem__(
+                "application", "amneziavpn"
+            ),
+        ),
+        (
+            "material",
+            lambda payload: payload.__setitem__(
+                "endpoint_host", "changed.example.test"
+            ),
+        ),
+    ],
+)
+def test_stale_content_identity_disables_awg3(
+    tmp_path, provider_name, mutate
+):
+    settings, paths = _settings(tmp_path)
+    payload = json.loads(paths[provider_name].read_text(encoding="utf-8"))
+    mutate(payload)
+    paths[provider_name].write_text(json.dumps(payload), encoding="utf-8")
+    _conn, repo = _accepted_repo(tmp_path)
+    peer = RecordingPeerApplier()
+    access = RecordingAccessService(peer)
+
+    components = build_phase15_awg3_components(settings, repo, access, peer)
+
+    assert components.available is False
+    assert components.awg3_client_choices == ()
+    assert access.calls == []
+    assert peer.calls == []
+
+
+@pytest.mark.parametrize(
+    "evidence_ids",
+    [
+        lambda ids: ids[:-1],
+        lambda ids: (*ids, "sha256:" + "f" * 64),
+        lambda ids: tuple(reversed(ids)),
+        lambda ids: (*ids, ids[0]),
+        lambda ids: (ids[0], 7, ids[2]),
+    ],
+)
+def test_acceptance_requires_exact_current_evidence_id_sequence(
+    tmp_path, evidence_ids
+):
+    settings, paths = _settings(tmp_path)
+    _conn, repo = _accepted_repo(tmp_path)
+    provider = json.loads(paths["evidence"].read_text(encoding="utf-8"))
+    exact_ids = tuple(row["evidence_id"] for row in provider["evidence"])
+    repo._conn.execute(
+        "UPDATE client_build_acceptances SET evidence_ids_json = ?",
+        (json.dumps(evidence_ids(exact_ids), separators=(",", ":")),),
+    )
+    repo._conn.commit()
+    peer = RecordingPeerApplier()
+    access = RecordingAccessService(peer)
+
+    components = build_phase15_awg3_components(settings, repo, access, peer)
+
+    assert components.available is False
+    assert components.awg3_client_choices == ()
 
 
 @pytest.mark.parametrize(
@@ -715,6 +814,17 @@ def test_self_service_issuer_passes_only_selected_runtime_target(tmp_path):
         }
     )
     runtime_payload["runtimes"].insert(0, awg2)
+    runtime_payload["provider_identity"] = _content_identity(
+        "runtime_provider",
+        {
+            key: value
+            for key, value in runtime_payload.items()
+            if key != "provider_identity"
+        },
+    )
+    settings = settings.model_copy(
+        update={"awg3_runtime_provider_identity": runtime_payload["provider_identity"]}
+    )
     paths["runtime"].write_text(json.dumps(runtime_payload), encoding="utf-8")
     peer = RecordingPeerApplier()
     access = RecordingAccessService(peer)
