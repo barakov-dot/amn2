@@ -185,6 +185,31 @@ def open_connection(database_path) -> sqlite3.Connection:
     return connection
 
 
+def phase15_validation_snapshot(connection: sqlite3.Connection) -> tuple[object, ...]:
+    return (
+        int(connection.execute("PRAGMA foreign_keys").fetchone()[0]),
+        tuple(
+            tuple(row)
+            for row in connection.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                "ORDER BY type, name"
+            )
+        ),
+        tuple(
+            tuple(row)
+            for row in connection.execute(
+                "SELECT * FROM telegram_callback_handles ORDER BY handle_digest"
+            )
+        ),
+        tuple(
+            tuple(row)
+            for row in connection.execute(
+                "SELECT * FROM protocol_issuance_confirmations ORDER BY token_digest"
+            )
+        ),
+    )
+
+
 def seed_owner_and_passport(connection: sqlite3.Connection) -> int:
     initialize_schema(connection)
     repo = Repository(connection)
@@ -1320,6 +1345,160 @@ def test_case_variant_exact_fix6_predecessor_upgrades(
             {"protocol_issuance_attempts", "protocol_issuance_attempts_legacy"}
         )
         assert list(connection.execute("PRAGMA foreign_key_check")) == []
+    finally:
+        connection.close()
+
+
+def test_same_name_noop_callback_trigger_is_rejected_without_mutation(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        repo = Repository(connection)
+        mismatched_owner_id = repo.upsert_user(
+            telegram_id=15002,
+            username="phase15-mismatch",
+            first_name="Mismatch",
+            last_name="Owner",
+        )
+        connection.execute("DROP TRIGGER trg_phase15_callback_owner_passport_insert")
+        connection.execute(
+            """
+            CREATE TRIGGER trg_phase15_callback_owner_passport_insert
+            BEFORE INSERT ON telegram_callback_handles
+            FOR EACH ROW BEGIN SELECT 1; END
+            """
+        )
+        connection.commit()
+
+        repo.create_callback_handle(
+            **callback_values(mismatched_owner_id, suffix="e")
+        )
+        inserted = connection.execute(
+            "SELECT owner_user_id, passport_device_id "
+            "FROM telegram_callback_handles WHERE handle_digest = ?",
+            ("e" * 64,),
+        ).fetchone()
+        assert tuple(inserted) == (mismatched_owner_id, "passport-phase15")
+        before = phase15_validation_snapshot(connection)
+
+        with pytest.raises(RuntimeError, match="owner binding triggers"):
+            phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+
+        assert phase15_validation_snapshot(connection) == before
+    finally:
+        connection.close()
+
+
+def test_same_name_noop_confirmation_trigger_is_rejected_without_mutation(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        repo = Repository(connection)
+        mismatched_owner_id = repo.upsert_user(
+            telegram_id=15002,
+            username="phase15-mismatch",
+            first_name="Mismatch",
+            last_name="Owner",
+        )
+        connection.execute("DROP TRIGGER trg_phase15_callback_owner_passport_insert")
+        connection.execute(
+            """
+            CREATE TRIGGER trg_phase15_callback_owner_passport_insert
+            BEFORE INSERT ON telegram_callback_handles
+            FOR EACH ROW BEGIN SELECT 1; END
+            """
+        )
+        connection.commit()
+        repo.create_callback_handle(
+            **callback_values(mismatched_owner_id, suffix="f")
+        )
+        connection.execute("DROP TRIGGER trg_phase15_callback_owner_passport_insert")
+        connection.execute(phase15_bootstrap.TRIGGER_SQL[0])
+        connection.execute(
+            "DROP TRIGGER trg_phase15_confirmation_owner_passport_insert"
+        )
+        connection.execute(
+            """
+            CREATE TRIGGER trg_phase15_confirmation_owner_passport_insert
+            BEFORE INSERT ON protocol_issuance_confirmations
+            FOR EACH ROW BEGIN SELECT 1; END
+            """
+        )
+        connection.commit()
+
+        repo.create_issuance_confirmation(
+            **confirmation_values(
+                mismatched_owner_id,
+                suffix="f",
+                selection_handle_digest="f" * 64,
+            )
+        )
+        inserted = connection.execute(
+            "SELECT owner_user_id, passport_device_id "
+            "FROM protocol_issuance_confirmations WHERE token_digest = ?",
+            ("f" * 64,),
+        ).fetchone()
+        assert tuple(inserted) == (mismatched_owner_id, "passport-phase15")
+        before = phase15_validation_snapshot(connection)
+
+        with pytest.raises(RuntimeError, match="owner binding triggers"):
+            phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+
+        assert phase15_validation_snapshot(connection) == before
+    finally:
+        connection.close()
+
+
+def test_weakened_owner_passport_predicate_is_rejected_without_mutation(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        repo = Repository(connection)
+        mismatched_owner_id = repo.upsert_user(
+            telegram_id=15002,
+            username="phase15-mismatch",
+            first_name="Mismatch",
+            last_name="Owner",
+        )
+        connection.execute("DROP TRIGGER trg_phase15_callback_owner_passport_insert")
+        connection.execute(
+            """
+            CREATE TRIGGER trg_phase15_callback_owner_passport_insert
+            BEFORE INSERT ON telegram_callback_handles
+            FOR EACH ROW
+            WHEN NOT EXISTS (
+                SELECT 1 FROM device_passports
+                WHERE device_id = NEW.passport_device_id
+                   OR owner_user_id = NEW.owner_user_id
+            )
+            BEGIN
+                SELECT RAISE(ABORT, 'phase15 callback owner/passport mismatch');
+            END
+            """
+        )
+        connection.commit()
+
+        repo.create_callback_handle(
+            **callback_values(mismatched_owner_id, suffix="8")
+        )
+        inserted = connection.execute(
+            "SELECT owner_user_id, passport_device_id "
+            "FROM telegram_callback_handles WHERE handle_digest = ?",
+            ("8" * 64,),
+        ).fetchone()
+        assert tuple(inserted) == (mismatched_owner_id, "passport-phase15")
+        before = phase15_validation_snapshot(connection)
+
+        with pytest.raises(RuntimeError, match="owner binding triggers"):
+            phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+
+        assert phase15_validation_snapshot(connection) == before
     finally:
         connection.close()
 

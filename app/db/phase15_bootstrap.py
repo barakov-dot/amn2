@@ -755,21 +755,7 @@ def _validate_claimed_shape(conn: sqlite3.Connection) -> None:
         for table, target, columns in required_foreign_keys
     ):
         raise RuntimeError("unsupported phase15 owner binding constraints")
-    required_triggers = {
-        "trg_phase15_callback_owner_passport_insert",
-        "trg_phase15_callback_owner_passport_update",
-        "trg_phase15_confirmation_owner_passport_insert",
-        "trg_phase15_confirmation_owner_passport_update",
-    }
-    actual_triggers = {
-        str(row[0])
-        for row in conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'trigger' "
-            "AND tbl_name IN (?, ?)",
-            ("telegram_callback_handles", "protocol_issuance_confirmations"),
-        )
-    }
-    if not required_triggers.issubset(actual_triggers):
+    if not _has_exact_phase15_owner_passport_triggers(conn):
         raise RuntimeError("unsupported phase15 owner binding triggers")
     for table, digest_columns in (
         ("telegram_callback_handles", ("handle_digest", "claim_id_digest")),
@@ -819,6 +805,56 @@ def _has_foreign_key(
         )
     expected = [(target, source, destination) for source, destination in columns]
     return any(group == expected for group in groups.values())
+
+
+def _has_exact_phase15_owner_passport_triggers(
+    conn: sqlite3.Connection,
+) -> bool:
+    actual = {
+        str(row[0]).casefold(): str(row[1])
+        for row in conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger'"
+        )
+    }
+    for expected_sql in TRIGGER_SQL:
+        expected_name = expected_sql.split()[5].casefold()
+        actual_sql = actual.get(expected_name)
+        if actual_sql is None or (
+            _normalize_trigger_sql(actual_sql) != _normalize_trigger_sql(expected_sql)
+        ):
+            return False
+    return True
+
+
+def _normalize_trigger_sql(sql: str) -> str:
+    text = sql.strip().rstrip(";").rstrip()
+    normalized: list[str] = []
+    index = 0
+    while index < len(text):
+        if text[index] != "'":
+            if not text[index].isspace():
+                normalized.append(text[index].casefold())
+            index += 1
+            continue
+
+        literal_start = index
+        index += 1
+        while index < len(text):
+            if text[index] != "'":
+                index += 1
+                continue
+            index += 1
+            if index < len(text) and text[index] == "'":
+                index += 1
+                continue
+            break
+        normalized.append(text[literal_start:index])
+
+    result = "".join(normalized)
+    storage_prefix = "createtriggerifnotexists"
+    if result.startswith(storage_prefix):
+        result = "createtrigger" + result[len(storage_prefix) :]
+    return result
 
 
 def _issuance_attempt_foreign_keys(
