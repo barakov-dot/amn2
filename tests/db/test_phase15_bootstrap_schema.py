@@ -272,18 +272,37 @@ def reserve_attempt(
 
 
 def install_fix6_confirmation_schema(
-    connection: sqlite3.Connection, *, partial_attempt_unique: bool = False
+    connection: sqlite3.Connection,
+    *,
+    partial_attempt_unique: bool = False,
+    extra_attempt_foreign_keys: tuple[tuple[str, str], ...] = (),
+) -> None:
+    install_confirmation_schema_with_attempt_foreign_keys(
+        connection,
+        attempt_foreign_keys=(
+            ("issuance_attempt_id", "protocol_issuance_attempts"),
+            *extra_attempt_foreign_keys,
+        ),
+        partial_attempt_unique=partial_attempt_unique,
+    )
+
+
+def install_confirmation_schema_with_attempt_foreign_keys(
+    connection: sqlite3.Connection,
+    *,
+    attempt_foreign_keys: tuple[tuple[str, str], ...],
+    partial_attempt_unique: bool = False,
 ) -> None:
     connection.execute("DROP TABLE protocol_issuance_confirmations")
     confirmation_sql = phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL
-    attempt_foreign_key = (
-        "    FOREIGN KEY(issuance_attempt_id) "
-        "REFERENCES protocol_issuance_attempts(id),\n"
+    attempt_foreign_key_sql = "".join(
+        f"    FOREIGN KEY({source}) REFERENCES {target}(id),\n"
+        for source, target in attempt_foreign_keys
     )
-    if attempt_foreign_key not in confirmation_sql:
+    if attempt_foreign_key_sql:
         confirmation_sql = confirmation_sql.replace(
             "    FOREIGN KEY(owner_user_id) REFERENCES users(id),\n",
-            attempt_foreign_key
+            attempt_foreign_key_sql
             + "    FOREIGN KEY(owner_user_id) REFERENCES users(id),\n",
         )
     if partial_attempt_unique:
@@ -1178,6 +1197,72 @@ def test_partial_attempt_binding_unique_is_rejected(database_path) -> None:
 
         with pytest.raises(RuntimeError, match="issuance attempt binding"):
             phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    "attempt_target",
+    ("protocol_issuance_attempts", "protocol_issuance_attempts_legacy"),
+)
+def test_canonical_schema_rejects_attempt_table_fk_from_nonbinding_column(
+    database_path, attempt_target
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        install_confirmation_schema_with_attempt_foreign_keys(
+            connection,
+            attempt_foreign_keys=(("owner_user_id", attempt_target),),
+        )
+        foreign_keys_before = tuple(
+            tuple(row)
+            for row in connection.execute(
+                "PRAGMA foreign_key_list(protocol_issuance_confirmations)"
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="attempt binding"):
+            phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+
+        assert tuple(
+            tuple(row)
+            for row in connection.execute(
+                "PRAGMA foreign_key_list(protocol_issuance_confirmations)"
+            )
+        ) == foreign_keys_before
+    finally:
+        connection.close()
+
+
+def test_fix6_predecessor_with_extra_attempt_table_fk_is_rejected(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        install_fix6_confirmation_schema(
+            connection,
+            extra_attempt_foreign_keys=(
+                ("owner_user_id", "protocol_issuance_attempts"),
+            ),
+        )
+        foreign_keys_before = tuple(
+            tuple(row)
+            for row in connection.execute(
+                "PRAGMA foreign_key_list(protocol_issuance_confirmations)"
+            )
+        )
+
+        with pytest.raises(RuntimeError, match="attempt binding"):
+            phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+
+        assert tuple(
+            tuple(row)
+            for row in connection.execute(
+                "PRAGMA foreign_key_list(protocol_issuance_confirmations)"
+            )
+        ) == foreign_keys_before
     finally:
         connection.close()
 

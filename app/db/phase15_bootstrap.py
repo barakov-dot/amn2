@@ -293,7 +293,7 @@ def _ensure_phase15_bootstrap_schema_locked(conn: sqlite3.Connection) -> None:
         callback_columns == CALLBACK_COLUMNS
         and confirmation_columns == CONFIRMATION_COLUMNS
     ):
-        if _issuance_attempt_foreign_key_targets(conn):
+        if _issuance_attempt_foreign_keys(conn):
             _validate_fix6_predecessor_shape(conn)
             _upgrade_fix6_confirmation_schema(conn)
             return
@@ -677,24 +677,27 @@ def _validate_prebinding_shape(conn: sqlite3.Connection) -> None:
 
 def _validate_canonical_shape(conn: sqlite3.Connection) -> None:
     _validate_claimed_shape(conn)
-    if _issuance_attempt_foreign_key_targets(conn):
+    if _issuance_attempt_foreign_keys(conn):
         raise RuntimeError("unsupported phase15 cross-phase attempt binding")
     _validate_attempt_binding_unique(conn)
 
 
 def _validate_fix6_predecessor_shape(conn: sqlite3.Connection) -> None:
     _validate_claimed_shape(conn)
-    attempt_targets = _issuance_attempt_foreign_key_targets(conn)
-    if attempt_targets not in (
-        ("protocol_issuance_attempts",),
-        ("protocol_issuance_attempts_legacy",),
-    ):
-        raise RuntimeError("unsupported phase15 issuance attempt binding")
-    if not _has_foreign_key(
-        conn,
-        "protocol_issuance_confirmations",
-        attempt_targets[0],
-        (("issuance_attempt_id", "id"),),
+    attempt_foreign_keys = _issuance_attempt_foreign_keys(conn)
+    if attempt_foreign_keys not in (
+        (
+            (
+                "protocol_issuance_attempts",
+                (("issuance_attempt_id", "id"),),
+            ),
+        ),
+        (
+            (
+                "protocol_issuance_attempts_legacy",
+                (("issuance_attempt_id", "id"),),
+            ),
+        ),
     ):
         raise RuntimeError("unsupported phase15 issuance attempt binding")
     _validate_attempt_binding_unique(conn)
@@ -818,16 +821,26 @@ def _has_foreign_key(
     return any(group == expected for group in groups.values())
 
 
-def _issuance_attempt_foreign_key_targets(
+def _issuance_attempt_foreign_keys(
     conn: sqlite3.Connection,
-) -> tuple[str, ...]:
+) -> tuple[tuple[str, tuple[tuple[str, str], ...]], ...]:
+    groups: dict[int, tuple[str, list[tuple[str, str]]]] = {}
+    for row in conn.execute(
+        "PRAGMA foreign_key_list(protocol_issuance_confirmations)"
+    ):
+        target = str(row[2])
+        if target not in {
+            "protocol_issuance_attempts",
+            "protocol_issuance_attempts_legacy",
+        }:
+            continue
+        _, columns = groups.setdefault(int(row[0]), (target, []))
+        columns.append((str(row[3]), str(row[4])))
     return tuple(
-        sorted(
-            str(row[2])
-            for row in conn.execute(
-                "PRAGMA foreign_key_list(protocol_issuance_confirmations)"
-            )
-            if str(row[3]) == "issuance_attempt_id"
+        (target, tuple(columns))
+        for _, (target, columns) in sorted(
+            groups.items(),
+            key=lambda item: item[0],
         )
     )
 
