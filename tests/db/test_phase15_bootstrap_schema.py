@@ -318,9 +318,17 @@ def install_confirmation_schema_with_attempt_foreign_keys(
     *,
     attempt_foreign_keys: tuple[tuple[str, str], ...],
     partial_attempt_unique: bool = False,
+    generated_confusable_attempt_source: bool = False,
 ) -> None:
     connection.execute("DROP TABLE protocol_issuance_confirmations")
     confirmation_sql = phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL
+    if generated_confusable_attempt_source:
+        confirmation_sql = confirmation_sql.replace(
+            "    issuance_attempt_id INTEGER,\n",
+            "    issuance_attempt_id INTEGER,\n"
+            "    iſsuance_attempt_id INTEGER "
+            "GENERATED ALWAYS AS (issuance_attempt_id) VIRTUAL,\n",
+        )
     attempt_foreign_key_sql = "".join(
         f"    FOREIGN KEY({source}) REFERENCES {target}(id),\n"
         for source, target in attempt_foreign_keys
@@ -1349,6 +1357,34 @@ def test_case_variant_exact_fix6_predecessor_upgrades(
         connection.close()
 
 
+@pytest.mark.parametrize(
+    "attempt_target",
+    (
+        "protocol_issuance_attempts",
+        "protocol_issuance_attempts_legacy",
+    ),
+)
+def test_unicode_confusable_attempt_fk_source_is_rejected_without_upgrade(
+    database_path, attempt_target
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        install_confirmation_schema_with_attempt_foreign_keys(
+            connection,
+            attempt_foreign_keys=(("iſsuance_attempt_id", attempt_target),),
+            generated_confusable_attempt_source=True,
+        )
+        before = phase15_validation_snapshot(connection)
+
+        with pytest.raises(RuntimeError, match="attempt binding"):
+            phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+
+        assert phase15_validation_snapshot(connection) == before
+    finally:
+        connection.close()
+
+
 def test_same_name_noop_callback_trigger_is_rejected_without_mutation(
     database_path,
 ) -> None:
@@ -1499,6 +1535,90 @@ def test_weakened_owner_passport_predicate_is_rejected_without_mutation(
             phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
 
         assert phase15_validation_snapshot(connection) == before
+    finally:
+        connection.close()
+
+
+def test_long_s_in_trigger_new_column_is_rejected_without_mutation(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        mutated_sql = phase15_bootstrap.TRIGGER_SQL[0].replace(
+            "NEW.owner_user_id",
+            "NEW.owner_uſer_id",
+        )
+        connection.execute("DROP TRIGGER trg_phase15_callback_owner_passport_insert")
+        connection.execute(mutated_sql)
+        connection.commit()
+        stored_sql = connection.execute(
+            "SELECT sql FROM sqlite_master "
+            "WHERE type = 'trigger' "
+            "AND name = 'trg_phase15_callback_owner_passport_insert'"
+        ).fetchone()[0]
+        assert "NEW.owner_uſer_id" in stored_sql
+        before = phase15_validation_snapshot(connection)
+
+        with pytest.raises(RuntimeError, match="owner binding triggers"):
+            phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+
+        assert phase15_validation_snapshot(connection) == before
+    finally:
+        connection.close()
+
+
+def test_kelvin_sign_in_trigger_name_is_rejected_without_mutation(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        mutated_name = "trg_phase15_callbacK_owner_passport_insert"
+        mutated_sql = phase15_bootstrap.TRIGGER_SQL[0].replace(
+            "trg_phase15_callback_owner_passport_insert",
+            mutated_name,
+        )
+        connection.execute("DROP TRIGGER trg_phase15_callback_owner_passport_insert")
+        connection.execute(mutated_sql)
+        connection.commit()
+        stored_name = connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'trigger' AND name = ?",
+            (mutated_name,),
+        ).fetchone()[0]
+        assert stored_name == mutated_name
+        before = phase15_validation_snapshot(connection)
+
+        with pytest.raises(RuntimeError, match="owner binding triggers"):
+            phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+
+        assert phase15_validation_snapshot(connection) == before
+    finally:
+        connection.close()
+
+
+def test_ascii_case_variant_trigger_name_remains_supported(database_path) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        uppercase_name = "TRG_PHASE15_CALLBACK_OWNER_PASSPORT_INSERT"
+        uppercase_name_sql = phase15_bootstrap.TRIGGER_SQL[0].replace(
+            "trg_phase15_callback_owner_passport_insert",
+            uppercase_name,
+        )
+        connection.execute("DROP TRIGGER trg_phase15_callback_owner_passport_insert")
+        connection.execute(uppercase_name_sql)
+        connection.commit()
+
+        phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+        phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+
+        assert connection.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type = 'trigger' AND name = ?",
+            (uppercase_name,),
+        ).fetchone()[0] == uppercase_name
     finally:
         connection.close()
 

@@ -807,17 +807,26 @@ def _has_foreign_key(
     return any(group == expected for group in groups.values())
 
 
+def _ascii_lower(text: str) -> str:
+    return "".join(
+        chr(ord(character) + 32)
+        if "A" <= character <= "Z"
+        else character
+        for character in text
+    )
+
+
 def _has_exact_phase15_owner_passport_triggers(
     conn: sqlite3.Connection,
 ) -> bool:
     actual = {
-        str(row[0]).casefold(): str(row[1])
+        _ascii_lower(str(row[0])): str(row[1])
         for row in conn.execute(
             "SELECT name, sql FROM sqlite_master WHERE type = 'trigger'"
         )
     }
     for expected_sql in TRIGGER_SQL:
-        expected_name = expected_sql.split()[5].casefold()
+        expected_name = _ascii_lower(expected_sql.split()[5])
         actual_sql = actual.get(expected_name)
         if actual_sql is None or (
             _normalize_trigger_sql(actual_sql) != _normalize_trigger_sql(expected_sql)
@@ -833,7 +842,7 @@ def _normalize_trigger_sql(sql: str) -> str:
     while index < len(text):
         if text[index] != "'":
             if not text[index].isspace():
-                normalized.append(text[index].casefold())
+                normalized.append(_ascii_lower(text[index]))
             index += 1
             continue
 
@@ -864,14 +873,16 @@ def _issuance_attempt_foreign_keys(
     for row in conn.execute(
         "PRAGMA foreign_key_list(protocol_issuance_confirmations)"
     ):
-        target = str(row[2]).casefold()
+        target = _ascii_lower(str(row[2]))
         if target not in {
             "protocol_issuance_attempts",
             "protocol_issuance_attempts_legacy",
         }:
             continue
         _, columns = groups.setdefault(int(row[0]), (target, []))
-        columns.append((str(row[3]).casefold(), str(row[4]).casefold()))
+        columns.append(
+            (_ascii_lower(str(row[3])), _ascii_lower(str(row[4])))
+        )
     return tuple(
         (target, tuple(columns))
         for _, (target, columns) in sorted(
