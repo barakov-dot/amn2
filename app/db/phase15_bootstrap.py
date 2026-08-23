@@ -37,11 +37,12 @@ CALLBACK_COLUMNS = (
     + CLAIM_COLUMNS
     + LEGACY_CALLBACK_COLUMNS[11:]
 )
-CONFIRMATION_COLUMNS = (
+PRE_BINDING_CONFIRMATION_COLUMNS = (
     LEGACY_CONFIRMATION_COLUMNS[:11]
     + CLAIM_COLUMNS
     + LEGACY_CONFIRMATION_COLUMNS[11:]
 )
+CONFIRMATION_COLUMNS = PRE_BINDING_CONFIRMATION_COLUMNS + ("issuance_attempt_id",)
 
 
 CREATE_CALLBACK_TABLE_SQL = """
@@ -108,6 +109,8 @@ CREATE TABLE protocol_issuance_confirmations (
     claim_expires_at TEXT,
     consumed_at TEXT,
     terminal_reason TEXT,
+    issuance_attempt_id INTEGER,
+    UNIQUE(issuance_attempt_id),
     CHECK (
         (claim_id_digest IS NULL AND claimed_at IS NULL AND claim_expires_at IS NULL)
         OR (
@@ -127,6 +130,7 @@ CREATE TABLE protocol_issuance_confirmations (
         REFERENCES telegram_callback_handles(
             handle_digest, owner_user_id, passport_device_id
     ),
+    FOREIGN KEY(issuance_attempt_id) REFERENCES protocol_issuance_attempts(id),
     FOREIGN KEY(owner_user_id) REFERENCES users(id),
     FOREIGN KEY(passport_device_id) REFERENCES device_passports(device_id)
 )
@@ -149,8 +153,17 @@ D827_CALLBACK_TABLE_SQL = (
         "        REFERENCES device_passports(device_id, owner_user_id)",
     )
 )
+PRE_BINDING_CONFIRMATION_TABLE_SQL = (
+    CREATE_CONFIRMATION_TABLE_SQL.replace("    issuance_attempt_id INTEGER,\n", "")
+    .replace("    UNIQUE(issuance_attempt_id),\n", "")
+    .replace(
+        "    FOREIGN KEY(issuance_attempt_id) "
+        "REFERENCES protocol_issuance_attempts(id),\n",
+        "",
+    )
+)
 D827_CONFIRMATION_TABLE_SQL = (
-    CREATE_CONFIRMATION_TABLE_SQL.replace(
+    PRE_BINDING_CONFIRMATION_TABLE_SQL.replace(
         "token_digest TEXT NOT NULL PRIMARY KEY",
         "token_digest TEXT PRIMARY KEY",
     )
@@ -294,6 +307,17 @@ def _ensure_phase15_bootstrap_schema_locked(conn: sqlite3.Connection) -> None:
         return
 
     if (
+        callback_columns == CALLBACK_COLUMNS
+        and confirmation_columns == PRE_BINDING_CONFIRMATION_COLUMNS
+    ):
+        if _is_exact_d827_predecessor_shape(conn):
+            _upgrade_d827_schema(conn)
+            return
+        _validate_prebinding_shape(conn)
+        _upgrade_prebinding_schema(conn)
+        return
+
+    if (
         callback_columns == LEGACY_CALLBACK_COLUMNS
         and confirmation_columns == LEGACY_CONFIRMATION_COLUMNS
     ):
@@ -331,9 +355,19 @@ def _upgrade_d827_schema(conn: sqlite3.Connection) -> None:
     _rebuild_phase15_schema(
         conn,
         callback_source_columns=CALLBACK_COLUMNS,
-        confirmation_source_columns=CONFIRMATION_COLUMNS,
+        confirmation_source_columns=PRE_BINDING_CONFIRMATION_COLUMNS,
         include_claim_state=True,
         drop_d827_device_owner_index=True,
+    )
+
+
+def _upgrade_prebinding_schema(conn: sqlite3.Connection) -> None:
+    _rebuild_phase15_schema(
+        conn,
+        callback_source_columns=CALLBACK_COLUMNS,
+        confirmation_source_columns=PRE_BINDING_CONFIRMATION_COLUMNS,
+        include_claim_state=True,
+        drop_d827_device_owner_index=False,
     )
 
 
@@ -607,7 +641,17 @@ def _validate_legacy_shape(conn: sqlite3.Connection) -> None:
         raise RuntimeError("unsupported phase15 confirmation constraints")
 
 
+def _validate_prebinding_shape(conn: sqlite3.Connection) -> None:
+    _validate_claimed_shape(conn, require_attempt_binding=False)
+
+
 def _validate_canonical_shape(conn: sqlite3.Connection) -> None:
+    _validate_claimed_shape(conn, require_attempt_binding=True)
+
+
+def _validate_claimed_shape(
+    conn: sqlite3.Connection, *, require_attempt_binding: bool
+) -> None:
     if not _has_unique_index(
         conn,
         "telegram_callback_handles",
@@ -650,6 +694,20 @@ def _validate_canonical_shape(conn: sqlite3.Connection) -> None:
         for table, target, columns in required_foreign_keys
     ):
         raise RuntimeError("unsupported phase15 owner binding constraints")
+    if require_attempt_binding and (
+        not _has_foreign_key(
+            conn,
+            "protocol_issuance_confirmations",
+            "protocol_issuance_attempts",
+            (("issuance_attempt_id", "id"),),
+        )
+        or not _has_unique_index(
+            conn,
+            "protocol_issuance_confirmations",
+            ("issuance_attempt_id",),
+        )
+    ):
+        raise RuntimeError("unsupported phase15 issuance attempt binding")
     required_triggers = {
         "trg_phase15_callback_owner_passport_insert",
         "trg_phase15_callback_owner_passport_update",

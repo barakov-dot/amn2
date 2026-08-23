@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 
 import pytest
 
@@ -246,6 +247,30 @@ def confirmation_values(
     }
 
 
+def reserve_attempt(
+    repo: Repository,
+    owner_user_id: int,
+    *,
+    protocol_version: str,
+    request_fingerprint: str = "sha256:" + "b" * 64,
+):
+    return repo.reserve_protocol_issuance_attempt(
+        passport_device_id="passport-phase15",
+        protocol_version=protocol_version,
+        request_fingerprint=request_fingerprint,
+        actor_kind="user",
+        actor_id=15001,
+        client_application="amnezia_vpn",
+        client_platform="windows",
+        client_version="5.0.0.5",
+        client_build="exact-build",
+        runtime_instance_id=f"spain-{protocol_version}-runtime",
+        compatibility_evidence_id="exact-evidence",
+        owner_user_id=owner_user_id,
+        intended_passport_device_id="passport-phase15",
+    )
+
+
 def seed_exact_d827_schema(connection: sqlite3.Connection) -> int:
     owner_user_id = seed_owner_and_passport(connection)
     connection.executescript(
@@ -412,6 +437,7 @@ def test_phase15_schema_is_idempotent_additive_and_indexed(database_path) -> Non
             "claim_expires_at",
             "consumed_at",
             "terminal_reason",
+            "issuance_attempt_id",
         ]
         callback_indexes = {
             row[1]
@@ -455,6 +481,11 @@ def test_phase15_schema_is_idempotent_additive_and_indexed(database_path) -> Non
             ("users", "owner_user_id", "id"),
             ("device_passports", "passport_device_id", "device_id"),
         } <= confirmation_foreign_keys
+        assert (
+            "protocol_issuance_attempts",
+            "issuance_attempt_id",
+            "id",
+        ) in confirmation_foreign_keys
         assert connection.execute(
             "SELECT owner_user_id FROM device_passports "
             "WHERE device_id = 'passport-phase15'"
@@ -635,8 +666,9 @@ def test_issuance_confirmation_is_unique_exact_and_terminal(database_path) -> No
         connection.close()
 
 
-def test_confirmation_claim_renewal_is_exact_and_attempt_protects_restart_cleanup(
-    database_path,
+@pytest.mark.parametrize("protocol_version", ["awg2", "awg3"])
+def test_exact_bound_attempt_protects_confirmation_across_repositories(
+    database_path, protocol_version
 ) -> None:
     first = open_connection(database_path)
     owner_user_id = seed_owner_and_passport(first)
@@ -669,22 +701,20 @@ def test_confirmation_claim_renewal_is_exact_and_attempt_protects_restart_cleanu
     assert renewed["claim_id_digest"] == CONFIRMATION_CLAIM_DIGEST
     assert renewed["claim_expires_at"] == "2026-08-14T10:12:00+00:00"
 
-    attempt = first_repo.reserve_protocol_issuance_attempt(
-        passport_device_id="passport-phase15",
-        protocol_version="awg3",
-        request_fingerprint="sha256:" + "b" * 64,
-        actor_kind="user",
-        actor_id=15001,
-        client_application="amnezia_vpn",
-        client_platform="windows",
-        client_version="5.0.0.5",
-        client_build="exact-build",
-        runtime_instance_id="spain-awg3-runtime",
-        compatibility_evidence_id="exact-evidence",
-        owner_user_id=owner_user_id,
-        intended_passport_device_id="passport-phase15",
+    attempt = reserve_attempt(
+        first_repo,
+        owner_user_id,
+        protocol_version=protocol_version,
     )
     assert attempt is not None
+    bound = first_repo.bind_issuance_confirmation_attempt(
+        "b" * 64,
+        owner_user_id,
+        claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+        attempt_id=int(attempt["id"]),
+    )
+    assert bound is not None
+    assert bound["issuance_attempt_id"] == attempt["id"]
 
     restarted = open_connection(database_path)
     try:
@@ -708,6 +738,65 @@ def test_confirmation_claim_renewal_is_exact_and_attempt_protects_restart_cleanu
         first.close()
 
 
+def test_matching_unclaimed_duplicate_does_not_inherit_attempt_protection(
+    database_path,
+) -> None:
+    first = open_connection(database_path)
+    owner_user_id = seed_owner_and_passport(first)
+    first_repo = Repository(first)
+    first_repo.create_callback_handle(**callback_values(owner_user_id))
+    first_repo.create_issuance_confirmation(**confirmation_values(owner_user_id))
+    assert first_repo.claim_issuance_confirmation(
+        "b" * 64,
+        owner_user_id,
+        NOW,
+        claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+        claim_expires_at=CLAIM_EXPIRES_AT,
+    ) is not None
+    attempt = reserve_attempt(first_repo, owner_user_id, protocol_version="awg3")
+    assert attempt is not None
+    assert first_repo.bind_issuance_confirmation_attempt(
+        "b" * 64,
+        owner_user_id,
+        claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+        attempt_id=int(attempt["id"]),
+    ) is not None
+
+    duplicate_callback = callback_values(owner_user_id, suffix="c")
+    duplicate_callback["request_fingerprint"] = "sha256:" + "b" * 64
+    duplicate_callback["expires_at"] = "2026-08-14T10:06:00+00:00"
+    first_repo.create_callback_handle(**duplicate_callback)
+    duplicate_confirmation = confirmation_values(
+        owner_user_id,
+        suffix="d",
+        selection_handle_digest="c" * 64,
+    )
+    duplicate_confirmation["request_fingerprint"] = "sha256:" + "b" * 64
+    duplicate_confirmation["expires_at"] = "2026-08-14T10:06:00+00:00"
+    first_repo.create_issuance_confirmation(**duplicate_confirmation)
+
+    restarted = open_connection(database_path)
+    try:
+        restarted_repo = Repository(restarted)
+        after_ttls = "2026-08-14T10:13:00+00:00"
+        duplicate = restarted_repo.consume_expired_issuance_confirmation(
+            "d" * 64, owner_user_id, after_ttls
+        )
+        assert duplicate is not None
+        assert duplicate["terminal_reason"] == "expired"
+        assert restarted_repo.consume_expired_issuance_confirmation(
+            "b" * 64, owner_user_id, after_ttls
+        ) is None
+        assert restarted_repo.prune_expired_phase15_callback_state(after_ttls) == 2
+        assert restarted.execute(
+            "SELECT 1 FROM protocol_issuance_confirmations WHERE token_digest = ?",
+            ("b" * 64,),
+        ).fetchone() is not None
+    finally:
+        restarted.close()
+        first.close()
+
+
 def test_schema_classification_runs_under_immediate_transaction(
     database_path, monkeypatch
 ) -> None:
@@ -726,6 +815,130 @@ def test_schema_classification_runs_under_immediate_transaction(
     assert observed
     assert all(observed)
     connection.close()
+
+
+def test_two_initializers_classify_after_lock_and_preserve_claim_values(
+    database_path, monkeypatch
+) -> None:
+    setup = open_connection(database_path)
+    owner_user_id = seed_owner_and_passport(setup)
+    setup.executescript(
+        """
+        DROP TABLE protocol_issuance_confirmations;
+        DROP TABLE telegram_callback_handles;
+        """
+    )
+    setup.execute(phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL)
+    predecessor_confirmation_sql = phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL
+    for fragment in (
+        "    issuance_attempt_id INTEGER,\n",
+        "    UNIQUE(issuance_attempt_id),\n",
+        "    FOREIGN KEY(issuance_attempt_id) "
+        "REFERENCES protocol_issuance_attempts(id),\n",
+    ):
+        predecessor_confirmation_sql = predecessor_confirmation_sql.replace(
+            fragment, ""
+        )
+    setup.execute(predecessor_confirmation_sql)
+    phase15_bootstrap._ensure_phase15_objects(setup)
+    setup.commit()
+    repo = Repository(setup)
+    repo.create_callback_handle(**callback_values(owner_user_id))
+    repo.create_issuance_confirmation(**confirmation_values(owner_user_id))
+    assert repo.claim_callback_handle(
+        "a" * 64,
+        owner_user_id,
+        NOW,
+        claim_id_digest=CALLBACK_CLAIM_DIGEST,
+        claim_expires_at=CLAIM_EXPIRES_AT,
+    ) is not None
+    assert repo.claim_issuance_confirmation(
+        "b" * 64,
+        owner_user_id,
+        NOW,
+        claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+        claim_expires_at=CLAIM_EXPIRES_AT,
+    ) is not None
+    setup.close()
+
+    first_holds_lock = threading.Event()
+    second_attempted_begin = threading.Event()
+    errors: list[BaseException] = []
+    original_locked = phase15_bootstrap._ensure_phase15_bootstrap_schema_locked
+
+    def coordinate_locked(conn):
+        if threading.current_thread().name == "phase15-initializer-first":
+            first_holds_lock.set()
+            assert second_attempted_begin.wait(5)
+        return original_locked(conn)
+
+    monkeypatch.setattr(
+        phase15_bootstrap,
+        "_ensure_phase15_bootstrap_schema_locked",
+        coordinate_locked,
+    )
+
+    def initialize(name: str, observe_begin: bool = False) -> None:
+        connection = open_connection(database_path)
+        if observe_begin:
+            connection.set_trace_callback(
+                lambda sql: second_attempted_begin.set()
+                if sql.strip().upper() == "BEGIN IMMEDIATE"
+                else None
+            )
+        try:
+            phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            connection.close()
+
+    first = threading.Thread(
+        target=initialize,
+        args=("first",),
+        name="phase15-initializer-first",
+    )
+    second = threading.Thread(
+        target=initialize,
+        args=("second", True),
+        name="phase15-initializer-second",
+    )
+    first.start()
+    assert first_holds_lock.wait(5)
+    second.start()
+    first.join(5)
+    second.join(5)
+
+    assert first.is_alive() is False
+    assert second.is_alive() is False
+    assert errors == []
+    verified = open_connection(database_path)
+    try:
+        columns = tuple(
+            row[1]
+            for row in verified.execute(
+                "PRAGMA table_info(protocol_issuance_confirmations)"
+            )
+        )
+        assert columns[-1] == "issuance_attempt_id"
+        callback_claim = verified.execute(
+            "SELECT claim_id_digest, claimed_at, claim_expires_at "
+            "FROM telegram_callback_handles WHERE handle_digest = ?",
+            ("a" * 64,),
+        ).fetchone()
+        confirmation_claim = verified.execute(
+            "SELECT claim_id_digest, claimed_at, claim_expires_at "
+            "FROM protocol_issuance_confirmations WHERE token_digest = ?",
+            ("b" * 64,),
+        ).fetchone()
+        assert tuple(callback_claim) == (CALLBACK_CLAIM_DIGEST, NOW, CLAIM_EXPIRES_AT)
+        assert tuple(confirmation_claim) == (
+            CONFIRMATION_CLAIM_DIGEST,
+            NOW,
+            CLAIM_EXPIRES_AT,
+        )
+    finally:
+        verified.close()
 
 
 def test_expired_callback_state_terminal_consume_is_owner_bound(database_path) -> None:
@@ -1925,12 +2138,14 @@ def test_exact_d827aff_schema_upgrades_without_phase14_side_effects(
                 "SELECT * FROM telegram_callback_handles ORDER BY handle_digest"
             )
         ] == callbacks_before
-        assert [
+        confirmations_after = [
             tuple(row)
             for row in connection.execute(
                 "SELECT * FROM protocol_issuance_confirmations ORDER BY token_digest"
             )
-        ] == confirmations_before
+        ]
+        assert [row[:-1] for row in confirmations_after] == confirmations_before
+        assert [row[-1] for row in confirmations_after] == [None, None]
         assert tuple(
             connection.execute(
                 "SELECT * FROM device_passports WHERE device_id = 'passport-phase15'"

@@ -1126,6 +1126,73 @@ def test_awg3_claimed_confirmation_finalizes_after_row_and_claim_ttl(harness):
     )
 
 
+def test_success_atomically_consumes_exact_bound_confirmation_and_prunes(harness):
+    clock = [NOW]
+    service = _service(harness, now=lambda: clock[0])
+    request = _request(harness)
+    token = service.decide(request).token
+
+    result = service.issue_after_confirmation(request, confirmation_token=token)
+
+    row = harness.conn.execute(
+        """
+        SELECT confirmation.consumed_at,
+               confirmation.terminal_reason,
+               confirmation.issuance_attempt_id,
+               attempt.id,
+               attempt.state
+        FROM protocol_issuance_confirmations AS confirmation
+        JOIN protocol_issuance_attempts AS attempt
+          ON attempt.id = confirmation.issuance_attempt_id
+        """
+    ).fetchone()
+    assert result.status == "issued"
+    assert tuple(row) == (NOW.isoformat(), "issued", row["id"], row["id"], "completed")
+
+    clock[0] = NOW + timedelta(minutes=20)
+    assert Repository(harness.conn).prune_expired_phase15_callback_state(
+        clock[0].isoformat()
+    ) == 2
+    assert harness.conn.execute(
+        "SELECT COUNT(*) FROM protocol_issuance_confirmations"
+    ).fetchone()[0] == 0
+
+
+def test_confirmation_terminalization_failure_rolls_back_completion(
+    harness, monkeypatch
+):
+    issuer = SyntheticIssuer(
+        harness.repo, user_id=harness.user_id, server_id=harness.server_id
+    )
+    service = _service(harness, issuer=issuer)
+    request = _request(harness)
+    token = service.decide(request).token
+    monkeypatch.setattr(
+        service._callback_state,
+        "consume_bound_confirmation",
+        lambda *_args, **_kwargs: False,
+    )
+
+    result = service.issue_after_confirmation(request, confirmation_token=token)
+
+    attempt = _attempts(harness)[0]
+    confirmation = harness.conn.execute(
+        "SELECT consumed_at, terminal_reason, issuance_attempt_id "
+        "FROM protocol_issuance_confirmations"
+    ).fetchone()
+    assert result is None
+    assert issuer.calls
+    assert attempt["state"] == "recovery_required"
+    assert attempt["reason_code"] == "finalization_failed"
+    assert confirmation["consumed_at"] is None
+    assert confirmation["terminal_reason"] is None
+    assert confirmation["issuance_attempt_id"] == attempt["id"]
+    assert harness.conn.execute(
+        "SELECT COUNT(*) FROM device_protocol_profiles "
+        "WHERE protocol_version = 'awg3'"
+    ).fetchone()[0] == 0
+
+
 def test_awg3_confirmation_renewal_failure_stops_before_reservation(
     harness, monkeypatch
 ):
@@ -1175,10 +1242,17 @@ def test_awg3_issued_result_fails_closed_when_exact_claim_is_lost(harness):
 
     assert result is None
     assert len(issuer.calls) == 1
+    attempt = _attempts(harness)[0]
     row = harness.conn.execute(
         "SELECT consumed_at, claim_id_digest FROM protocol_issuance_confirmations"
     ).fetchone()
     assert tuple(row) == (None, "f" * 64)
+    assert attempt["state"] == "recovery_required"
+    assert attempt["reason_code"] == "finalization_failed"
+    assert harness.conn.execute(
+        "SELECT COUNT(*) FROM device_protocol_profiles "
+        "WHERE protocol_version = 'awg3'"
+    ).fetchone()[0] == 0
 
 
 def test_awg3_transient_result_fails_closed_when_claim_release_fails(

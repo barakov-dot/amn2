@@ -256,6 +256,19 @@ class TelegramCallbackStateService:
             is not None
         )
 
+    def bind_confirmation_attempt(
+        self, state: TelegramConfirmationState, *, attempt_id: int
+    ) -> bool:
+        return (
+            self._repo.bind_issuance_confirmation_attempt(
+                state.token_digest,
+                state.owner_user_id,
+                claim_id_digest=state.claim_id_digest,
+                attempt_id=attempt_id,
+            )
+            is not None
+        )
+
     def consume_confirmation(
         self, state: TelegramConfirmationState, *, terminal_reason: str
     ) -> bool:
@@ -266,6 +279,25 @@ class TelegramCallbackStateService:
                 _timestamp(self._utc_now()),
                 terminal_reason,
                 claim_id_digest=state.claim_id_digest,
+            )
+            is not None
+        )
+
+    def consume_bound_confirmation(
+        self,
+        state: TelegramConfirmationState,
+        *,
+        attempt_id: int,
+        terminal_reason: str,
+    ) -> bool:
+        return (
+            self._repo.consume_bound_issuance_confirmation(
+                state.token_digest,
+                state.owner_user_id,
+                _timestamp(self._utc_now()),
+                terminal_reason,
+                claim_id_digest=state.claim_id_digest,
+                attempt_id=attempt_id,
             )
             is not None
         )

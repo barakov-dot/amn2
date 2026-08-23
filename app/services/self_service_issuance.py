@@ -40,6 +40,10 @@ class _RecoveryEnrichmentError(RuntimeError):
     pass
 
 
+class _ConfirmationTerminalizationLost(RuntimeError):
+    pass
+
+
 class IssuerUnavailableBeforeSideEffect(RuntimeError):
     pass
 
@@ -280,16 +284,17 @@ class SelfServiceIssuanceService:
                 actor_kind="user",
                 actor_id=resolved_request.telegram_id,
                 reason_code="issued",
+                confirmation=confirmation,
             )
+        except _ConfirmationTerminalizationLost:
+            return None
         except BaseException as exc:
             if not self._callback_state.release_confirmation(confirmation):
                 raise RuntimeError("confirmation claim release failed") from exc
             raise
-        return (
-            result
-            if self._finish_confirmation(confirmation, result)
-            else None
-        )
+        if result.status == "issued":
+            return result
+        return result if self._finish_confirmation(confirmation, result) else None
 
     def issue_admin_pilot(
         self,
@@ -572,6 +577,7 @@ class SelfServiceIssuanceService:
         actor_kind: str,
         actor_id: int,
         reason_code: str,
+        confirmation: TelegramConfirmationState | None = None,
     ) -> SelfServiceIssuanceResult:
         attempt, execution_lease, reservation_block = (
             self._prepare_execution_marker(
@@ -579,6 +585,7 @@ class SelfServiceIssuanceService:
                 admission,
                 actor_kind=actor_kind,
                 actor_id=actor_id,
+                confirmation=confirmation,
             )
         )
         if reservation_block is not None:
@@ -601,6 +608,7 @@ class SelfServiceIssuanceService:
                         actor_kind=actor_kind,
                         actor_id=actor_id,
                         reason_code=reason_code,
+                        confirmation=confirmation,
                     )
                 except Exception as exc:
                     failure = exc
@@ -618,6 +626,7 @@ class SelfServiceIssuanceService:
         *,
         actor_kind: str,
         actor_id: int,
+        confirmation: TelegramConfirmationState | None = None,
     ):
         with self._repo.transaction():
             attempt, reservation_block = self._reserve(
@@ -629,6 +638,12 @@ class SelfServiceIssuanceService:
             if reservation_block is not None:
                 return None, None, reservation_block
             assert attempt is not None
+            if confirmation is not None and not (
+                self._callback_state.bind_confirmation_attempt(
+                    confirmation, attempt_id=int(attempt["id"])
+                )
+            ):
+                raise RuntimeError("confirmation attempt binding failed")
             self._repo.mark_protocol_issuance_attempt_recovery_required(
                 int(attempt["id"]),
                 local_device_id=None,
@@ -652,6 +667,7 @@ class SelfServiceIssuanceService:
         actor_kind: str,
         actor_id: int,
         reason_code: str,
+        confirmation: TelegramConfirmationState | None = None,
     ) -> SelfServiceIssuanceResult:
         try:
             issued = self._issuer.issue(request=request, admission=admission)
@@ -720,6 +736,16 @@ class SelfServiceIssuanceService:
                     local_device_id=local_device_id,
                     execution_lease=execution_lease,
                 )
+                if confirmation is not None and not (
+                    self._callback_state.consume_bound_confirmation(
+                        confirmation,
+                        attempt_id=attempt_id,
+                        terminal_reason=reason_code,
+                    )
+                ):
+                    raise _ConfirmationTerminalizationLost(
+                        "confirmation terminalization failed"
+                    )
         except Exception:
             self._record_recovery_required(
                 request,

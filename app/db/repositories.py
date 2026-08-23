@@ -1177,6 +1177,55 @@ class Repository:
         )
         return row
 
+    def bind_issuance_confirmation_attempt(
+        self,
+        token_digest: str,
+        owner_user_id: int,
+        *,
+        claim_id_digest: str,
+        attempt_id: int,
+    ) -> sqlite3.Row | None:
+        _require_sha256_digest(token_digest, "token_digest")
+        _require_sha256_digest(claim_id_digest, "claim_id_digest")
+        with self.transaction():
+            attempt = self.get_protocol_issuance_attempt(attempt_id)
+            if (
+                attempt is None
+                or str(attempt["state"])
+                not in {"reserved", "recovery_required"}
+                or int(attempt["owner_user_id"]) != owner_user_id
+            ):
+                return None
+            cursor = self._conn.execute(
+                """
+                UPDATE protocol_issuance_confirmations
+                SET issuance_attempt_id = ?
+                WHERE token_digest = ?
+                  AND owner_user_id = ?
+                  AND consumed_at IS NULL
+                  AND claim_id_digest = ?
+                  AND passport_device_id = ?
+                  AND request_fingerprint = ?
+                """,
+                (
+                    attempt_id,
+                    token_digest,
+                    owner_user_id,
+                    claim_id_digest,
+                    attempt["intended_passport_device_id"],
+                    attempt["request_fingerprint"],
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM protocol_issuance_confirmations "
+                "WHERE token_digest = ?",
+                (token_digest,),
+            ).fetchone()
+            assert row is not None
+            return row
+
     def consume_issuance_confirmation(
         self,
         token_digest: str,
@@ -1204,6 +1253,62 @@ class Repository:
                     token_digest,
                     owner_user_id,
                     claim_id_digest,
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            row = self._conn.execute(
+                "SELECT * FROM protocol_issuance_confirmations "
+                "WHERE token_digest = ?",
+                (token_digest,),
+            ).fetchone()
+            assert row is not None
+        self._active_phase15_claims.discard(
+            ("confirmation", token_digest, claim_id_digest)
+        )
+        return row
+
+    def consume_bound_issuance_confirmation(
+        self,
+        token_digest: str,
+        owner_user_id: int,
+        now: str,
+        terminal_reason: str,
+        *,
+        claim_id_digest: str,
+        attempt_id: int,
+    ) -> sqlite3.Row | None:
+        _require_sha256_digest(token_digest, "token_digest")
+        _require_sha256_digest(claim_id_digest, "claim_id_digest")
+        with self.transaction():
+            attempt = self.get_protocol_issuance_attempt(attempt_id)
+            if (
+                attempt is None
+                or str(attempt["state"]) != "completed"
+                or int(attempt["owner_user_id"]) != owner_user_id
+            ):
+                return None
+            cursor = self._conn.execute(
+                """
+                UPDATE protocol_issuance_confirmations
+                SET consumed_at = ?, terminal_reason = ?
+                WHERE token_digest = ?
+                  AND owner_user_id = ?
+                  AND consumed_at IS NULL
+                  AND claim_id_digest = ?
+                  AND issuance_attempt_id = ?
+                  AND passport_device_id = ?
+                  AND request_fingerprint = ?
+                """,
+                (
+                    now,
+                    terminal_reason,
+                    token_digest,
+                    owner_user_id,
+                    claim_id_digest,
+                    attempt_id,
+                    attempt["intended_passport_device_id"],
+                    attempt["request_fingerprint"],
                 ),
             )
             if cursor.rowcount != 1:
@@ -1381,19 +1486,23 @@ class Repository:
         )
 
     def _confirmation_has_durable_attempt(self, row: Mapping[str, Any]) -> bool:
+        attempt_id = row["issuance_attempt_id"]
+        if attempt_id is None:
+            return False
         return (
             self._conn.execute(
                 """
                 SELECT 1
                 FROM protocol_issuance_attempts
-                WHERE owner_user_id = ?
+                WHERE id = ?
+                  AND owner_user_id = ?
                   AND intended_passport_device_id = ?
-                  AND protocol_version = 'awg3'
                   AND request_fingerprint = ?
-                  AND state IN ('reserved', 'recovery_required', 'completed')
+                  AND state IN ('reserved', 'recovery_required')
                 LIMIT 1
                 """,
                 (
+                    attempt_id,
                     row["owner_user_id"],
                     row["passport_device_id"],
                     row["request_fingerprint"],
