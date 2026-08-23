@@ -275,12 +275,13 @@ def install_fix6_confirmation_schema(
     connection: sqlite3.Connection,
     *,
     partial_attempt_unique: bool = False,
+    attempt_target: str = "protocol_issuance_attempts",
     extra_attempt_foreign_keys: tuple[tuple[str, str], ...] = (),
 ) -> None:
     install_confirmation_schema_with_attempt_foreign_keys(
         connection,
         attempt_foreign_keys=(
-            ("issuance_attempt_id", "protocol_issuance_attempts"),
+            ("issuance_attempt_id", attempt_target),
             *extra_attempt_foreign_keys,
         ),
         partial_attempt_unique=partial_attempt_unique,
@@ -1235,8 +1236,12 @@ def test_canonical_schema_rejects_attempt_table_fk_from_nonbinding_column(
         connection.close()
 
 
+@pytest.mark.parametrize(
+    "extra_attempt_target",
+    ("protocol_issuance_attempts", "Protocol_Issuance_Attempts"),
+)
 def test_fix6_predecessor_with_extra_attempt_table_fk_is_rejected(
-    database_path,
+    database_path, extra_attempt_target
 ) -> None:
     connection = open_connection(database_path)
     try:
@@ -1244,7 +1249,7 @@ def test_fix6_predecessor_with_extra_attempt_table_fk_is_rejected(
         install_fix6_confirmation_schema(
             connection,
             extra_attempt_foreign_keys=(
-                ("owner_user_id", "protocol_issuance_attempts"),
+                ("owner_user_id", extra_attempt_target),
             ),
         )
         foreign_keys_before = tuple(
@@ -1263,6 +1268,58 @@ def test_fix6_predecessor_with_extra_attempt_table_fk_is_rejected(
                 "PRAGMA foreign_key_list(protocol_issuance_confirmations)"
             )
         ) == foreign_keys_before
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    "attempt_target",
+    ("PROTOCOL_ISSUANCE_ATTEMPTS", "Protocol_Issuance_Attempts_Legacy"),
+)
+def test_canonical_schema_rejects_case_variant_attempt_table_fk(
+    database_path, attempt_target
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        install_confirmation_schema_with_attempt_foreign_keys(
+            connection,
+            attempt_foreign_keys=(("owner_user_id", attempt_target),),
+        )
+
+        with pytest.raises(RuntimeError, match="attempt binding"):
+            phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    "attempt_target",
+    ("PROTOCOL_ISSUANCE_ATTEMPTS", "Protocol_Issuance_Attempts_Legacy"),
+)
+def test_case_variant_exact_fix6_predecessor_upgrades(
+    database_path, attempt_target
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        install_fix6_confirmation_schema(
+            connection,
+            attempt_target=attempt_target,
+        )
+
+        phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+        phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+
+        assert {
+            str(row[2]).casefold()
+            for row in connection.execute(
+                "PRAGMA foreign_key_list(protocol_issuance_confirmations)"
+            )
+        }.isdisjoint(
+            {"protocol_issuance_attempts", "protocol_issuance_attempts_legacy"}
+        )
+        assert list(connection.execute("PRAGMA foreign_key_check")) == []
     finally:
         connection.close()
 

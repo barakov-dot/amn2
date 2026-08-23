@@ -828,14 +828,14 @@ def _issuance_attempt_foreign_keys(
     for row in conn.execute(
         "PRAGMA foreign_key_list(protocol_issuance_confirmations)"
     ):
-        target = str(row[2])
+        target = str(row[2]).casefold()
         if target not in {
             "protocol_issuance_attempts",
             "protocol_issuance_attempts_legacy",
         }:
             continue
         _, columns = groups.setdefault(int(row[0]), (target, []))
-        columns.append((str(row[3]), str(row[4])))
+        columns.append((str(row[3]).casefold(), str(row[4]).casefold()))
     return tuple(
         (target, tuple(columns))
         for _, (target, columns) in sorted(
