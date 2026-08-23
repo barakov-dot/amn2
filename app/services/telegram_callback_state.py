@@ -23,7 +23,7 @@ class TelegramSelectionState:
     client_platform: str
     client_application: str
     client_version: str
-    client_build: str
+    client_build: str | None
     request_fingerprint: str
     claim_id_digest: str
 
@@ -37,7 +37,7 @@ class TelegramConfirmationState:
     client_platform: str
     client_application: str
     client_version: str
-    client_build: str
+    client_build: str | None
     request_fingerprint: str
     claim_id_digest: str
 
@@ -49,7 +49,7 @@ class TelegramExpiredSelectionState:
     client_platform: str
     client_application: str
     client_version: str
-    client_build: str
+    client_build: str | None
     request_fingerprint: str
 
 
@@ -60,7 +60,7 @@ class TelegramExpiredConfirmationState:
     client_platform: str
     client_application: str
     client_version: str
-    client_build: str
+    client_build: str | None
     request_fingerprint: str
 
 
@@ -99,7 +99,7 @@ class TelegramCallbackStateService:
         client_build: str | None,
         request_fingerprint: str,
     ) -> str:
-        if not client_build:
+        if client_build is not None and not client_build:
             raise ValueError("client_build")
         handle = self._new_opaque(self._opaque_factory, "selection handle")
         now = self._utc_now()
@@ -193,7 +193,7 @@ class TelegramCallbackStateService:
             client_platform=selection.client_platform,
             client_application=selection.client_application,
             client_version=selection.client_version,
-            client_build=selection.client_build,
+            client_build=_stored_confirmation_build(selection.client_build),
             request_fingerprint=selection.request_fingerprint,
             created_at=_timestamp(now),
             expires_at=_timestamp(now + self._confirmation_ttl),
@@ -277,23 +277,14 @@ class TelegramCallbackStateService:
 def _selection_state(
     row: Mapping[str, object], claim_id_digest: str
 ) -> TelegramSelectionState:
-    values = tuple(
-        str(row[field])
-        for field in (
-            "client_platform",
-            "client_application",
-            "client_version",
-            "client_build",
-        )
-    )
     return TelegramSelectionState(
         handle_digest=str(row["handle_digest"]),
         owner_user_id=int(row["owner_user_id"]),
         passport_device_id=str(row["passport_device_id"]),
-        client_platform=values[0],
-        client_application=values[1],
-        client_version=values[2],
-        client_build=values[3],
+        client_platform=str(row["client_platform"]),
+        client_application=str(row["client_application"]),
+        client_version=str(row["client_version"]),
+        client_build=_loaded_client_build(row["client_build"]),
         request_fingerprint=str(row["request_fingerprint"]),
         claim_id_digest=claim_id_digest,
     )
@@ -310,7 +301,7 @@ def _confirmation_state(
         client_platform=str(row["client_platform"]),
         client_application=str(row["client_application"]),
         client_version=str(row["client_version"]),
-        client_build=str(row["client_build"]),
+        client_build=_loaded_client_build(row["client_build"]),
         request_fingerprint=str(row["request_fingerprint"]),
         claim_id_digest=claim_id_digest,
     )
@@ -325,7 +316,7 @@ def _expired_selection_state(
         client_platform=str(row["client_platform"]),
         client_application=str(row["client_application"]),
         client_version=str(row["client_version"]),
-        client_build=str(row["client_build"]),
+        client_build=_loaded_client_build(row["client_build"]),
         request_fingerprint=str(row["request_fingerprint"]),
     )
 
@@ -339,7 +330,7 @@ def _expired_confirmation_state(
         client_platform=str(row["client_platform"]),
         client_application=str(row["client_application"]),
         client_version=str(row["client_version"]),
-        client_build=str(row["client_build"]),
+        client_build=_loaded_client_build(row["client_build"]),
         request_fingerprint=str(row["request_fingerprint"]),
     )
 
@@ -349,6 +340,14 @@ def _is_opaque(value: object) -> bool:
         character.isascii() and (character.isalnum() or character in "-_")
         for character in value
     )
+
+
+def _stored_confirmation_build(value: str | None) -> str:
+    return "" if value is None else value
+
+
+def _loaded_client_build(value: object) -> str | None:
+    return None if value is None or value == "" else str(value)
 
 
 def _digest(value: str) -> str:

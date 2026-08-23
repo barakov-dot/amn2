@@ -1557,6 +1557,54 @@ class Repository:
         state["bound_transaction"] = self._active_outer_transaction_identity
         return attempt
 
+    def cancel_protocol_issuance_attempt_before_side_effect(
+        self,
+        attempt_id: int,
+        *,
+        reason_code: str,
+        execution_lease: object,
+    ) -> sqlite3.Row:
+        if reason_code != "issuer_unavailable_before_side_effect":
+            raise ValueError("invalid pre-side-effect cancellation reason")
+        with self.transaction():
+            lease_state = self._protocol_issuance_execution_leases.get(
+                execution_lease
+            )
+            if (
+                lease_state is None
+                or int(lease_state["attempt_id"]) != attempt_id
+            ):
+                raise ValueError("invalid execution lease")
+            if bool(lease_state["used"]):
+                raise ValueError("execution lease already used")
+            if (
+                self._active_outer_transaction_identity is None
+                or lease_state["bound_transaction"]
+                is not self._active_outer_transaction_identity
+            ):
+                raise ValueError(
+                    "execution lease is not bound to current outer transaction"
+                )
+            cursor = self._conn.execute(
+                """
+                UPDATE protocol_issuance_attempts
+                SET state = 'cancelled',
+                    reason_code = ?,
+                    cancelled_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                  AND state = 'recovery_required'
+                  AND reason_code = 'issuer_in_progress'
+                """,
+                (reason_code, attempt_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("issuance execution marker changed")
+            lease_state["used"] = True
+            attempt = self.get_protocol_issuance_attempt(attempt_id)
+            assert attempt is not None
+            return attempt
+
     def complete_protocol_issuance_attempt(
         self,
         attempt_id: int,

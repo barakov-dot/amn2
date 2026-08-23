@@ -26,6 +26,7 @@ from app.services.self_service_issuance import SelfServiceIssuanceRequest
 from app.services.telegram_callback_state import TelegramCallbackStateService
 from app.vpn.protocol_versions import ProtocolVersion
 from app.services.client_compatibility import ClientIdentity
+from app.services.device_passports import create_device_passport
 
 
 NOW = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
@@ -335,6 +336,23 @@ def test_build_components_wires_real_services_without_startup_effects(tmp_path):
     assert peer.calls == []
 
 
+def test_missing_server_dependency_returns_unavailable_components(tmp_path):
+    settings, _paths = _settings(tmp_path)
+    conn, repo = _accepted_repo(tmp_path)
+    conn.execute("DELETE FROM servers")
+    conn.commit()
+    peer = RecordingPeerApplier()
+    access = RecordingAccessService(peer)
+
+    components = build_phase15_awg3_components(settings, repo, access, peer)
+
+    assert components.available is False
+    assert components.unavailable_reason == "AWG3 bootstrap providers are invalid"
+    assert components.awg3_client_choices == ()
+    assert access.calls == []
+    assert peer.calls == []
+
+
 def test_fresh_provider_failure_blocks_real_issuer_boundary(tmp_path):
     settings, paths = _settings(tmp_path)
     _conn, repo = _accepted_repo(tmp_path)
@@ -358,6 +376,89 @@ def test_fresh_provider_failure_blocks_real_issuer_boundary(tmp_path):
             admission=admission,
         )
 
+    assert access.calls == []
+    assert peer.calls == []
+
+
+def test_provider_change_before_access_returns_retryable_blocked_result(
+    tmp_path,
+    monkeypatch,
+):
+    settings, paths = _settings(tmp_path)
+    _conn, repo = _accepted_repo(tmp_path)
+    user_id = repo.upsert_user(
+        telegram_id=1001,
+        username="phase15-user",
+        first_name="Phase",
+        last_name="Fifteen",
+    )
+    server_id = int(repo.get_server_by_name("local")["id"])
+    awg2_device_id = repo.create_device(
+        user_id=user_id,
+        server_id=server_id,
+        name="phase15-existing-awg2",
+        duration_days=30,
+        vpn_ip="10.8.0.2",
+        peer_public_key="phase15-existing-public",
+        peer_private_key_encrypted="phase15-existing-encrypted-private",
+        preshared_key_encrypted="phase15-existing-encrypted-psk",
+        config_version="amneziawg_v2",
+        protocol_version="awg2",
+    )
+    passport = create_device_passport(
+        repo,
+        owner_user_id=user_id,
+        local_device_id=awg2_device_id,
+        platform=CLIENT.platform,
+        official_client_type=CLIENT.application,
+        import_method="conf_file",
+        config_schema_version="amneziawg_v2",
+        config_text="phase15-existing-config-fingerprint-source",
+        protocol_version="awg2",
+    )
+    peer = RecordingPeerApplier()
+    access = RecordingAccessService(peer)
+    components = build_phase15_awg3_components(settings, repo, access, peer)
+    service = components.self_service_issuance_service
+    request = SelfServiceIssuanceRequest(
+        user_id=user_id,
+        telegram_id=1001,
+        passport_device_id=passport.device_id,
+        protocol_version=ProtocolVersion.AWG3,
+        client=CLIENT,
+    )
+    token = service.decide(request).token
+    original_prepare = service._prepare_execution_marker
+
+    def invalidate_after_admission(*args, **kwargs):
+        prepared = original_prepare(*args, **kwargs)
+        paths["build"].write_text("{}", encoding="utf-8")
+        return prepared
+
+    monkeypatch.setattr(service, "_prepare_execution_marker", invalidate_after_admission)
+
+    result = service.issue_after_confirmation(
+        request,
+        confirmation_token=token,
+    )
+
+    assert result.status == "blocked"
+    assert result.reason_code == "admission_view_unavailable"
+    attempt = repo.list_protocol_issuance_attempts(
+        passport_device_id=passport.device_id,
+        protocol_version="awg3",
+    )[0]
+    assert attempt["state"] == "cancelled"
+    assert attempt["reason_code"] == "issuer_unavailable_before_side_effect"
+    confirmation = repo.claim_issuance_confirmation(
+        hashlib.sha256(token.encode()).hexdigest(),
+        user_id,
+        NOW.isoformat(),
+        claim_id_digest="c" * 64,
+        claim_expires_at=(NOW.replace(minute=NOW.minute + 1)).isoformat(),
+    )
+    assert confirmation is not None
+    assert confirmation["consumed_at"] is None
     assert access.calls == []
     assert peer.calls == []
 

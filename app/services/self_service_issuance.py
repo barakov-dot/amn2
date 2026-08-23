@@ -40,6 +40,10 @@ class _RecoveryEnrichmentError(RuntimeError):
     pass
 
 
+class IssuerUnavailableBeforeSideEffect(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class SelfServiceIssuanceRequest:
     user_id: int
@@ -644,6 +648,13 @@ class SelfServiceIssuanceService:
     ) -> SelfServiceIssuanceResult:
         try:
             issued = self._issuer.issue(request=request, admission=admission)
+        except IssuerUnavailableBeforeSideEffect:
+            self._repo.cancel_protocol_issuance_attempt_before_side_effect(
+                attempt_id,
+                reason_code="issuer_unavailable_before_side_effect",
+                execution_lease=execution_lease,
+            )
+            return self._blocked(request, "admission_view_unavailable")
         except Exception:
             self._record_recovery_required(
                 request,

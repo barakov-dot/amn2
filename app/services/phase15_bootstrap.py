@@ -30,6 +30,7 @@ from app.services.protocol_admission import (
 )
 from app.services.self_service_issuance import (
     ConfigIssuer,
+    IssuerUnavailableBeforeSideEffect,
     SelfServiceIssuanceRequest,
     SelfServiceIssuanceService,
 )
@@ -62,6 +63,13 @@ _RUNTIME_FIELDS = frozenset(
 
 
 class Phase15BootstrapUnavailable(RuntimeError):
+    pass
+
+
+class _Phase15IssuerUnavailableBeforeSideEffect(
+    Phase15BootstrapUnavailable,
+    IssuerUnavailableBeforeSideEffect,
+):
     pass
 
 
@@ -276,16 +284,18 @@ class ProductionAwg3ConfigIssuer(ConfigIssuer):
         request: SelfServiceIssuanceRequest,
         admission: AdmissionResult,
     ) -> object:
-        if request.protocol_version is not ProtocolVersion.AWG3:
-            raise Phase15BootstrapUnavailable("AWG3 issuance gates changed")
-        boundary = self.fresh_boundary(
-            client=request.client,
-            expected_admission=admission,
-        )
         try:
+            if request.protocol_version is not ProtocolVersion.AWG3:
+                raise Phase15BootstrapUnavailable("AWG3 issuance gates changed")
+            boundary = self.fresh_boundary(
+                client=request.client,
+                expected_admission=admission,
+            )
             server = self._repo.get_server_by_name(self._settings.server_name)
-        except LookupError:
-            raise Phase15BootstrapUnavailable("AWG3 server is unavailable") from None
+        except (LookupError, Phase15BootstrapUnavailable):
+            raise _Phase15IssuerUnavailableBeforeSideEffect(
+                "AWG3 issuer is unavailable before side effects"
+            ) from None
         return self._access_service.create_protocol_device_for_existing_passport(
             owner_user_id=request.user_id,
             passport_device_id=request.passport_device_id,
@@ -564,7 +574,15 @@ def _load_snapshot(settings: Settings, repo: Repository) -> _BootstrapSnapshot:
             accepted_awg3_builds=frozenset({client}),
         )
         return _BootstrapSnapshot(admission, state, client, material, runtime)
-    except (KeyError, StopIteration, TypeError, ValueError, OSError, json.JSONDecodeError):
+    except (
+        KeyError,
+        LookupError,
+        StopIteration,
+        TypeError,
+        ValueError,
+        OSError,
+        json.JSONDecodeError,
+    ):
         raise Phase15BootstrapUnavailable("AWG3 bootstrap providers are invalid") from None
 
 

@@ -461,6 +461,27 @@ def test_awg2_offer_never_silently_falls_back_or_reuses_awg3_confirmation(harnes
     assert service.issuer.calls == []
 
 
+def test_buildless_awg2_confirmation_remains_available_to_consumer(harness):
+    service = _service(harness)
+    request = _request(
+        harness,
+        protocol=ProtocolVersion.AWG2,
+        client=ClientIdentity("amnezia_vpn", "windows", "5.0.0.5"),
+    )
+
+    decision = service.decide(request)
+    result = service.issue_after_confirmation(
+        request,
+        confirmation_token=decision.token,
+    )
+
+    assert decision.status == "confirmation_required"
+    assert decision.protocol_version is ProtocolVersion.AWG2
+    assert result.status == "issued"
+    assert result.protocol_version is ProtocolVersion.AWG2
+    assert _attempts(harness)[0]["client_build"] is None
+
+
 def test_confirmation_is_short_lived_request_bound_and_one_time(harness):
     clock = [NOW]
     service = _service(harness, now=lambda: clock[0])
@@ -2191,6 +2212,45 @@ def test_execution_lease_cannot_complete_twice_in_same_transaction(harness):
                 local_device_id=local_device_id,
                 execution_lease=lease,
             )
+
+
+def test_pre_side_effect_cancellation_requires_matching_bound_unused_lease(harness):
+    attempt_id, lease, _local_device_id = _phase_a_lease(harness)
+
+    with harness.repo.transaction():
+        with pytest.raises(ValueError, match="invalid execution lease"):
+            harness.repo.cancel_protocol_issuance_attempt_before_side_effect(
+                attempt_id,
+                reason_code="issuer_unavailable_before_side_effect",
+                execution_lease=object(),
+            )
+        with pytest.raises(ValueError, match="bound to current outer transaction"):
+            harness.repo.cancel_protocol_issuance_attempt_before_side_effect(
+                attempt_id,
+                reason_code="issuer_unavailable_before_side_effect",
+                execution_lease=lease,
+            )
+        harness.repo.bind_protocol_issuance_execution_lease(attempt_id, lease)
+        with pytest.raises(ValueError, match="invalid execution lease"):
+            harness.repo.cancel_protocol_issuance_attempt_before_side_effect(
+                attempt_id + 1,
+                reason_code="issuer_unavailable_before_side_effect",
+                execution_lease=lease,
+            )
+        cancelled = harness.repo.cancel_protocol_issuance_attempt_before_side_effect(
+            attempt_id,
+            reason_code="issuer_unavailable_before_side_effect",
+            execution_lease=lease,
+        )
+        with pytest.raises(ValueError, match="execution lease already used"):
+            harness.repo.cancel_protocol_issuance_attempt_before_side_effect(
+                attempt_id,
+                reason_code="issuer_unavailable_before_side_effect",
+                execution_lease=lease,
+            )
+
+    assert cancelled["state"] == "cancelled"
+    assert cancelled["reason_code"] == "issuer_unavailable_before_side_effect"
 
 
 def test_self_service_block_in_phase_gap_prevents_remote_issuer_and_keeps_marker(
