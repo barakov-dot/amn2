@@ -1,6 +1,7 @@
 import base64
 import ipaddress
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import replace
 
 import pytest
@@ -559,6 +560,7 @@ class FailingDevicePassportRepository(Repository):
 class RecordingPeerApplier:
     def __init__(self, *, error=None, remote_allocated_ips=None):
         self.calls = []
+        self.list_calls = []
         self._error = error
         self._remote_allocated_ips = list(remote_allocated_ips or [])
 
@@ -575,7 +577,52 @@ class RecordingPeerApplier:
             raise self._error
 
     def list_allocated_ips(self, *, server):
+        self.list_calls.append(int(server["id"]))
         return list(self._remote_allocated_ips)
+
+
+def _access_side_effect_counts(conn):
+    return {
+        table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        for table in (
+            "devices",
+            "device_passports",
+            "device_lifecycle_events",
+            "admin_actions",
+        )
+    }
+
+
+def _install_access_boundary_probes(monkeypatch, repo):
+    calls = {"transaction": 0, "owner": 0, "keypair": 0, "preshared_key": 0}
+    original_transaction = repo.transaction
+    original_get_user = repo.get_user
+    original_generate_keypair = access_module.generate_keypair
+    original_generate_key = access_module.generate_key
+
+    @contextmanager
+    def recording_transaction():
+        calls["transaction"] += 1
+        with original_transaction():
+            yield
+
+    def recording_get_user(user_id):
+        calls["owner"] += 1
+        return original_get_user(user_id)
+
+    def recording_generate_keypair():
+        calls["keypair"] += 1
+        return original_generate_keypair()
+
+    def recording_generate_key():
+        calls["preshared_key"] += 1
+        return original_generate_key()
+
+    monkeypatch.setattr(repo, "transaction", recording_transaction)
+    monkeypatch.setattr(repo, "get_user", recording_get_user)
+    monkeypatch.setattr(access_module, "generate_keypair", recording_generate_keypair)
+    monkeypatch.setattr(access_module, "generate_key", recording_generate_key)
+    return calls
 
 
 class DuplicateIpRaceRepository(Repository):
@@ -1683,6 +1730,142 @@ def _accepted_awg3_runtime(server_id):
         lifecycle_state="accepted",
         acceptance_receipt="sha256:" + "b" * 64,
     )
+
+
+@pytest.mark.parametrize(
+    "injection",
+    (
+        "runtime_target",
+        "awg3_material",
+        "runtime_peer_applier",
+        "awg3_context",
+        "combined",
+    ),
+)
+def test_operator_awg2_rejects_awg3_only_inputs_before_any_side_effect(
+    tmp_path,
+    monkeypatch,
+    injection,
+):
+    conn = connect(tmp_path / "operator-awg2-boundary.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    owner_user_id = repo.create_operator_recipient(operator_label="Operator")
+    server_id = repo.ensure_default_server(
+        name="local",
+        network_cidr="10.8.0.0/24",
+    )
+    awg2_peer_applier = RecordingPeerApplier(
+        remote_allocated_ips=["10.8.0.200/32"]
+    )
+    runtime_peer_applier = RecordingPeerApplier(
+        remote_allocated_ips=["10.9.0.200/32"]
+    )
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=awg2_peer_applier,
+    )
+    material = _awg3_issuer_material()
+    kwargs = {
+        "device_context": OperatorDeviceContext(
+            platform="windows",
+            official_client_type="amnezia_vpn",
+            client_version="5.0.0.5",
+        ),
+        "client_build": "50005",
+    }
+    if injection in {"runtime_target", "combined"}:
+        kwargs["runtime_target"] = _accepted_awg3_runtime(server_id)
+    if injection in {"awg3_material", "combined"}:
+        kwargs["awg3_material"] = material
+    if injection in {"runtime_peer_applier", "combined"}:
+        kwargs["runtime_peer_applier"] = runtime_peer_applier
+    if injection in {"awg3_context", "combined"}:
+        kwargs["device_context"] = _awg3_existing_passport_context()
+    before = _access_side_effect_counts(conn)
+    boundary_calls = _install_access_boundary_probes(monkeypatch, repo)
+
+    with pytest.raises(
+        ValueError,
+        match="AWG3-only inputs require amneziawg_v3",
+    ):
+        service.create_operator_device(
+            owner_user_id=owner_user_id,
+            server_id=server_id,
+            device_name="Injected AWG3 input",
+            duration_days=30,
+            admin_telegram_id=999,
+            config_version="amneziawg_v2",
+            **kwargs,
+        )
+
+    assert boundary_calls == {
+        "transaction": 0,
+        "owner": 0,
+        "keypair": 0,
+        "preshared_key": 0,
+    }
+    assert _access_side_effect_counts(conn) == before
+    assert awg2_peer_applier.calls == []
+    assert awg2_peer_applier.list_calls == []
+    assert runtime_peer_applier.calls == []
+    assert runtime_peer_applier.list_calls == []
+    assert material.secret_resolver.calls == []
+
+
+def test_existing_passport_protocol_rejects_v2_before_any_side_effect(
+    tmp_path,
+    monkeypatch,
+):
+    (
+        conn,
+        repo,
+        service,
+        awg2_peer_applier,
+        owner_user_id,
+        server_id,
+        passport_device_id,
+    ) = _existing_passport_protocol_fixture(tmp_path)
+    awg2_peer_applier.list_calls.clear()
+    runtime_peer_applier = RecordingPeerApplier(
+        remote_allocated_ips=["10.9.0.200/32"]
+    )
+    material = _awg3_issuer_material()
+    before = _access_side_effect_counts(conn)
+    boundary_calls = _install_access_boundary_probes(monkeypatch, repo)
+
+    with pytest.raises(
+        ValueError,
+        match="protocol device creation requires amneziawg_v3",
+    ):
+        service.create_protocol_device_for_existing_passport(
+            owner_user_id=owner_user_id,
+            passport_device_id=passport_device_id,
+            server_id=server_id,
+            device_name="AWG3 laptop",
+            config_version="amneziawg_v2",
+            client_build="50005",
+            device_context=_awg3_existing_passport_context(),
+            awg3_material=material,
+            runtime_target=_accepted_awg3_runtime(server_id),
+            runtime_peer_applier=runtime_peer_applier,
+        )
+
+    assert boundary_calls == {
+        "transaction": 0,
+        "owner": 0,
+        "keypair": 0,
+        "preshared_key": 0,
+    }
+    assert _access_side_effect_counts(conn) == before
+    assert awg2_peer_applier.calls == []
+    assert awg2_peer_applier.list_calls == []
+    assert runtime_peer_applier.calls == []
+    assert runtime_peer_applier.list_calls == []
+    assert material.secret_resolver.calls == []
 
 
 def test_existing_passport_awg3_uses_only_exact_runtime_config_ipam_and_peer(

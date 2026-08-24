@@ -306,6 +306,13 @@ class AccessService:
         runtime_target: RuntimeInstanceSpec | None = None,
         runtime_peer_applier: PeerApplier | None = None,
     ) -> OperatorDeviceCreateResult:
+        config_version = _validate_operator_config_boundary(
+            config_version=config_version,
+            device_context=device_context,
+            awg3_material=awg3_material,
+            runtime_target=runtime_target,
+            runtime_peer_applier=runtime_peer_applier,
+        )
         remote_mutation: RemoteMutationResult | None = None
 
         def record_remote_mutation(result: RemoteMutationResult) -> None:
@@ -357,6 +364,7 @@ class AccessService:
         runtime_target: RuntimeInstanceSpec,
         runtime_peer_applier: PeerApplier,
     ) -> OperatorDeviceCreateResult:
+        config_version = _require_awg3_config_version(config_version)
         remote_mutation: RemoteMutationResult | None = None
 
         def record_remote_mutation(result: RemoteMutationResult) -> None:
@@ -408,7 +416,7 @@ class AccessService:
             or client_build.casefold() in {"latest", "current", "unknown"}
         ):
             raise ValueError("exact client_build is required")
-        config_version = validate_config_version(config_version)
+        config_version = _require_awg3_config_version(config_version)
         validate_device_passport_context(
             platform=device_context.platform,
             official_client_type=device_context.official_client_type,
@@ -509,6 +517,7 @@ class AccessService:
             resolved_hpk=resolved_hpk,
             runtime_target=runtime_target,
             runtime_peer_applier=runtime_peer_applier,
+            allocation_strategy="lowest_free",
         )
         return OperatorDeviceCreateResult(
             device_id=device_id,
@@ -546,7 +555,13 @@ class AccessService:
         if not normalized_device_display_name:
             raise ValueError("device_name must be non-blank")
         expiry = _resolve_operator_expiry(duration_days=duration_days, expiry=expiry)
-        config_version = validate_config_version(config_version)
+        config_version = _validate_operator_config_boundary(
+            config_version=config_version,
+            device_context=device_context,
+            awg3_material=awg3_material,
+            runtime_target=runtime_target,
+            runtime_peer_applier=runtime_peer_applier,
+        )
         assignment_mode = validate_config_assignment_mode(assignment_mode)
         assignment_policy = config_assignment_policy(assignment_mode)
         if passport_device_id is not None and not assignment_policy.passport_required:
@@ -638,6 +653,11 @@ class AccessService:
             resolved_hpk=resolved_hpk,
             runtime_target=runtime_target,
             runtime_peer_applier=runtime_peer_applier,
+            allocation_strategy=(
+                "lowest_free"
+                if config_version == "amneziawg_v3"
+                else "remote_high_watermark"
+            ),
         )
 
         self._repo.record_admin_action(
@@ -765,6 +785,7 @@ class AccessService:
                 "review, verify the server peer, and reconcile local state."
             ),
             remote_mutation_observer=remote_mutation_observer,
+            allocation_strategy="remote_high_watermark",
         )
         self._repo.mark_order_fulfilled(order_id, device_id)
         self._repo.record_admin_action(
@@ -802,6 +823,7 @@ class AccessService:
         remote_operation_id: str,
         remote_recovery_note: Callable[[int], str],
         remote_mutation_observer: Callable[[RemoteMutationResult], None] | None,
+        allocation_strategy: IpAllocationStrategy,
         protocol_version: str | None = None,
         runtime_instance_id: str | None = None,
         compatibility_evidence_id: str | None = None,
@@ -812,34 +834,24 @@ class AccessService:
         runtime_peer_applier: PeerApplier | None = None,
     ) -> tuple[int, str, str]:
         last_error: sqlite3.IntegrityError | None = None
-        active_peer_applier = (
-            runtime_peer_applier if runtime_target is not None else self._peer_applier
-        )
-        network_cidr = (
-            runtime_target.vpn_cidr
-            if runtime_target is not None
-            else str(server["vpn_network_cidr"])
-        )
-        server_address = (
-            _runtime_server_address(runtime_target.vpn_cidr)
-            if runtime_target is not None
-            else server["server_address"]
-        )
-        endpoint_host = (
-            awg3_material.endpoint_host
-            if runtime_target is not None and awg3_material is not None
-            else str(server["endpoint_host"])
-        )
-        endpoint_port = (
-            runtime_target.udp_port
-            if runtime_target is not None
-            else server["vpn_port"]
-        )
-        server_public_key = (
-            awg3_material.server_public_key
-            if runtime_target is not None and awg3_material is not None
-            else str(server["server_public_key"])
-        )
+        if allocation_strategy == "lowest_free":
+            if runtime_target is None or awg3_material is None:
+                raise ValueError("validated AWG3 runtime inputs are required")
+            active_peer_applier = runtime_peer_applier
+            network_cidr = runtime_target.vpn_cidr
+            server_address = _runtime_server_address(runtime_target.vpn_cidr)
+            endpoint_host = awg3_material.endpoint_host
+            endpoint_port = runtime_target.udp_port
+            server_public_key = awg3_material.server_public_key
+        elif allocation_strategy == "remote_high_watermark":
+            active_peer_applier = self._peer_applier
+            network_cidr = str(server["vpn_network_cidr"])
+            server_address = server["server_address"]
+            endpoint_host = str(server["endpoint_host"])
+            endpoint_port = server["vpn_port"]
+            server_public_key = str(server["server_public_key"])
+        else:
+            raise ValueError("unsupported IP allocation strategy")
 
         for _ in range(IP_ALLOCATION_ATTEMPTS):
             allocated_ips = (
@@ -847,7 +859,7 @@ class AccessService:
                     server_id,
                     runtime_target.runtime_instance_id,
                 )
-                if runtime_target is not None
+                if allocation_strategy == "lowest_free" and runtime_target is not None
                 else self._repo.list_allocated_ips(server_id)
             )
             try:
@@ -859,11 +871,7 @@ class AccessService:
                         active_peer_applier,
                         server=server,
                     ),
-                    strategy=(
-                        "lowest_free"
-                        if runtime_target is not None
-                        else "remote_high_watermark"
-                    ),
+                    strategy=allocation_strategy,
                 )
             except RuntimeError as exc:
                 raise IpAllocationConflict("Could not allocate a unique VPN IP address") from exc
@@ -980,6 +988,32 @@ class AccessService:
                 return device_id, config_text, config_fingerprint
 
         raise IpAllocationConflict("Could not allocate a unique VPN IP address") from last_error
+
+
+def _validate_operator_config_boundary(
+    *,
+    config_version: str,
+    device_context: OperatorDeviceContext,
+    awg3_material: Awg3IssuerMaterial | None,
+    runtime_target: RuntimeInstanceSpec | None,
+    runtime_peer_applier: PeerApplier | None,
+) -> str:
+    validated = validate_config_version(config_version)
+    if validated != "amneziawg_v3" and (
+        awg3_material is not None
+        or runtime_target is not None
+        or runtime_peer_applier is not None
+        or device_context.protocol_version == ProtocolVersion.AWG3.value
+    ):
+        raise ValueError("AWG3-only inputs require amneziawg_v3")
+    return validated
+
+
+def _require_awg3_config_version(config_version: str) -> str:
+    validated = validate_config_version(config_version)
+    if validated != "amneziawg_v3":
+        raise ValueError("protocol device creation requires amneziawg_v3")
+    return validated
 
 
 def _validate_awg3_runtime_inputs(
