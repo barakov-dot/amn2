@@ -1,4 +1,5 @@
 import base64
+import ipaddress
 import sqlite3
 from dataclasses import replace
 
@@ -369,6 +370,70 @@ def test_approve_order_allocates_after_live_remote_ips_from_peer_applier(tmp_pat
     device = repo.get_device(result.device_id)
     assert device["vpn_ip"] == "10.8.1.3"
     assert peer_applier.calls[0]["vpn_ip"] == "10.8.1.3"
+
+
+def test_allocator_uses_lowest_free_address_across_local_remote_and_server():
+    vpn_ip = access_module._allocate_vpn_ip(
+        network_cidr="10.9.0.0/24",
+        server_address="10.9.0.1/24",
+        allocated_ips=["10.9.0.3", "10.8.0.2"],
+        remote_allocated_ips=["10.9.0.200/32", "10.8.0.3/32"],
+    )
+
+    assert vpn_ip == "10.9.0.2"
+
+
+def test_allocator_does_not_materialize_a_huge_host_iterator(monkeypatch):
+    real_network = ipaddress.ip_network("0.0.0.0/0")
+
+    class GuardedHosts:
+        def __init__(self):
+            self._next = 1
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            address = ipaddress.ip_address(self._next)
+            self._next += 1
+            return address
+
+        def __length_hint__(self):
+            raise AssertionError("allocator materialized the host iterator")
+
+    class HugeNetwork:
+        num_addresses = 2**32
+
+        def __contains__(self, address):
+            return address in real_network
+
+        def hosts(self):
+            return GuardedHosts()
+
+    monkeypatch.setattr(
+        access_module.ipaddress,
+        "ip_network",
+        lambda _cidr, strict=False: HugeNetwork(),
+    )
+
+    vpn_ip = access_module._allocate_vpn_ip(
+        network_cidr="0.0.0.0/0",
+        server_address="0.0.0.1",
+        allocated_ips=["0.0.0.2"],
+        remote_allocated_ips=["0.0.0.3/32"],
+    )
+
+    assert vpn_ip == "0.0.0.4"
+
+
+def test_allocator_reports_exhaustion_after_all_usable_addresses_are_reserved():
+    with pytest.raises(RuntimeError, match="No available VPN IP addresses"):
+        access_module._allocate_vpn_ip(
+            network_cidr="10.9.0.0/30",
+            server_address="10.9.0.1/30",
+            allocated_ips=[],
+            remote_allocated_ips=["10.9.0.2/32"],
+        )
 
 
 def test_approve_order_rolls_back_device_and_order_when_peer_apply_fails(tmp_path):

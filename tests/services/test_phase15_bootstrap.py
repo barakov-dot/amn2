@@ -361,6 +361,62 @@ def test_build_components_wires_real_services_without_startup_effects(tmp_path):
     assert peer.calls == []
 
 
+def test_invalid_awg3_runtime_provider_fails_before_issuer_or_peer_side_effects(
+    tmp_path,
+):
+    settings, paths = _settings(tmp_path)
+    runtime_payload = json.loads(paths["runtime"].read_text(encoding="utf-8"))
+    runtime_row = runtime_payload["runtimes"][0]
+    runtime_row["vpn_cidr"] = "2001:db8::/120"
+    runtime_row["acceptance_receipt"] = _content_identity(
+        "runtime_acceptance",
+        {
+            key: value
+            for key, value in runtime_row.items()
+            if key != "acceptance_receipt"
+        },
+    )
+    runtime_payload["provider_identity"] = _content_identity(
+        "runtime_provider",
+        {
+            key: value
+            for key, value in runtime_payload.items()
+            if key != "provider_identity"
+        },
+    )
+    settings = settings.model_copy(
+        update={
+            "awg3_runtime_provider_identity": runtime_payload["provider_identity"]
+        }
+    )
+    paths["runtime"].write_text(json.dumps(runtime_payload), encoding="utf-8")
+    conn, repo = _accepted_repo(tmp_path)
+    repo.update_awg3_control_state(
+        runtime_accepted=True,
+        global_accepted=True,
+        issuance_enabled=True,
+        emergency_suspended=False,
+        runtime_receipt=runtime_row["acceptance_receipt"],
+        actor_id=9001,
+        reason="invalid runtime regression setup",
+    )
+    peer = RecordingPeerApplier()
+    access = RecordingAccessService(peer)
+    devices_before = int(conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0])
+
+    components = build_phase15_awg3_components(settings, repo, access, peer)
+
+    assert components.available is False
+    assert components.unavailable_reason == "AWG3 bootstrap providers are invalid"
+    assert components.awg3_client_choices == ()
+    assert access.calls == []
+    assert peer.calls == []
+    assert peer.runtime_targets == []
+    assert int(conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0]) == (
+        devices_before
+    )
+
+
 @pytest.mark.parametrize(
     ("provider_name", "mutate"),
     [

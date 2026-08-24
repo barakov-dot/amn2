@@ -58,9 +58,18 @@ class RuntimeInstanceSpec:
         if not 1 <= self.udp_port <= 65535:
             raise ValueError("udp_port")
         try:
-            ip_network(self.vpn_cidr, strict=False)
+            network = ip_network(
+                self.vpn_cidr,
+                strict=self.protocol_version is ProtocolVersion.AWG3,
+            )
         except (TypeError, ValueError) as exc:
             raise ValueError("vpn_cidr") from exc
+        if self.protocol_version is ProtocolVersion.AWG3 and (
+            network.version != 4
+            or network.prefixlen != 24
+            or str(network) != self.vpn_cidr
+        ):
+            raise ValueError("vpn_cidr")
         if self.container_name is not None:
             _bounded_one_line(self.container_name, "container_name")
         if self.service_name is not None:

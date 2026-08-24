@@ -1062,18 +1062,7 @@ def _allocate_vpn_ip(
     if server_address is not None:
         reserved.add(_parse_allocated_ip(server_address))
 
-    hosts = list(network.hosts())
-    first_index = 0
-    remote_reserved = [
-        _parse_allocated_ip(raw_ip)
-        for raw_ip in remote_allocated_ips or []
-        if _parse_allocated_ip(raw_ip) in network
-    ]
-    if remote_reserved:
-        last_remote_ip = max(remote_reserved)
-        first_index = hosts.index(last_remote_ip) + 1 if last_remote_ip in hosts else 0
-
-    for ip_address in hosts[first_index:]:
+    for ip_address in network.hosts():
         if ip_address not in reserved:
             return str(ip_address)
 
