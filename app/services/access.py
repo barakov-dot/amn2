@@ -6,7 +6,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable, Literal, Protocol
 
 from app.access_expiry import AccessExpiry, DURATION, INDEFINITE
 from app.db.repositories import Repository
@@ -43,6 +43,7 @@ from app.vpn.protocol_versions import ProtocolVersion
 
 
 IP_ALLOCATION_ATTEMPTS = 3
+IpAllocationStrategy = Literal["remote_high_watermark", "lowest_free"]
 
 
 class MaxDevicesReached(ValueError):
@@ -858,6 +859,11 @@ class AccessService:
                         active_peer_applier,
                         server=server,
                     ),
+                    strategy=(
+                        "lowest_free"
+                        if runtime_target is not None
+                        else "remote_high_watermark"
+                    ),
                 )
             except RuntimeError as exc:
                 raise IpAllocationConflict("Could not allocate a unique VPN IP address") from exc
@@ -1051,18 +1057,37 @@ def _allocate_vpn_ip(
     server_address: str | None,
     allocated_ips: list[str],
     remote_allocated_ips: list[str] | None = None,
+    strategy: IpAllocationStrategy = "remote_high_watermark",
 ) -> str:
     network = ipaddress.ip_network(network_cidr, strict=False)
+    local_addresses = [_parse_allocated_ip(raw_ip) for raw_ip in allocated_ips]
+    remote_addresses = [
+        _parse_allocated_ip(raw_ip) for raw_ip in remote_allocated_ips or []
+    ]
     reserved = {
         parsed_ip
-        for raw_ip in [*allocated_ips, *(remote_allocated_ips or [])]
-        for parsed_ip in [_parse_allocated_ip(raw_ip)]
+        for parsed_ip in [*local_addresses, *remote_addresses]
         if parsed_ip in network
     }
     if server_address is not None:
         reserved.add(_parse_allocated_ip(server_address))
 
+    if strategy == "remote_high_watermark":
+        remote_high_watermark = max(
+            (address for address in remote_addresses if address in network),
+            default=None,
+        )
+    elif strategy == "lowest_free":
+        remote_high_watermark = None
+    else:
+        raise ValueError("unsupported IP allocation strategy")
+
     for ip_address in network.hosts():
+        if (
+            remote_high_watermark is not None
+            and ip_address <= remote_high_watermark
+        ):
+            continue
         if ip_address not in reserved:
             return str(ip_address)
 

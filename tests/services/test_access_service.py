@@ -358,7 +358,18 @@ def test_approve_order_allocates_after_live_remote_ips_from_peer_applier(tmp_pat
     )
     server_id = repo.ensure_default_server(name="local", network_cidr="10.8.1.0/24")
     order_id = repo.create_order(user_id=user_id, plan_id=None, payment_mode="free_test")
-    peer_applier = RecordingPeerApplier(remote_allocated_ips=["10.8.1.1/32", "10.8.1.2/32"])
+    repo.create_device(
+        user_id=user_id,
+        server_id=server_id,
+        name="Existing local device",
+        duration_days=30,
+        vpn_ip="10.8.1.3",
+        peer_public_key="existing-local-peer",
+        peer_private_key_encrypted="encrypted-private-key",
+        preshared_key_encrypted="encrypted-preshared-key",
+        config_version="amneziawg_v2",
+    )
+    peer_applier = RecordingPeerApplier(remote_allocated_ips=["10.8.1.200/32"])
 
     service = AccessService(
         repo=repo,
@@ -368,11 +379,11 @@ def test_approve_order_allocates_after_live_remote_ips_from_peer_applier(tmp_pat
     result = service.approve_order(order_id, server_id, "iPhone", admin_telegram_id=999)
 
     device = repo.get_device(result.device_id)
-    assert device["vpn_ip"] == "10.8.1.3"
-    assert peer_applier.calls[0]["vpn_ip"] == "10.8.1.3"
+    assert device["vpn_ip"] == "10.8.1.201"
+    assert peer_applier.calls[0]["vpn_ip"] == "10.8.1.201"
 
 
-def test_allocator_uses_lowest_free_address_across_local_remote_and_server():
+def test_allocator_default_preserves_awg2_remote_high_watermark():
     vpn_ip = access_module._allocate_vpn_ip(
         network_cidr="10.9.0.0/24",
         server_address="10.9.0.1/24",
@@ -380,7 +391,29 @@ def test_allocator_uses_lowest_free_address_across_local_remote_and_server():
         remote_allocated_ips=["10.9.0.200/32", "10.8.0.3/32"],
     )
 
+    assert vpn_ip == "10.9.0.201"
+
+
+def test_allocator_lowest_free_uses_first_available_awg3_address():
+    vpn_ip = access_module._allocate_vpn_ip(
+        network_cidr="10.9.0.0/24",
+        server_address="10.9.0.1/24",
+        allocated_ips=["10.9.0.3", "10.8.0.2"],
+        remote_allocated_ips=["10.9.0.200/32", "10.8.0.3/32"],
+        strategy="lowest_free",
+    )
+
     assert vpn_ip == "10.9.0.2"
+
+
+def test_allocator_awg2_high_watermark_does_not_wrap_to_lower_free_addresses():
+    with pytest.raises(RuntimeError, match="No available VPN IP addresses"):
+        access_module._allocate_vpn_ip(
+            network_cidr="10.9.0.0/24",
+            server_address="10.9.0.1/24",
+            allocated_ips=[f"10.9.0.{suffix}" for suffix in range(201, 255)],
+            remote_allocated_ips=["10.9.0.200/32"],
+        )
 
 
 def test_allocator_does_not_materialize_a_huge_host_iterator(monkeypatch):
@@ -421,6 +454,7 @@ def test_allocator_does_not_materialize_a_huge_host_iterator(monkeypatch):
         server_address="0.0.0.1",
         allocated_ips=["0.0.0.2"],
         remote_allocated_ips=["0.0.0.3/32"],
+        strategy="lowest_free",
     )
 
     assert vpn_ip == "0.0.0.4"
@@ -433,6 +467,7 @@ def test_allocator_reports_exhaustion_after_all_usable_addresses_are_reserved():
             server_address="10.9.0.1/30",
             allocated_ips=[],
             remote_allocated_ips=["10.9.0.2/32"],
+            strategy="lowest_free",
         )
 
 
@@ -1662,8 +1697,23 @@ def test_existing_passport_awg3_uses_only_exact_runtime_config_ipam_and_peer(
         server_id,
         passport_device_id,
     ) = _existing_passport_protocol_fixture(tmp_path)
+    repo.create_device(
+        user_id=owner_user_id,
+        server_id=server_id,
+        name="Existing AWG3 device",
+        duration_days=30,
+        vpn_ip="10.9.0.3",
+        peer_public_key="existing-awg3-peer",
+        peer_private_key_encrypted="encrypted-private-key",
+        preshared_key_encrypted="encrypted-preshared-key",
+        config_version="amneziawg_v3",
+        protocol_version="awg3",
+        runtime_instance_id="runtime-awg3",
+        compatibility_evidence_id="evidence-awg3",
+        client_identity_evidence_status="verified",
+    )
     runtime_peer_applier = RecordingPeerApplier(
-        remote_allocated_ips=["10.9.0.2/32"]
+        remote_allocated_ips=["10.9.0.200/32"]
     )
 
     result = service.create_protocol_device_for_existing_passport(
@@ -1682,14 +1732,14 @@ def test_existing_passport_awg3_uses_only_exact_runtime_config_ipam_and_peer(
     device = repo.get_device(result.device_id)
     assert device["server_id"] == server_id
     assert device["runtime_instance_id"] == "runtime-awg3"
-    assert device["vpn_ip"] == "10.9.0.3"
-    assert "Address = 10.9.0.3/32" in result.config_text
+    assert device["vpn_ip"] == "10.9.0.2"
+    assert "Address = 10.9.0.2/32" in result.config_text
     assert "Endpoint = awg3.example.test:30003" in result.config_text
     assert "PublicKey = awg3-server-public" in result.config_text
     assert "10.8.0." not in result.config_text
     assert awg2_peer_applier.calls == []
     assert len(runtime_peer_applier.calls) == 1
-    assert runtime_peer_applier.calls[0]["vpn_ip"] == "10.9.0.3"
+    assert runtime_peer_applier.calls[0]["vpn_ip"] == "10.9.0.2"
 
 
 @pytest.mark.parametrize(
