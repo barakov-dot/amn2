@@ -172,6 +172,78 @@ D827_CONFIRMATION_TABLE_SQL = (
         "        REFERENCES device_passports(device_id, owner_user_id)",
     )
 )
+
+LEGACY_CALLBACK_TABLE_SQL = """
+CREATE TABLE telegram_callback_handles (
+    handle_digest TEXT PRIMARY KEY,
+    purpose TEXT NOT NULL,
+    owner_user_id INTEGER NOT NULL,
+    passport_device_id TEXT NOT NULL,
+    client_platform TEXT,
+    client_application TEXT,
+    client_version TEXT,
+    client_build TEXT,
+    request_fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    terminal_reason TEXT,
+    UNIQUE(handle_digest, owner_user_id, passport_device_id),
+    CHECK (
+        (consumed_at IS NULL AND terminal_reason IS NULL)
+        OR (consumed_at IS NOT NULL AND terminal_reason IS NOT NULL)
+    ),
+    FOREIGN KEY(owner_user_id) REFERENCES users(id),
+    FOREIGN KEY(passport_device_id) REFERENCES device_passports(device_id)
+)
+"""
+
+LEGACY_CONFIRMATION_TABLE_SQL = """
+CREATE TABLE protocol_issuance_confirmations (
+    token_digest TEXT PRIMARY KEY,
+    selection_handle_digest TEXT NOT NULL,
+    owner_user_id INTEGER NOT NULL,
+    passport_device_id TEXT NOT NULL,
+    client_platform TEXT NOT NULL,
+    client_application TEXT NOT NULL,
+    client_version TEXT NOT NULL,
+    client_build TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    consumed_at TEXT,
+    terminal_reason TEXT,
+    CHECK (
+        (consumed_at IS NULL AND terminal_reason IS NULL)
+        OR (consumed_at IS NOT NULL AND terminal_reason IS NOT NULL)
+    ),
+    FOREIGN KEY(selection_handle_digest, owner_user_id, passport_device_id)
+        REFERENCES telegram_callback_handles(
+            handle_digest, owner_user_id, passport_device_id
+    ),
+    FOREIGN KEY(owner_user_id) REFERENCES users(id),
+    FOREIGN KEY(passport_device_id) REFERENCES device_passports(device_id)
+)
+"""
+
+FIX6_CONFIRMATION_TABLE_SQL = CREATE_CONFIRMATION_TABLE_SQL.replace(
+    "    FOREIGN KEY(owner_user_id) REFERENCES users(id),\n",
+    "    FOREIGN KEY(issuance_attempt_id) "
+    "REFERENCES protocol_issuance_attempts(id),\n"
+    "    FOREIGN KEY(owner_user_id) REFERENCES users(id),\n",
+)
+FIX6_LEGACY_CONFIRMATION_TABLE_SQL = CREATE_CONFIRMATION_TABLE_SQL.replace(
+    "    FOREIGN KEY(owner_user_id) REFERENCES users(id),\n",
+    "    FOREIGN KEY(issuance_attempt_id) "
+    "REFERENCES protocol_issuance_attempts_legacy(id),\n"
+    "    FOREIGN KEY(owner_user_id) REFERENCES users(id),\n",
+)
+FIX6_RENAMED_LEGACY_CONFIRMATION_TABLE_SQL = (
+    FIX6_LEGACY_CONFIRMATION_TABLE_SQL.replace(
+        "REFERENCES protocol_issuance_attempts_legacy(id)",
+        'REFERENCES "protocol_issuance_attempts_legacy"(id)',
+    )
+)
 D827_DEVICE_OWNER_INDEX_SQL = (
     "CREATE UNIQUE INDEX uq_device_passports_device_owner "
     "ON device_passports(device_id, owner_user_id)"
@@ -574,24 +646,52 @@ def _prevalidate_rows(
     return callback_count, confirmation_count
 
 
-def _is_exact_d827_predecessor_shape(conn: sqlite3.Connection) -> bool:
-    expected_phase15_indexes = {
-        _normalize_sql(statement.replace(" IF NOT EXISTS", ""))
-        for statement in INDEX_SQL
-    }
-    actual_phase15_indexes = {
-        _normalize_sql(str(row[0]))
+def _validate_exact_phase15_table_definitions(
+    conn: sqlite3.Connection,
+    *,
+    callback_sql: str,
+    confirmation_sql: tuple[str, ...],
+) -> None:
+    if (
+        _table_sql(conn, "telegram_callback_handles")
+        != _normalize_sql(callback_sql)
+        or _table_sql(conn, "protocol_issuance_confirmations")
+        not in {_normalize_sql(statement) for statement in confirmation_sql}
+    ):
+        raise RuntimeError("unsupported phase15 table constraints")
+
+
+def _has_exact_phase15_explicit_indexes(conn: sqlite3.Connection) -> bool:
+    expected = {_normalize_sql(statement) for statement in INDEX_SQL}
+    actual = {
+        _normalize_sql(str(row[1]))
         for row in conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'index' "
-            "AND tbl_name IN (?, ?) AND sql IS NOT NULL",
-            ("telegram_callback_handles", "protocol_issuance_confirmations"),
+            "SELECT tbl_name, sql FROM sqlite_master "
+            "WHERE type = 'index' AND sql IS NOT NULL"
         )
+        if _ascii_lower(str(row[0]))
+        in {"telegram_callback_handles", "protocol_issuance_confirmations"}
     }
-    phase15_triggers = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'trigger' "
-        "AND tbl_name IN (?, ?) LIMIT 1",
-        ("telegram_callback_handles", "protocol_issuance_confirmations"),
-    ).fetchone()
+    return actual == expected
+
+
+def _validate_exact_phase15_explicit_indexes(conn: sqlite3.Connection) -> None:
+    if not _has_exact_phase15_explicit_indexes(conn):
+        raise RuntimeError("unsupported phase15 explicit indexes")
+
+
+def _phase15_trigger_definitions(conn: sqlite3.Connection) -> dict[str, str]:
+    return {
+        _ascii_lower(str(row[0])): _normalize_trigger_sql(str(row[2]))
+        for row in conn.execute(
+            "SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'trigger'"
+        )
+        if _ascii_lower(str(row[1]))
+        in {"telegram_callback_handles", "protocol_issuance_confirmations"}
+    }
+
+
+def _is_exact_d827_predecessor_shape(conn: sqlite3.Connection) -> bool:
     predecessor_index = conn.execute(
         "SELECT tbl_name, sql FROM sqlite_master "
         "WHERE type = 'index' AND name = ?",
@@ -602,12 +702,12 @@ def _is_exact_d827_predecessor_shape(conn: sqlite3.Connection) -> bool:
         == _normalize_sql(D827_CALLBACK_TABLE_SQL)
         and _table_sql(conn, "protocol_issuance_confirmations")
         == _normalize_sql(D827_CONFIRMATION_TABLE_SQL)
-        and actual_phase15_indexes == expected_phase15_indexes
-        and phase15_triggers is None
+        and _has_exact_phase15_explicit_indexes(conn)
+        and not _phase15_trigger_definitions(conn)
         and predecessor_index is not None
-        and str(predecessor_index[0]) == "device_passports"
+        and _ascii_lower(str(predecessor_index[0])) == "device_passports"
         and _normalize_sql(str(predecessor_index[1]))
-        == D827_DEVICE_OWNER_INDEX_SQL
+        == _normalize_sql(D827_DEVICE_OWNER_INDEX_SQL)
     )
 
 
@@ -648,10 +748,50 @@ def _table_sql(conn: sqlite3.Connection, table: str) -> str:
 
 
 def _normalize_sql(statement: str) -> str:
-    return " ".join(statement.split())
+    text = statement.strip().rstrip(";").rstrip()
+    normalized: list[str] = []
+    index = 0
+    while index < len(text):
+        if text[index] != "'":
+            if not text[index].isspace():
+                normalized.append(_ascii_lower(text[index]))
+            index += 1
+            continue
+
+        literal_start = index
+        index += 1
+        while index < len(text):
+            if text[index] != "'":
+                index += 1
+                continue
+            index += 1
+            if index < len(text) and text[index] == "'":
+                index += 1
+                continue
+            break
+        normalized.append(text[literal_start:index])
+
+    result = "".join(normalized)
+    for storage_prefix, canonical_prefix in (
+        ("createtableifnotexists", "createtable"),
+        ("createuniqueindexifnotexists", "createuniqueindex"),
+        ("createindexifnotexists", "createindex"),
+        ("createtriggerifnotexists", "createtrigger"),
+    ):
+        if result.startswith(storage_prefix):
+            return canonical_prefix + result[len(storage_prefix) :]
+    return result
 
 
 def _validate_legacy_shape(conn: sqlite3.Connection) -> None:
+    _validate_exact_phase15_table_definitions(
+        conn,
+        callback_sql=LEGACY_CALLBACK_TABLE_SQL,
+        confirmation_sql=(LEGACY_CONFIRMATION_TABLE_SQL,),
+    )
+    _validate_exact_phase15_explicit_indexes(conn)
+    if _phase15_trigger_definitions(conn):
+        raise RuntimeError("unsupported phase15 legacy triggers")
     if not _has_unique_index(
         conn,
         "telegram_callback_handles",
@@ -672,10 +812,22 @@ def _validate_legacy_shape(conn: sqlite3.Connection) -> None:
 
 
 def _validate_prebinding_shape(conn: sqlite3.Connection) -> None:
+    _validate_exact_phase15_table_definitions(
+        conn,
+        callback_sql=CREATE_CALLBACK_TABLE_SQL,
+        confirmation_sql=(PRE_BINDING_CONFIRMATION_TABLE_SQL,),
+    )
+    _validate_exact_phase15_explicit_indexes(conn)
     _validate_claimed_shape(conn)
 
 
 def _validate_canonical_shape(conn: sqlite3.Connection) -> None:
+    _validate_exact_phase15_table_definitions(
+        conn,
+        callback_sql=CREATE_CALLBACK_TABLE_SQL,
+        confirmation_sql=(CREATE_CONFIRMATION_TABLE_SQL,),
+    )
+    _validate_exact_phase15_explicit_indexes(conn)
     _validate_claimed_shape(conn)
     if _issuance_attempt_foreign_keys(conn):
         raise RuntimeError("unsupported phase15 cross-phase attempt binding")
@@ -683,7 +835,6 @@ def _validate_canonical_shape(conn: sqlite3.Connection) -> None:
 
 
 def _validate_fix6_predecessor_shape(conn: sqlite3.Connection) -> None:
-    _validate_claimed_shape(conn)
     attempt_foreign_keys = _issuance_attempt_foreign_keys(conn)
     if attempt_foreign_keys not in (
         (
@@ -701,6 +852,17 @@ def _validate_fix6_predecessor_shape(conn: sqlite3.Connection) -> None:
     ):
         raise RuntimeError("unsupported phase15 issuance attempt binding")
     _validate_attempt_binding_unique(conn)
+    _validate_exact_phase15_table_definitions(
+        conn,
+        callback_sql=CREATE_CALLBACK_TABLE_SQL,
+        confirmation_sql=(
+            FIX6_CONFIRMATION_TABLE_SQL,
+            FIX6_LEGACY_CONFIRMATION_TABLE_SQL,
+            FIX6_RENAMED_LEGACY_CONFIRMATION_TABLE_SQL,
+        ),
+    )
+    _validate_exact_phase15_explicit_indexes(conn)
+    _validate_claimed_shape(conn)
 
 
 def _validate_attempt_binding_unique(conn: sqlite3.Connection) -> None:
@@ -757,39 +919,6 @@ def _validate_claimed_shape(conn: sqlite3.Connection) -> None:
         raise RuntimeError("unsupported phase15 owner binding constraints")
     if not _has_exact_phase15_owner_passport_triggers(conn):
         raise RuntimeError("unsupported phase15 owner binding triggers")
-    for table, digest_columns in (
-        ("telegram_callback_handles", ("handle_digest", "claim_id_digest")),
-        (
-            "protocol_issuance_confirmations",
-            ("token_digest", "selection_handle_digest", "claim_id_digest"),
-        ),
-    ):
-        sql_row = conn.execute(
-            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
-            (table,),
-        ).fetchone()
-        table_sql = str(sql_row[0]) if sql_row is not None else ""
-        if any(
-            f"{column} NOT GLOB '*[^0-9a-f]*'" not in table_sql
-            for column in digest_columns
-        ) or "claim_id_digest IS NOT NULL" not in table_sql:
-            raise RuntimeError("unsupported phase15 digest constraints")
-    not_null_columns = {
-        table: {
-            str(row[1]): int(row[3])
-            for row in conn.execute(f"PRAGMA table_info({table})")
-        }
-        for table in (
-            "telegram_callback_handles",
-            "protocol_issuance_confirmations",
-        )
-    }
-    if (
-        not_null_columns["telegram_callback_handles"].get("handle_digest") != 1
-        or not_null_columns["protocol_issuance_confirmations"].get("token_digest")
-        != 1
-    ):
-        raise RuntimeError("unsupported phase15 nullable identity digest")
 
 
 def _has_foreign_key(
@@ -801,9 +930,20 @@ def _has_foreign_key(
     groups: dict[int, list[tuple[str, str, str]]] = {}
     for row in conn.execute(f"PRAGMA foreign_key_list({table})"):
         groups.setdefault(int(row[0]), []).append(
-            (str(row[2]), str(row[3]), str(row[4]))
+            (
+                _ascii_lower(str(row[2])),
+                _ascii_lower(str(row[3])),
+                _ascii_lower(str(row[4])),
+            )
         )
-    expected = [(target, source, destination) for source, destination in columns]
+    expected = [
+        (
+            _ascii_lower(target),
+            _ascii_lower(source),
+            _ascii_lower(destination),
+        )
+        for source, destination in columns
+    ]
     return any(group == expected for group in groups.values())
 
 
@@ -819,51 +959,15 @@ def _ascii_lower(text: str) -> str:
 def _has_exact_phase15_owner_passport_triggers(
     conn: sqlite3.Connection,
 ) -> bool:
-    actual = {
-        _ascii_lower(str(row[0])): str(row[1])
-        for row in conn.execute(
-            "SELECT name, sql FROM sqlite_master WHERE type = 'trigger'"
-        )
+    expected = {
+        _ascii_lower(statement.split()[5]): _normalize_trigger_sql(statement)
+        for statement in TRIGGER_SQL
     }
-    for expected_sql in TRIGGER_SQL:
-        expected_name = _ascii_lower(expected_sql.split()[5])
-        actual_sql = actual.get(expected_name)
-        if actual_sql is None or (
-            _normalize_trigger_sql(actual_sql) != _normalize_trigger_sql(expected_sql)
-        ):
-            return False
-    return True
+    return _phase15_trigger_definitions(conn) == expected
 
 
 def _normalize_trigger_sql(sql: str) -> str:
-    text = sql.strip().rstrip(";").rstrip()
-    normalized: list[str] = []
-    index = 0
-    while index < len(text):
-        if text[index] != "'":
-            if not text[index].isspace():
-                normalized.append(_ascii_lower(text[index]))
-            index += 1
-            continue
-
-        literal_start = index
-        index += 1
-        while index < len(text):
-            if text[index] != "'":
-                index += 1
-                continue
-            index += 1
-            if index < len(text) and text[index] == "'":
-                index += 1
-                continue
-            break
-        normalized.append(text[literal_start:index])
-
-    result = "".join(normalized)
-    storage_prefix = "createtriggerifnotexists"
-    if result.startswith(storage_prefix):
-        result = "createtrigger" + result[len(storage_prefix) :]
-    return result
+    return _normalize_sql(sql)
 
 
 def _issuance_attempt_foreign_keys(
@@ -899,16 +1003,19 @@ def _has_unique_index(
         if not int(row[2]) or int(row[4]):
             continue
         actual = tuple(
-            str(index_row[2])
+            _ascii_lower(str(index_row[2]))
             for index_row in conn.execute(f"PRAGMA index_info({row[1]})")
         )
-        if actual == columns:
+        if actual == tuple(_ascii_lower(column) for column in columns):
             return True
     return False
 
 
 def _column_names(conn: sqlite3.Connection, table: str) -> tuple[str, ...]:
-    return tuple(str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})"))
+    return tuple(
+        _ascii_lower(str(row[1]))
+        for row in conn.execute(f"PRAGMA table_info({table})")
+    )
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:

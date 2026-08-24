@@ -354,6 +354,37 @@ def install_confirmation_schema_with_attempt_foreign_keys(
     connection.commit()
 
 
+def replace_phase15_table_shape(
+    connection: sqlite3.Connection,
+    *,
+    callback_sql: str,
+    confirmation_sql: str,
+) -> None:
+    foreign_keys_enabled = int(
+        connection.execute("PRAGMA foreign_keys").fetchone()[0]
+    )
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.execute("DROP TABLE protocol_issuance_confirmations")
+    connection.execute("DROP TABLE telegram_callback_handles")
+    connection.execute(callback_sql)
+    connection.execute(confirmation_sql)
+    phase15_bootstrap._ensure_phase15_objects(connection)
+    connection.commit()
+    connection.execute(f"PRAGMA foreign_keys = {foreign_keys_enabled}")
+
+
+def assert_phase15_shape_rejected_without_mutation(
+    connection: sqlite3.Connection,
+) -> None:
+    before = phase15_validation_snapshot(connection)
+
+    with pytest.raises(RuntimeError, match="unsupported phase15"):
+        phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+
+    assert phase15_validation_snapshot(connection) == before
+
+
 def replace_attempt_table_with_legacy(
     connection: sqlite3.Connection, attempt: sqlite3.Row
 ) -> None:
@@ -1619,6 +1650,342 @@ def test_ascii_case_variant_trigger_name_remains_supported(database_path) -> Non
             "WHERE type = 'trigger' AND name = ?",
             (uppercase_name,),
         ).fetchone()[0] == uppercase_name
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    ("callback_sql", "confirmation_sql"),
+    (
+        (
+            phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL.replace(
+                "handle_digest TEXT NOT NULL PRIMARY KEY",
+                "handle_digest TEXT NOT NULL",
+            ),
+            phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL,
+        ),
+        (
+            phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL,
+            phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL.replace(
+                "token_digest TEXT NOT NULL PRIMARY KEY",
+                "token_digest TEXT NOT NULL",
+            ),
+        ),
+    ),
+    ids=("callback", "confirmation"),
+)
+def test_missing_identity_primary_key_is_rejected_without_mutation(
+    database_path,
+    callback_sql,
+    confirmation_sql,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        replace_phase15_table_shape(
+            connection,
+            callback_sql=callback_sql,
+            confirmation_sql=confirmation_sql,
+        )
+
+        assert_phase15_shape_rejected_without_mutation(connection)
+    finally:
+        connection.close()
+
+
+def test_duplicate_confirmation_claim_is_rejected_without_further_mutation(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        owner_user_id = seed_owner_and_passport(connection)
+        replace_phase15_table_shape(
+            connection,
+            callback_sql=phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL,
+            confirmation_sql=phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL.replace(
+                "token_digest TEXT NOT NULL PRIMARY KEY",
+                "token_digest TEXT NOT NULL",
+            ),
+        )
+        repo = Repository(connection)
+        repo.create_callback_handle(**callback_values(owner_user_id))
+        values = confirmation_values(owner_user_id)
+        repo.create_issuance_confirmation(**values)
+        repo.create_issuance_confirmation(**values)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM protocol_issuance_confirmations "
+            "WHERE token_digest = ?",
+            ("b" * 64,),
+        ).fetchone()[0] == 2
+
+        assert repo.claim_issuance_confirmation(
+            "b" * 64,
+            owner_user_id,
+            NOW,
+            claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+            claim_expires_at=CLAIM_EXPIRES_AT,
+        ) is None
+        assert tuple(
+            tuple(row)
+            for row in connection.execute(
+                "SELECT claim_id_digest, claimed_at, claim_expires_at "
+                "FROM protocol_issuance_confirmations "
+                "WHERE token_digest = ? ORDER BY rowid",
+                ("b" * 64,),
+            )
+        ) == (
+            (CONFIRMATION_CLAIM_DIGEST, NOW, CLAIM_EXPIRES_AT),
+            (CONFIRMATION_CLAIM_DIGEST, NOW, CLAIM_EXPIRES_AT),
+        )
+
+        assert_phase15_shape_rejected_without_mutation(connection)
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    ("callback_sql", "confirmation_sql"),
+    (
+        (
+            phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL.replace(
+                "purpose TEXT NOT NULL",
+                "purpose BLOB NOT NULL",
+            ),
+            phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL,
+        ),
+        (
+            phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL,
+            phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL.replace(
+                "client_build TEXT NOT NULL",
+                "client_build TEXT",
+            ),
+        ),
+        (
+            phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL.replace(
+                "purpose TEXT NOT NULL",
+                "purpose TEXT NOT NULL DEFAULT 'select_protocol'",
+            ),
+            phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL,
+        ),
+        (
+            phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL.replace(
+                "claim_expires_at > claimed_at",
+                "claim_expires_at >= claimed_at",
+            ),
+            phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL,
+        ),
+        (
+            phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL,
+            phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL.replace(
+                "    UNIQUE(issuance_attempt_id),\n",
+                "    UNIQUE(issuance_attempt_id),\n"
+                "    UNIQUE(request_fingerprint),\n",
+            ),
+        ),
+    ),
+    ids=("type", "not-null", "default", "check", "extra-unique"),
+)
+def test_altered_column_or_constraint_is_rejected_without_mutation(
+    database_path,
+    callback_sql,
+    confirmation_sql,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        replace_phase15_table_shape(
+            connection,
+            callback_sql=callback_sql,
+            confirmation_sql=confirmation_sql,
+        )
+
+        assert_phase15_shape_rejected_without_mutation(connection)
+    finally:
+        connection.close()
+
+
+def test_extra_unrelated_foreign_key_is_rejected_without_mutation(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        confirmation_sql = phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL.replace(
+            "    FOREIGN KEY(owner_user_id) REFERENCES users(id),\n",
+            "    FOREIGN KEY(owner_user_id) REFERENCES servers(id),\n"
+            "    FOREIGN KEY(owner_user_id) REFERENCES users(id),\n",
+        )
+        replace_phase15_table_shape(
+            connection,
+            callback_sql=phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL,
+            confirmation_sql=confirmation_sql,
+        )
+
+        assert_phase15_shape_rejected_without_mutation(connection)
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("alter_expected", (False, True), ids=("extra", "altered"))
+def test_unexpected_explicit_index_shape_is_rejected_without_mutation(
+    database_path,
+    alter_expected,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        if alter_expected:
+            connection.execute(
+                "DROP INDEX idx_telegram_callback_handles_expires_at"
+            )
+            connection.execute(
+                "CREATE INDEX idx_telegram_callback_handles_expires_at "
+                "ON telegram_callback_handles(created_at)"
+            )
+        else:
+            connection.execute(
+                "CREATE INDEX idx_phase15_unexpected_callback_created_at "
+                "ON telegram_callback_handles(created_at)"
+            )
+        connection.commit()
+
+        assert_phase15_shape_rejected_without_mutation(connection)
+    finally:
+        connection.close()
+
+
+def test_extra_phase15_table_trigger_is_rejected_without_mutation(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        connection.execute(
+            "CREATE TRIGGER trg_phase15_unexpected_callback_delete "
+            "AFTER DELETE ON telegram_callback_handles "
+            "FOR EACH ROW BEGIN SELECT 1; END"
+        )
+        connection.commit()
+
+        assert_phase15_shape_rejected_without_mutation(connection)
+    finally:
+        connection.close()
+
+
+def test_malformed_prebinding_constraint_is_rejected_without_mutation(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        malformed_confirmation_sql = (
+            phase15_bootstrap.PRE_BINDING_CONFIRMATION_TABLE_SQL.replace(
+                "claim_expires_at > claimed_at",
+                "claim_expires_at >= claimed_at",
+            )
+        )
+        replace_phase15_table_shape(
+            connection,
+            callback_sql=phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL,
+            confirmation_sql=malformed_confirmation_sql,
+        )
+
+        assert_phase15_shape_rejected_without_mutation(connection)
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    "attempt_target",
+    ("protocol_issuance_attempts", "protocol_issuance_attempts_legacy"),
+)
+def test_malformed_fix6_identity_constraint_is_rejected_without_mutation(
+    database_path,
+    attempt_target,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        malformed_confirmation_sql = (
+            phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL.replace(
+                "token_digest TEXT NOT NULL PRIMARY KEY",
+                "token_digest TEXT NOT NULL",
+            ).replace(
+                "    FOREIGN KEY(owner_user_id) REFERENCES users(id),\n",
+                "    FOREIGN KEY(issuance_attempt_id) "
+                f"REFERENCES {attempt_target}(id),\n"
+                "    FOREIGN KEY(owner_user_id) REFERENCES users(id),\n",
+            )
+        )
+        replace_phase15_table_shape(
+            connection,
+            callback_sql=phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL,
+            confirmation_sql=malformed_confirmation_sql,
+        )
+
+        assert_phase15_shape_rejected_without_mutation(connection)
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize("foreign_keys_enabled", (0, 1))
+def test_exact_prebinding_schema_upgrades_without_value_loss(
+    database_path,
+    foreign_keys_enabled,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        owner_user_id = seed_owner_and_passport(connection)
+        replace_phase15_table_shape(
+            connection,
+            callback_sql=phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL,
+            confirmation_sql=phase15_bootstrap.PRE_BINDING_CONFIRMATION_TABLE_SQL,
+        )
+        repo = Repository(connection)
+        repo.create_callback_handle(**callback_values(owner_user_id))
+        repo.create_issuance_confirmation(**confirmation_values(owner_user_id))
+        assert repo.claim_callback_handle(
+            "a" * 64,
+            owner_user_id,
+            NOW,
+            claim_id_digest=CALLBACK_CLAIM_DIGEST,
+            claim_expires_at=CLAIM_EXPIRES_AT,
+        ) is not None
+        assert repo.claim_issuance_confirmation(
+            "b" * 64,
+            owner_user_id,
+            NOW,
+            claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+            claim_expires_at=CLAIM_EXPIRES_AT,
+        ) is not None
+        callback_before = tuple(
+            connection.execute("SELECT * FROM telegram_callback_handles").fetchone()
+        )
+        confirmation_before = tuple(
+            connection.execute(
+                "SELECT * FROM protocol_issuance_confirmations"
+            ).fetchone()
+        )
+        connection.execute(f"PRAGMA foreign_keys = {foreign_keys_enabled}")
+
+        phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+        phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+
+        callback_after = tuple(
+            connection.execute("SELECT * FROM telegram_callback_handles").fetchone()
+        )
+        confirmation_after = tuple(
+            connection.execute(
+                "SELECT * FROM protocol_issuance_confirmations"
+            ).fetchone()
+        )
+        assert callback_after == callback_before
+        assert confirmation_after[:-1] == confirmation_before
+        assert confirmation_after[-1] is None
+        assert int(connection.execute("PRAGMA foreign_keys").fetchone()[0]) == (
+            foreign_keys_enabled
+        )
+        assert list(connection.execute("PRAGMA foreign_key_check")) == []
     finally:
         connection.close()
 
