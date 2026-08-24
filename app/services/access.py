@@ -999,14 +999,42 @@ def _validate_operator_config_boundary(
     runtime_peer_applier: PeerApplier | None,
 ) -> str:
     validated = validate_config_version(config_version)
-    if validated != "amneziawg_v3" and (
-        awg3_material is not None
-        or runtime_target is not None
-        or runtime_peer_applier is not None
-        or device_context.protocol_version == ProtocolVersion.AWG3.value
-    ):
-        raise ValueError("AWG3-only inputs require amneziawg_v3")
+    if validated != "amneziawg_v3":
+        if (
+            awg3_material is not None
+            or runtime_target is not None
+            or runtime_peer_applier is not None
+            or device_context.protocol_version == ProtocolVersion.AWG3.value
+        ):
+            raise ValueError("AWG3-only inputs require amneziawg_v3")
+        _validate_awg2_operator_context(device_context)
     return validated
+
+
+def _validate_awg2_operator_context(device_context: OperatorDeviceContext) -> None:
+    evidence_fields = (
+        device_context.runtime_instance_id,
+        device_context.client_identity_evidence_status,
+        device_context.compatibility_evidence_id,
+    )
+    if device_context.protocol_version is None:
+        if any(value is not None for value in evidence_fields):
+            raise ValueError("complete AWG2 client context is required")
+        return
+    if device_context.protocol_version != ProtocolVersion.AWG2.value:
+        raise ValueError("complete AWG2 client context is required")
+    if all(value is None for value in evidence_fields):
+        return
+    _require_exact_material_text(
+        device_context.runtime_instance_id,
+        "runtime_instance_id",
+    )
+    if device_context.client_identity_evidence_status != "verified":
+        raise ValueError("client_identity_evidence_status")
+    _require_exact_material_text(
+        device_context.compatibility_evidence_id,
+        "compatibility_evidence_id",
+    )
 
 
 def _require_awg3_config_version(config_version: str) -> str:

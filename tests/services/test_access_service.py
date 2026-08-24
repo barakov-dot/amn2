@@ -1732,6 +1732,288 @@ def _accepted_awg3_runtime(server_id):
     )
 
 
+def _operator_awg2_context(**changes):
+    return replace(
+        OperatorDeviceContext(
+            platform="windows",
+            official_client_type="amnezia_vpn",
+            client_version="5.0.0.5",
+        ),
+        **changes,
+    )
+
+
+@pytest.mark.parametrize(
+    ("context", "expected_context"),
+    (
+        pytest.param(
+            _operator_awg2_context(),
+            (None, None, None, None),
+            id="all-evidence-absent",
+        ),
+        pytest.param(
+            _operator_awg2_context(protocol_version="awg2"),
+            ("awg2", None, None, None),
+            id="exact-awg2-with-evidence-absent",
+        ),
+        pytest.param(
+            _operator_awg2_context(
+                protocol_version="awg2",
+                runtime_instance_id="opaque-runtime-awg3-looking-id",
+                client_identity_evidence_status="verified",
+                compatibility_evidence_id="opaque-evidence-awg3-looking-id",
+            ),
+            (
+                "awg2",
+                "opaque-runtime-awg3-looking-id",
+                "verified",
+                "opaque-evidence-awg3-looking-id",
+            ),
+            id="exact-awg2-full-opaque-tuple",
+        ),
+    ),
+)
+def test_operator_awg2_accepts_only_complete_context_shapes_and_keeps_high_watermark(
+    tmp_path,
+    context,
+    expected_context,
+):
+    conn = connect(tmp_path / "operator-awg2-valid-context.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    owner_user_id = repo.create_operator_recipient(operator_label="Operator")
+    server_id = repo.ensure_default_server(
+        name="local",
+        network_cidr="10.8.0.0/24",
+    )
+    peer_applier = RecordingPeerApplier(
+        remote_allocated_ips=["10.8.0.200/32"]
+    )
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=peer_applier,
+    )
+
+    result = service.create_operator_device(
+        owner_user_id=owner_user_id,
+        server_id=server_id,
+        device_name="AWG2 context matrix",
+        duration_days=30,
+        admin_telegram_id=999,
+        config_version="amneziawg_v2",
+        device_context=context,
+        client_build="50005",
+    )
+
+    device = repo.get_device(result.device_id)
+    assert device["vpn_ip"] == "10.8.0.201"
+    assert (
+        device["protocol_version"],
+        device["runtime_instance_id"],
+        device["client_identity_evidence_status"],
+        device["compatibility_evidence_id"],
+    ) == expected_context
+    assert peer_applier.list_calls == [server_id]
+    assert len(peer_applier.calls) == 1
+    assert peer_applier.calls[0]["vpn_ip"] == "10.8.0.201"
+
+
+@pytest.mark.parametrize(
+    "context",
+    (
+        pytest.param(
+            _operator_awg2_context(runtime_instance_id="opaque-runtime"),
+            id="runtime-without-protocol",
+        ),
+        pytest.param(
+            _operator_awg2_context(client_identity_evidence_status="verified"),
+            id="status-without-protocol",
+        ),
+        pytest.param(
+            _operator_awg2_context(compatibility_evidence_id="opaque-evidence"),
+            id="evidence-without-protocol",
+        ),
+        pytest.param(
+            _operator_awg2_context(
+                runtime_instance_id="opaque-runtime",
+                client_identity_evidence_status="verified",
+                compatibility_evidence_id="opaque-evidence",
+            ),
+            id="full-tuple-without-protocol",
+        ),
+        pytest.param(_operator_awg2_context(protocol_version="awg3"), id="awg3"),
+        pytest.param(_operator_awg2_context(protocol_version="AWG3"), id="awg3-alias"),
+        pytest.param(_operator_awg2_context(protocol_version="AWG2"), id="awg2-alias"),
+        pytest.param(_operator_awg2_context(protocol_version=""), id="blank-protocol"),
+        pytest.param(_operator_awg2_context(protocol_version=" "), id="space-protocol"),
+        pytest.param(
+            _operator_awg2_context(protocol_version=" awg2"),
+            id="leading-space-protocol",
+        ),
+        pytest.param(
+            _operator_awg2_context(protocol_version="awg2 "),
+            id="trailing-space-protocol",
+        ),
+        pytest.param(
+            _operator_awg2_context(protocol_version="unknown"),
+            id="unknown-protocol",
+        ),
+        pytest.param(
+            _operator_awg2_context(
+                protocol_version="awg2",
+                runtime_instance_id="opaque-runtime",
+            ),
+            id="partial-runtime-only",
+        ),
+        pytest.param(
+            _operator_awg2_context(
+                protocol_version="awg2",
+                client_identity_evidence_status="verified",
+            ),
+            id="partial-status-only",
+        ),
+        pytest.param(
+            _operator_awg2_context(
+                protocol_version="awg2",
+                compatibility_evidence_id="opaque-evidence",
+            ),
+            id="partial-evidence-only",
+        ),
+        pytest.param(
+            _operator_awg2_context(
+                protocol_version="awg2",
+                runtime_instance_id="opaque-runtime",
+                client_identity_evidence_status="verified",
+            ),
+            id="partial-runtime-status",
+        ),
+        pytest.param(
+            _operator_awg2_context(
+                protocol_version="awg2",
+                runtime_instance_id="opaque-runtime",
+                compatibility_evidence_id="opaque-evidence",
+            ),
+            id="partial-runtime-evidence",
+        ),
+        pytest.param(
+            _operator_awg2_context(
+                protocol_version="awg2",
+                client_identity_evidence_status="verified",
+                compatibility_evidence_id="opaque-evidence",
+            ),
+            id="partial-status-evidence",
+        ),
+        pytest.param(
+            _operator_awg2_context(
+                protocol_version="awg2",
+                runtime_instance_id="",
+                client_identity_evidence_status="verified",
+                compatibility_evidence_id="opaque-evidence",
+            ),
+            id="blank-runtime-id",
+        ),
+        pytest.param(
+            _operator_awg2_context(
+                protocol_version="awg2",
+                runtime_instance_id="opaque-runtime",
+                client_identity_evidence_status="verified",
+                compatibility_evidence_id="",
+            ),
+            id="blank-evidence-id",
+        ),
+        pytest.param(
+            _operator_awg2_context(
+                protocol_version="awg2",
+                runtime_instance_id=" opaque-runtime",
+                client_identity_evidence_status="verified",
+                compatibility_evidence_id="opaque-evidence",
+            ),
+            id="whitespace-runtime-id",
+        ),
+        pytest.param(
+            _operator_awg2_context(
+                protocol_version="awg2",
+                runtime_instance_id="opaque-runtime",
+                client_identity_evidence_status="verified",
+                compatibility_evidence_id="opaque-evidence ",
+            ),
+            id="whitespace-evidence-id",
+        ),
+        pytest.param(
+            _operator_awg2_context(
+                protocol_version="awg2",
+                runtime_instance_id="opaque-runtime",
+                client_identity_evidence_status="Verified",
+                compatibility_evidence_id="opaque-evidence",
+            ),
+            id="status-alias",
+        ),
+        pytest.param(
+            _operator_awg2_context(
+                protocol_version="awg2",
+                runtime_instance_id="opaque-runtime",
+                client_identity_evidence_status="verified ",
+                compatibility_evidence_id="opaque-evidence",
+            ),
+            id="whitespace-status",
+        ),
+    ),
+)
+def test_operator_awg2_rejects_incomplete_or_noncanonical_context_before_side_effects(
+    tmp_path,
+    monkeypatch,
+    context,
+):
+    conn = connect(tmp_path / "operator-awg2-invalid-context.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    owner_user_id = repo.create_operator_recipient(operator_label="Operator")
+    server_id = repo.ensure_default_server(
+        name="local",
+        network_cidr="10.8.0.0/24",
+    )
+    peer_applier = RecordingPeerApplier(
+        remote_allocated_ips=["10.8.0.200/32"]
+    )
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=peer_applier,
+    )
+    artifact_calls = []
+    before = _access_side_effect_counts(conn)
+    boundary_calls = _install_access_boundary_probes(monkeypatch, repo)
+
+    with pytest.raises(ValueError):
+        service.create_operator_device(
+            owner_user_id=owner_user_id,
+            server_id=server_id,
+            device_name="Invalid AWG2 context",
+            duration_days=30,
+            admin_telegram_id=999,
+            config_version="amneziawg_v2",
+            device_context=context,
+            client_build="50005",
+            config_artifact_writer=lambda text: artifact_calls.append(text),
+        )
+
+    assert boundary_calls == {
+        "transaction": 0,
+        "owner": 0,
+        "keypair": 0,
+        "preshared_key": 0,
+    }
+    assert _access_side_effect_counts(conn) == before
+    assert peer_applier.calls == []
+    assert peer_applier.list_calls == []
+    assert artifact_calls == []
+
+
 @pytest.mark.parametrize(
     "injection",
     (
