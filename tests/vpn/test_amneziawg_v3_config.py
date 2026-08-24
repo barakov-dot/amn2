@@ -61,6 +61,8 @@ def awg3_input(
         reject_after_time="180",
         keepalive_timeout="10",
         max_handshake_attempts="20",
+        random_trailers=True,
+        disable_cookies=True,
     )
 
 
@@ -102,7 +104,7 @@ def test_awg2_input_rejects_awg3_only_fields():
 
 def test_awg3_requires_secret_reference_and_renders_official_field_names():
     config = render_awg3_client_config(
-        awg3_input(), resolver=StaticResolver("raw-hpk")
+        awg3_input(), resolver=StaticResolver("raw-hpk"), include_awg31=True
     )
     assert "HeaderProtectionKey = raw-hpk" in config
     assert "ContentPaddingAddition = 0-64" in config
@@ -111,6 +113,8 @@ def test_awg3_requires_secret_reference_and_renders_official_field_names():
     assert "RejectAfterTime = 180" in config
     assert "KeepaliveTimeout = 10" in config
     assert "MaxHandshakeAttempts = 20" in config
+    assert "RandomTrailers = on" in config
+    assert "DisableCookies = on" in config
 
 
 def test_awg3_secret_is_absent_from_repr_and_safe_metadata():

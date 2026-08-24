@@ -25,4 +25,4 @@ def test_protocol_normalization_is_exact_and_fail_closed():
 
 def test_protocol_to_config_schema_mapping_does_not_alias_awg3_to_awg2():
     assert config_version_for_protocol(ProtocolVersion.AWG2) == "amneziawg_v2"
-    assert config_version_for_protocol(ProtocolVersion.AWG3) == "amneziawg_v3"
+    assert config_version_for_protocol(ProtocolVersion.AWG3) == "amneziawg_v3_1"

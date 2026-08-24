@@ -1448,7 +1448,15 @@ def _awg3_issuer_material(*, resolver=None, s1=12, s2=13, s3=14, s4=15):
         active_resolver.secret.encode("utf-8")
     ).hexdigest()
     return Awg3IssuerMaterial(
-        provider_identity="phase15-material-provider-001",
+        provider_identity="phase16-material-provider-001",
+        protocol_family="awg3",
+        protocol_revision="3.1",
+        config_revision="amneziawg_v3_1",
+        runtime_artifact_identity=(
+            "docker.io/amneziavpn/amneziawg-go@"
+            "sha256:4e1fd2840f8d26eb6ec8bc1598e66f2f17f5d0201cd2baadbde560c104d4fc9d"
+        ),
+        runtime_capabilities=("disable_cookies", "random_trailers"),
         runtime_instance_id="runtime-awg3",
         endpoint_host="awg3.example.test",
         server_public_key="awg3-server-public",
@@ -1462,8 +1470,10 @@ def _awg3_issuer_material(*, resolver=None, s1=12, s2=13, s3=14, s4=15):
         reject_after_time="180",
         keepalive_timeout="30",
         max_handshake_attempts="20",
+        random_trailers=True,
+        disable_cookies=True,
         header_protection_key=HeaderProtectionSecretRef(
-            reference="phase15-hpk-001",
+            reference="phase16-hpk-001",
             fingerprint=fingerprint,
         ),
         secret_resolver=active_resolver,
@@ -1488,7 +1498,7 @@ def test_create_protocol_device_for_existing_passport_reuses_lineage_without_rec
         passport_device_id=passport_device_id,
         server_id=server_id,
         device_name="AWG3 laptop",
-        config_version="amneziawg_v3",
+        config_version="amneziawg_v3_1",
         client_build="50005",
         device_context=_awg3_existing_passport_context(),
         awg3_material=_awg3_issuer_material(),
@@ -1504,7 +1514,7 @@ def test_create_protocol_device_for_existing_passport_reuses_lineage_without_rec
     assert device["protocol_version"] == "awg3"
     assert device["runtime_instance_id"] == "runtime-awg3"
     assert device["compatibility_evidence_id"] == "evidence-awg3"
-    assert device["config_version"] == "amneziawg_v3"
+    assert device["config_version"] == "amneziawg_v3_1"
     assert len(peer_applier.calls) == 1
 
 
@@ -1576,7 +1586,7 @@ def test_create_protocol_device_for_existing_passport_validates_before_secrets_o
             passport_device_id=requested_passport_id,
             server_id=server_id,
             device_name="AWG3 laptop",
-            config_version="amneziawg_v3",
+            config_version="amneziawg_v3_1",
             client_build="50005",
             device_context=context,
             awg3_material=_awg3_issuer_material(),
@@ -1627,7 +1637,7 @@ def test_hpk_resolution_failures_use_narrow_safe_pre_side_effect_type(
         material = replace(
             material,
             header_protection_key=HeaderProtectionSecretRef(
-                reference="phase15-hpk-001",
+                    reference="phase16-hpk-001",
                 fingerprint="sha256:" + "f" * 64,
             ),
         )
@@ -1646,7 +1656,7 @@ def test_hpk_resolution_failures_use_narrow_safe_pre_side_effect_type(
             passport_device_id=passport_device_id,
             server_id=server_id,
             device_name="AWG3 laptop",
-            config_version="amneziawg_v3",
+            config_version="amneziawg_v3_1",
             client_build="50005",
             device_context=_awg3_existing_passport_context(),
             awg3_material=material,
@@ -1663,7 +1673,7 @@ def test_hpk_resolution_failures_use_narrow_safe_pre_side_effect_type(
     assert type(raised.value) is narrow_type
     assert str(raised.value) == "AWG3 header protection key is unavailable"
     assert "raw provider detail" not in str(raised.value)
-    assert resolver.calls == ["phase15-hpk-001"]
+    assert resolver.calls == ["phase16-hpk-001"]
     assert key_calls == []
     assert peer_applier.calls == []
     assert repo.count_active_devices(owner_user_id) == 1
@@ -1696,7 +1706,7 @@ def test_failure_after_hpk_resolution_remains_outside_narrow_type(
             passport_device_id=passport_device_id,
             server_id=server_id,
             device_name="AWG3 laptop",
-            config_version="amneziawg_v3",
+            config_version="amneziawg_v3_1",
             client_build="50005",
             device_context=_awg3_existing_passport_context(),
             awg3_material=_awg3_issuer_material(resolver=resolver),
@@ -1711,7 +1721,7 @@ def test_failure_after_hpk_resolution_remains_outside_narrow_type(
     )
     assert narrow_type is not None
     assert not isinstance(raised.value, narrow_type)
-    assert resolver.calls == ["phase15-hpk-001"]
+    assert resolver.calls == ["phase16-hpk-001"]
     assert peer_applier.calls == []
 
 
@@ -1778,7 +1788,7 @@ def test_operator_awg3_accepts_complete_opaque_context_and_keeps_lowest_free(
         device_name="AWG3 context matrix",
         duration_days=30,
         admin_telegram_id=999,
-        config_version="amneziawg_v3",
+        config_version="amneziawg_v3_1",
         device_context=_operator_awg3_context(),
         client_build="50005",
         awg3_material=_awg3_issuer_material(),
@@ -1906,7 +1916,7 @@ def test_operator_awg3_rejects_noncanonical_context_before_any_side_effect(
             device_name="Invalid AWG3 context",
             duration_days=30,
             admin_telegram_id=999,
-            config_version="amneziawg_v3",
+            config_version="amneziawg_v3_1",
             device_context=context,
             client_build="50005",
             awg3_material=material,
@@ -2270,7 +2280,7 @@ def test_operator_awg2_rejects_awg3_only_inputs_before_any_side_effect(
 
     with pytest.raises(
         ValueError,
-        match="AWG3-only inputs require amneziawg_v3",
+        match="AWG3-only inputs require amneziawg_v3_1",
     ):
         service.create_operator_device(
             owner_user_id=owner_user_id,
@@ -2319,7 +2329,7 @@ def test_existing_passport_protocol_rejects_v2_before_any_side_effect(
 
     with pytest.raises(
         ValueError,
-        match="protocol device creation requires amneziawg_v3",
+        match="protocol device creation requires amneziawg_v3_1",
     ):
         service.create_protocol_device_for_existing_passport(
             owner_user_id=owner_user_id,
@@ -2369,7 +2379,7 @@ def test_existing_passport_awg3_uses_only_exact_runtime_config_ipam_and_peer(
         peer_public_key="existing-awg3-peer",
         peer_private_key_encrypted="encrypted-private-key",
         preshared_key_encrypted="encrypted-preshared-key",
-        config_version="amneziawg_v3",
+        config_version="amneziawg_v3_1",
         protocol_version="awg3",
         runtime_instance_id="runtime-awg3",
         compatibility_evidence_id="evidence-awg3",
@@ -2384,7 +2394,7 @@ def test_existing_passport_awg3_uses_only_exact_runtime_config_ipam_and_peer(
         passport_device_id=passport_device_id,
         server_id=server_id,
         device_name="AWG3 laptop",
-        config_version="amneziawg_v3",
+        config_version="amneziawg_v3_1",
         client_build="50005",
         device_context=_awg3_existing_passport_context(),
         awg3_material=_awg3_issuer_material(),
@@ -2456,7 +2466,7 @@ def test_awg3_semantic_validation_precedes_client_key_and_psk_generation(
             passport_device_id=passport_device_id,
             server_id=server_id,
             device_name="AWG3 laptop",
-            config_version="amneziawg_v3",
+            config_version="amneziawg_v3_1",
             client_build="50005",
             device_context=_awg3_existing_passport_context(),
             awg3_material=material,
@@ -2482,7 +2492,7 @@ def test_physical_quota_counts_dual_profile_passport_once_for_future_devices(tmp
         passport_device_id=passport_device_id,
         server_id=server_id,
         device_name="AWG3 laptop",
-        config_version="amneziawg_v3",
+        config_version="amneziawg_v3_1",
         client_build="50005",
         device_context=_awg3_existing_passport_context(),
         awg3_material=_awg3_issuer_material(),

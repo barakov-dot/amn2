@@ -39,7 +39,12 @@ from app.vpn.amneziawg_v3.config import (
     SecretResolver,
 )
 from app.vpn.config_versions import render_client_config_for_version, validate_config_version
-from app.vpn.protocol_versions import ProtocolVersion
+from app.vpn.protocol_versions import (
+    AWG3_ACTIVE_CONFIG_VERSION,
+    AWG3_ACTIVE_REVISION,
+    AWG3_REQUIRED_RUNTIME_CAPABILITIES,
+    ProtocolVersion,
+)
 
 
 IP_ALLOCATION_ATTEMPTS = 3
@@ -122,6 +127,11 @@ class OperatorDeviceContext:
 @dataclass(frozen=True)
 class Awg3IssuerMaterial:
     provider_identity: str
+    protocol_family: str
+    protocol_revision: str
+    config_revision: str
+    runtime_artifact_identity: str
+    runtime_capabilities: tuple[str, ...]
     runtime_instance_id: str
     endpoint_host: str
     server_public_key: str
@@ -135,11 +145,26 @@ class Awg3IssuerMaterial:
     reject_after_time: str
     keepalive_timeout: str
     max_handshake_attempts: str
+    random_trailers: bool
+    disable_cookies: bool
     header_protection_key: HeaderProtectionSecretRef
     secret_resolver: SecretResolver
 
     def __post_init__(self) -> None:
         _require_exact_material_text(self.provider_identity, "provider_identity")
+        if self.protocol_family != ProtocolVersion.AWG3.value:
+            raise ValueError("protocol_family")
+        if self.protocol_revision != AWG3_ACTIVE_REVISION:
+            raise ValueError("protocol_revision")
+        if self.config_revision != AWG3_ACTIVE_CONFIG_VERSION:
+            raise ValueError("config_revision")
+        _require_exact_material_text(
+            self.runtime_artifact_identity,
+            "runtime_artifact_identity",
+            maximum=1024,
+        )
+        if self.runtime_capabilities != AWG3_REQUIRED_RUNTIME_CAPABILITIES:
+            raise ValueError("runtime_capabilities")
         _require_exact_material_text(self.runtime_instance_id, "runtime_instance_id")
         _require_exact_material_text(self.endpoint_host, "endpoint_host")
         _require_exact_material_text(
@@ -174,6 +199,10 @@ class Awg3IssuerMaterial:
             raise ValueError("rekey_timeout")
         if int(self.rekey_after_time) >= int(self.reject_after_time):
             raise ValueError("reject_after_time")
+        if self.random_trailers is not True:
+            raise ValueError("random_trailers")
+        if self.disable_cookies is not True:
+            raise ValueError("disable_cookies")
         if not isinstance(self.header_protection_key, HeaderProtectionSecretRef):
             raise ValueError("header_protection_key")
         if not callable(getattr(self.secret_resolver, "resolve", None)):
@@ -313,7 +342,7 @@ class AccessService:
             runtime_target=runtime_target,
             runtime_peer_applier=runtime_peer_applier,
         )
-        if config_version == "amneziawg_v3":
+        if config_version == AWG3_ACTIVE_CONFIG_VERSION:
             _validate_awg3_runtime_inputs(
                 server_id=server_id,
                 client_build=client_build,
@@ -583,7 +612,7 @@ class AccessService:
                 import_method=device_context.import_method,
                 config_schema_version=config_version,
             )
-        if config_version == "amneziawg_v3":
+        if config_version == AWG3_ACTIVE_CONFIG_VERSION:
             _validate_awg3_runtime_inputs(
                 server_id=server_id,
                 client_build=client_build,
@@ -620,7 +649,7 @@ class AccessService:
 
         resolved_hpk = (
             _resolve_awg3_hpk(awg3_material)
-            if config_version == "amneziawg_v3"
+            if config_version == AWG3_ACTIVE_CONFIG_VERSION
             else None
         )
 
@@ -664,7 +693,7 @@ class AccessService:
             runtime_peer_applier=runtime_peer_applier,
             allocation_strategy=(
                 "lowest_free"
-                if config_version == "amneziawg_v3"
+                if config_version == AWG3_ACTIVE_CONFIG_VERSION
                 else "remote_high_watermark"
             ),
         )
@@ -929,7 +958,7 @@ class AccessService:
             resolver = None
             render_input: ClientConfigInput | Awg3ClientConfigInput = client_config
             template_dir = self._client_config_template_dir
-            if config_version == "amneziawg_v3":
+            if config_version == AWG3_ACTIVE_CONFIG_VERSION:
                 if awg3_material is None or resolved_hpk is None:
                     raise ValueError("strict AWG3 issuer material is required")
                 render_input = Awg3ClientConfigInput(
@@ -941,6 +970,8 @@ class AccessService:
                     reject_after_time=awg3_material.reject_after_time,
                     keepalive_timeout=awg3_material.keepalive_timeout,
                     max_handshake_attempts=awg3_material.max_handshake_attempts,
+                    random_trailers=awg3_material.random_trailers,
+                    disable_cookies=awg3_material.disable_cookies,
                 )
                 resolver = _ResolvedHeaderProtectionSecretResolver(
                     awg3_material.header_protection_key.reference,
@@ -1008,14 +1039,16 @@ def _validate_operator_config_boundary(
     runtime_peer_applier: PeerApplier | None,
 ) -> str:
     validated = validate_config_version(config_version)
-    if validated != "amneziawg_v3":
+    if validated != AWG3_ACTIVE_CONFIG_VERSION:
         if (
             awg3_material is not None
             or runtime_target is not None
             or runtime_peer_applier is not None
             or device_context.protocol_version == ProtocolVersion.AWG3.value
         ):
-            raise ValueError("AWG3-only inputs require amneziawg_v3")
+            raise ValueError(
+                f"AWG3-only inputs require {AWG3_ACTIVE_CONFIG_VERSION}"
+            )
         _validate_awg2_operator_context(device_context)
     return validated
 
@@ -1048,8 +1081,10 @@ def _validate_awg2_operator_context(device_context: OperatorDeviceContext) -> No
 
 def _require_awg3_config_version(config_version: str) -> str:
     validated = validate_config_version(config_version)
-    if validated != "amneziawg_v3":
-        raise ValueError("protocol device creation requires amneziawg_v3")
+    if validated != AWG3_ACTIVE_CONFIG_VERSION:
+        raise ValueError(
+            f"protocol device creation requires {AWG3_ACTIVE_CONFIG_VERSION}"
+        )
     return validated
 
 

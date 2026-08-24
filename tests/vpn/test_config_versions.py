@@ -43,11 +43,12 @@ def test_supported_config_versions_are_explicit():
         "amneziawg_v1_5",
         "amneziawg_v2",
         "amneziawg_v3",
+        "amneziawg_v3_1",
     )
 
 
 def test_new_issuance_excludes_legacy_config_versions():
-    assert NEW_ISSUANCE_CONFIG_VERSIONS == ("amneziawg_v2", "amneziawg_v3")
+    assert NEW_ISSUANCE_CONFIG_VERSIONS == ("amneziawg_v2", "amneziawg_v3_1")
 
 
 def test_validate_config_version_rejects_unknown_value():
@@ -92,6 +93,8 @@ def _awg3_input() -> Awg3ClientConfigInput:
         reject_after_time="180",
         keepalive_timeout="10",
         max_handshake_attempts="20",
+        random_trailers=True,
+        disable_cookies=True,
     )
 
 
@@ -104,9 +107,18 @@ def test_v3_renderer_requires_typed_input_and_explicit_resolver():
         )
 
 
-def test_v3_renderer_routes_only_explicit_typed_input():
+def test_v3_1_renderer_routes_only_explicit_typed_input():
     config = render_client_config_for_version(
-        _awg3_input(), "amneziawg_v3", resolver=_Resolver()
+        _awg3_input(), "amneziawg_v3_1", resolver=_Resolver()
     )
     assert "HeaderProtectionKey = raw-hpk" in config
+    assert "RandomTrailers = on" in config
+    assert "DisableCookies = on" in config
     assert "[Peer]" in config
+
+
+@pytest.mark.parametrize("field", ["random_trailers", "disable_cookies"])
+@pytest.mark.parametrize("value", [None, "", "on", "off", 0, 1])
+def test_v3_1_toggles_require_exact_typed_booleans(field, value):
+    with pytest.raises(ValueError, match=field):
+        replace(_awg3_input(), **{field: value})

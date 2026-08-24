@@ -44,10 +44,29 @@ from app.services.self_service_issuance import (
 from app.services.telegram_callback_state import TelegramCallbackStateService
 from app.services.vpn_runtime_instances import RuntimeInstanceSpec, runtime_spec_from_row
 from app.vpn.amneziawg_v3.config import HeaderProtectionSecretRef
-from app.vpn.protocol_versions import ProtocolVersion, config_version_for_protocol
+from app.vpn.protocol_versions import (
+    AWG3_ACTIVE_CONFIG_VERSION,
+    AWG3_ACTIVE_REVISION,
+    AWG3_REQUIRED_RUNTIME_CAPABILITIES,
+    ProtocolVersion,
+    config_version_for_protocol,
+)
 
 
-_PHASE15_PACKAGE_ID = "phase15-dual-protocol-bootstrap-20260811-001"
+_PHASE16_PACKAGE_ID = "phase16-awg3-family-3-1-spain-pilot-20260824-001"
+_AWG31_RUNTIME_SOURCE_COMMIT = "1f50ad736ecca22a9bfc7b4606805ec9ca49fe48"
+_AWG31_RUNTIME_ARTIFACT_IDENTITY = (
+    "docker.io/amneziavpn/amneziawg-go@"
+    "sha256:4e1fd2840f8d26eb6ec8bc1598e66f2f17f5d0201cd2baadbde560c104d4fc9d"
+)
+_AWG31_RUNTIME_CAPABILITY_EVIDENCE = (
+    "github:amnezia-vpn/amneziawg-go/commit/" + _AWG31_RUNTIME_SOURCE_COMMIT
+)
+_AWG31_CLIENT_ARTIFACT_IDENTITY = (
+    "github:amnezia-vpn/amneziawg-android/releases/v3.1.20260814/"
+    "AmneziaWG-3.1.202060814.apk@"
+    "sha256:74f109a948f012e8b90b4055e98bb9bee77bbb8e5d0fe7d5a057dd9698009697"
+)
 _CANONICAL_GIT_SOURCE_HEAD = re.compile(r"[0-9a-f]{40}\Z")
 _MAX_PROVIDER_BYTES = 65_536
 _MAX_HPK_BYTES = 4_096
@@ -58,7 +77,14 @@ _RUNTIME_FIELDS = frozenset(
         "runtime_instance_id",
         "server_id",
         "protocol_version",
+        "protocol_family",
+        "protocol_revision",
+        "config_revision",
         "runtime_version",
+        "runtime_source_commit",
+        "runtime_artifact_identity",
+        "runtime_capabilities",
+        "capability_evidence",
         "interface_name",
         "udp_port",
         "vpn_cidr",
@@ -133,6 +159,11 @@ class _HpkFileResolver:
 _MATERIAL_FIELDS = frozenset(
     {
         "provider_identity",
+        "protocol_family",
+        "protocol_revision",
+        "config_revision",
+        "runtime_artifact_identity",
+        "runtime_capabilities",
         "runtime_instance_id",
         "endpoint_host",
         "server_public_key",
@@ -146,6 +177,8 @@ _MATERIAL_FIELDS = frozenset(
         "reject_after_time",
         "keepalive_timeout",
         "max_handshake_attempts",
+        "random_trailers",
+        "disable_cookies",
         "header_protection_key_ref",
         "header_protection_key_fingerprint",
     }
@@ -158,13 +191,14 @@ def load_phase15_awg3_issuer_material(settings: Settings) -> Awg3IssuerMaterial:
         "AWG3 issuer material provider",
     )
     try:
-        if settings.awg3_expected_package_id != _PHASE15_PACKAGE_ID:
+        if settings.awg3_expected_package_id != _PHASE16_PACKAGE_ID:
             raise ValueError("package identity")
         if _CANONICAL_GIT_SOURCE_HEAD.fullmatch(
             settings.awg3_expected_source_head
         ) is None:
             raise ValueError("source identity")
         _require_exact_fields(payload, _MATERIAL_FIELDS, "AWG3 issuer material")
+        _require_awg31_contract(payload)
         identity = _exact_text(payload["provider_identity"], "provider_identity")
         _require_content_identity(
             payload,
@@ -203,6 +237,11 @@ def load_phase15_awg3_issuer_material(settings: Settings) -> Awg3IssuerMaterial:
         )
         return Awg3IssuerMaterial(
             provider_identity=identity,
+            protocol_family=payload["protocol_family"],
+            protocol_revision=payload["protocol_revision"],
+            config_revision=payload["config_revision"],
+            runtime_artifact_identity=payload["runtime_artifact_identity"],
+            runtime_capabilities=tuple(payload["runtime_capabilities"]),
             runtime_instance_id=runtime_instance_id,
             endpoint_host=endpoint_host,
             server_public_key=server_public_key,
@@ -216,6 +255,8 @@ def load_phase15_awg3_issuer_material(settings: Settings) -> Awg3IssuerMaterial:
             reject_after_time=payload["reject_after_time"],
             keepalive_timeout=payload["keepalive_timeout"],
             max_handshake_attempts=payload["max_handshake_attempts"],
+            random_trailers=_required_on(payload["random_trailers"], "random_trailers"),
+            disable_cookies=_required_on(payload["disable_cookies"], "disable_cookies"),
             header_protection_key=secret_ref,
             secret_resolver=resolver,
         )
@@ -511,7 +552,7 @@ def build_phase15_awg3_components(
 
 def _load_snapshot(settings: Settings, repo: Repository) -> _BootstrapSnapshot:
     try:
-        if settings.awg3_expected_package_id != _PHASE15_PACKAGE_ID:
+        if settings.awg3_expected_package_id != _PHASE16_PACKAGE_ID:
             raise ValueError("package identity")
         if _CANONICAL_GIT_SOURCE_HEAD.fullmatch(
             settings.awg3_expected_source_head
@@ -542,6 +583,7 @@ def _load_snapshot(settings: Settings, repo: Repository) -> _BootstrapSnapshot:
         runtime_mappings = tuple(_mapping(row, "runtime") for row in runtime_rows)
         for row in runtime_mappings:
             _require_exact_fields(row, _RUNTIME_FIELDS, "runtime")
+            _require_awg31_runtime_contract(row)
         runtimes = tuple(runtime_spec_from_row(row) for row in runtime_mappings)
         awg3_candidates = tuple(
             item for item in runtimes if item.protocol_version is ProtocolVersion.AWG3
@@ -598,6 +640,7 @@ def _load_snapshot(settings: Settings, repo: Repository) -> _BootstrapSnapshot:
             raise ValueError("evidence")
         evidence_mappings = tuple(_mapping(row, "evidence") for row in evidence_rows)
         for row in evidence_mappings:
+            _require_awg31_evidence_contract(row)
             evidence_id = _exact_text(row.get("evidence_id"), "evidence_id")
             if evidence_id != _content_identity(
                 "compatibility_evidence",
@@ -614,7 +657,21 @@ def _load_snapshot(settings: Settings, repo: Repository) -> _BootstrapSnapshot:
         )
         _require_exact_fields(
             build_payload,
-            frozenset({"provider_identity", "package_id", "source_head", "client"}),
+            frozenset(
+                {
+                    "provider_identity",
+                    "package_id",
+                    "source_head",
+                    "protocol_family",
+                    "protocol_revision",
+                    "config_revision",
+                    "runtime_artifact_identity",
+                    "runtime_capabilities",
+                    "client_artifact_identity",
+                    "release_kind",
+                    "client",
+                }
+            ),
             "AWG3 exact build provider",
         )
         _require_content_identity(
@@ -628,6 +685,11 @@ def _load_snapshot(settings: Settings, repo: Repository) -> _BootstrapSnapshot:
             raise ValueError("package identity mismatch")
         if build_payload["source_head"] != settings.awg3_expected_source_head:
             raise ValueError("source identity mismatch")
+        _require_awg31_contract(build_payload)
+        if build_payload["client_artifact_identity"] != _AWG31_CLIENT_ARTIFACT_IDENTITY:
+            raise ValueError("client artifact identity mismatch")
+        if build_payload["release_kind"] != SourceReleaseKind.STABLE.value:
+            raise ValueError("client release kind mismatch")
         client = _client_from_json(_mapping(build_payload["client"], "client"))
         if client.build_id is None:
             raise ValueError("exact build")
@@ -685,6 +747,40 @@ def _control_state(repo: Repository) -> Awg3ControlState:
         emergency_suspended=bool(row["emergency_suspended"]),
         runtime_receipt=row["runtime_receipt"],
     )
+
+
+def _require_awg31_contract(payload: Mapping[str, object]) -> None:
+    if payload.get("protocol_family") != ProtocolVersion.AWG3.value:
+        raise ValueError("protocol_family")
+    if payload.get("protocol_revision") != AWG3_ACTIVE_REVISION:
+        raise ValueError("protocol_revision")
+    if payload.get("config_revision") != AWG3_ACTIVE_CONFIG_VERSION:
+        raise ValueError("config_revision")
+    if payload.get("runtime_artifact_identity") != _AWG31_RUNTIME_ARTIFACT_IDENTITY:
+        raise ValueError("runtime_artifact_identity")
+    capabilities = payload.get("runtime_capabilities")
+    if not isinstance(capabilities, list) or tuple(capabilities) != (
+        AWG3_REQUIRED_RUNTIME_CAPABILITIES
+    ):
+        raise ValueError("runtime_capabilities")
+
+
+def _require_awg31_runtime_contract(row: Mapping[str, object]) -> None:
+    _require_awg31_contract(row)
+    if row.get("runtime_source_commit") != _AWG31_RUNTIME_SOURCE_COMMIT:
+        raise ValueError("runtime_source_commit")
+    if row.get("capability_evidence") != _AWG31_RUNTIME_CAPABILITY_EVIDENCE:
+        raise ValueError("capability_evidence")
+
+
+def _require_awg31_evidence_contract(row: Mapping[str, object]) -> None:
+    _require_awg31_contract(row)
+
+
+def _required_on(value: object, field: str) -> bool:
+    if value != "on" or not isinstance(value, str):
+        raise ValueError(field)
+    return True
 
 
 def _content_identity(
@@ -761,6 +857,11 @@ def _evidence_from_json(row: Mapping[str, object]) -> ClientCompatibilityEvidenc
                 "evidence_id",
                 "client",
                 "protocol_version",
+                "protocol_family",
+                "protocol_revision",
+                "config_revision",
+                "runtime_artifact_identity",
+                "runtime_capabilities",
                 "source_kind",
                 "status",
                 "observed_at",

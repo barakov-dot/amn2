@@ -32,8 +32,22 @@ from app.services.device_passports import create_device_passport
 
 NOW = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
 SOURCE_HEAD = "a" * 40
-PACKAGE_ID = "phase15-dual-protocol-bootstrap-20260811-001"
-CLIENT = ClientIdentity("amnezia_vpn", "windows", "5.0.0.5", "50005")
+PACKAGE_ID = "phase16-awg3-family-3-1-spain-pilot-20260824-001"
+PROTOCOL_FAMILY = "awg3"
+PROTOCOL_REVISION = "3.1"
+CONFIG_REVISION = "amneziawg_v3_1"
+RUNTIME_SOURCE_COMMIT = "1f50ad736ecca22a9bfc7b4606805ec9ca49fe48"
+RUNTIME_ARTIFACT_IDENTITY = (
+    "docker.io/amneziavpn/amneziawg-go@"
+    "sha256:4e1fd2840f8d26eb6ec8bc1598e66f2f17f5d0201cd2baadbde560c104d4fc9d"
+)
+RUNTIME_CAPABILITIES = ["disable_cookies", "random_trailers"]
+CLIENT_ARTIFACT_IDENTITY = (
+    "github:amnezia-vpn/amneziawg-android/releases/v3.1.20260814/"
+    "AmneziaWG-3.1.202060814.apk@"
+    "sha256:74f109a948f012e8b90b4055e98bb9bee77bbb8e5d0fe7d5a057dd9698009697"
+)
+CLIENT = ClientIdentity("amneziawg", "android", "v3.1.20260814", "12")
 
 
 def _content_identity(kind: str, payload: object) -> str:
@@ -108,6 +122,11 @@ class _ReadSizeSpy:
 
 def _material_payload(secret: str) -> dict[str, object]:
     payload = {
+        "protocol_family": PROTOCOL_FAMILY,
+        "protocol_revision": PROTOCOL_REVISION,
+        "config_revision": CONFIG_REVISION,
+        "runtime_artifact_identity": RUNTIME_ARTIFACT_IDENTITY,
+        "runtime_capabilities": RUNTIME_CAPABILITIES,
         "runtime_instance_id": "spain-awg3-runtime",
         "endpoint_host": "awg3.example.test",
         "server_public_key": "awg3-server-public",
@@ -121,7 +140,9 @@ def _material_payload(secret: str) -> dict[str, object]:
         "reject_after_time": "180",
         "keepalive_timeout": "30",
         "max_handshake_attempts": "20",
-        "header_protection_key_ref": "phase15-hpk-001",
+        "random_trailers": "on",
+        "disable_cookies": "on",
+        "header_protection_key_ref": "phase16-hpk-001",
         "header_protection_key_fingerprint": "sha256:"
         + hashlib.sha256(secret.encode("utf-8")).hexdigest(),
     }
@@ -136,7 +157,16 @@ def _provider_payloads(secret: str) -> dict[str, dict[str, object]]:
         "runtime_instance_id": "spain-awg3-runtime",
         "server_id": 1,
         "protocol_version": "awg3",
-        "runtime_version": "awg3-runtime-1",
+        "protocol_family": PROTOCOL_FAMILY,
+        "protocol_revision": PROTOCOL_REVISION,
+        "config_revision": CONFIG_REVISION,
+        "runtime_version": "3.1.20260814",
+        "runtime_source_commit": RUNTIME_SOURCE_COMMIT,
+        "runtime_artifact_identity": RUNTIME_ARTIFACT_IDENTITY,
+        "runtime_capabilities": RUNTIME_CAPABILITIES,
+        "capability_evidence": (
+            "github:amnezia-vpn/amneziawg-go/commit/" + RUNTIME_SOURCE_COMMIT
+        ),
         "interface_name": "awg3",
         "udp_port": 30003,
         "vpn_cidr": "10.9.0.0/24",
@@ -158,6 +188,11 @@ def _provider_payloads(secret: str) -> dict[str, dict[str, object]]:
                 "build_id": CLIENT.build_id,
             },
             "protocol_version": "awg3",
+            "protocol_family": PROTOCOL_FAMILY,
+            "protocol_revision": PROTOCOL_REVISION,
+            "config_revision": CONFIG_REVISION,
+            "runtime_artifact_identity": RUNTIME_ARTIFACT_IDENTITY,
+            "runtime_capabilities": RUNTIME_CAPABILITIES,
             "source_kind": source_kind,
             "status": "passed",
             "observed_at": NOW.isoformat(),
@@ -174,6 +209,13 @@ def _provider_payloads(secret: str) -> dict[str, dict[str, object]]:
     build_body = {
         "package_id": PACKAGE_ID,
         "source_head": SOURCE_HEAD,
+        "protocol_family": PROTOCOL_FAMILY,
+        "protocol_revision": PROTOCOL_REVISION,
+        "config_revision": CONFIG_REVISION,
+        "runtime_artifact_identity": RUNTIME_ARTIFACT_IDENTITY,
+        "runtime_capabilities": RUNTIME_CAPABILITIES,
+        "client_artifact_identity": CLIENT_ARTIFACT_IDENTITY,
+        "release_kind": "stable",
         "client": {
             "application": CLIENT.application,
             "platform": CLIENT.platform,
@@ -196,7 +238,7 @@ def _provider_payloads(secret: str) -> dict[str, dict[str, object]]:
 
 
 def _write_provider_files(tmp_path):
-    secret = "strict-phase15-header-protection-key"
+    secret = "strict-phase16-header-protection-key"
     paths = {
         "runtime": tmp_path / "runtime.json",
         "evidence": tmp_path / "evidence.json",
@@ -236,14 +278,14 @@ def _settings(tmp_path, **updates):
         "awg3_issuer_material_provider_path": str(paths["material"]),
         "awg3_issuer_material_provider_identity": payloads["material"]["provider_identity"],
         "awg3_hpk_secret_path": str(paths["hpk"]),
-        "awg3_hpk_secret_reference": "phase15-hpk-001",
+        "awg3_hpk_secret_reference": "phase16-hpk-001",
     }
     values.update(updates)
     return Settings(**values), paths
 
 
 def _accepted_repo(tmp_path):
-    payloads = _provider_payloads("strict-phase15-header-protection-key")
+    payloads = _provider_payloads("strict-phase16-header-protection-key")
     runtime_receipt = payloads["runtime"]["runtimes"][0]["acceptance_receipt"]
     evidence_ids = tuple(
         row["evidence_id"] for row in payloads["evidence"]["evidence"]
@@ -274,18 +316,58 @@ def _accepted_repo(tmp_path):
     return conn, repo
 
 
-@pytest.mark.parametrize("mutation", ["missing", "unknown", "wrong_type", "nonce"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing",
+        "unknown",
+        "wrong_type",
+        "nonce",
+        "random_trailers_off",
+        "disable_cookies_malformed",
+    ],
+)
 def test_issuer_material_json_is_strict_and_fail_closed(tmp_path, mutation):
     settings, paths = _settings(tmp_path)
-    payload = _material_payload("strict-phase15-header-protection-key")
+    payload = _material_payload("strict-phase16-header-protection-key")
     if mutation == "missing":
         payload.pop("rekey_timeout")
     elif mutation == "unknown":
         payload["fallback"] = "forbidden"
     elif mutation == "wrong_type":
         payload["content_padding_addition"] = 16
-    else:
+    elif mutation == "nonce":
         payload["s3"] = 11
+    elif mutation == "random_trailers_off":
+        payload["random_trailers"] = "off"
+    else:
+        payload["disable_cookies"] = True
+    paths["material"].write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(Phase15BootstrapUnavailable):
+        load_phase15_awg3_issuer_material(settings)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("random_trailers", "off"),
+        ("random_trailers", ""),
+        ("disable_cookies", "true"),
+        ("disable_cookies", True),
+    ],
+)
+def test_phase16_material_rejects_resigned_non_on_toggles(tmp_path, field, value):
+    settings, paths = _settings(tmp_path)
+    payload = _material_payload("strict-phase16-header-protection-key")
+    payload[field] = value
+    payload["provider_identity"] = _content_identity(
+        "issuer_material",
+        {key: item for key, item in payload.items() if key != "provider_identity"},
+    )
+    settings = settings.model_copy(
+        update={"awg3_issuer_material_provider_identity": payload["provider_identity"]}
+    )
     paths["material"].write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(Phase15BootstrapUnavailable):
@@ -294,7 +376,7 @@ def test_issuer_material_json_is_strict_and_fail_closed(tmp_path, mutation):
 
 def test_issuer_material_rejects_wrong_hpk_reference_before_secret_read(tmp_path, monkeypatch):
     settings, paths = _settings(tmp_path)
-    payload = _material_payload("strict-phase15-header-protection-key")
+    payload = _material_payload("strict-phase16-header-protection-key")
     payload["header_protection_key_ref"] = "other-hpk"
     payload["provider_identity"] = _content_identity(
         "issuer_material",
@@ -416,6 +498,75 @@ def test_invalid_awg3_runtime_provider_fails_before_issuer_or_peer_side_effects(
     assert int(conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0]) == (
         devices_before
     )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("protocol_revision", "3.0"),
+        ("config_revision", "amneziawg_v3"),
+        ("runtime_source_commit", "b" * 40),
+        (
+            "runtime_artifact_identity",
+            "docker.io/amneziavpn/amneziawg-go@sha256:" + "b" * 64,
+        ),
+        ("runtime_capabilities", ["random_trailers"]),
+        (
+            "runtime_capabilities",
+            ["disable_cookies", "random_trailers", "unknown_capability"],
+        ),
+        ("capability_evidence", "github:unverified"),
+    ],
+)
+def test_phase16_runtime_revision_and_capabilities_fail_closed_before_side_effects(
+    tmp_path,
+    field,
+    value,
+):
+    settings, paths = _settings(tmp_path)
+    runtime_payload = json.loads(paths["runtime"].read_text(encoding="utf-8"))
+    runtime_row = runtime_payload["runtimes"][0]
+    runtime_row[field] = value
+    unsigned_runtime = {
+        key: item for key, item in runtime_row.items() if key != "acceptance_receipt"
+    }
+    runtime_row["acceptance_receipt"] = _content_identity(
+        "runtime_acceptance", unsigned_runtime
+    )
+    runtime_payload["provider_identity"] = _content_identity(
+        "runtime_provider",
+        {
+            key: item
+            for key, item in runtime_payload.items()
+            if key != "provider_identity"
+        },
+    )
+    settings = settings.model_copy(
+        update={"awg3_runtime_provider_identity": runtime_payload["provider_identity"]}
+    )
+    paths["runtime"].write_text(json.dumps(runtime_payload), encoding="utf-8")
+    conn, repo = _accepted_repo(tmp_path)
+    repo.update_awg3_control_state(
+        runtime_accepted=True,
+        global_accepted=True,
+        issuance_enabled=True,
+        emergency_suspended=False,
+        runtime_receipt=runtime_row["acceptance_receipt"],
+        actor_id=9001,
+        reason="mutated Phase 16 runtime contract",
+    )
+    peer = RecordingPeerApplier()
+    access = RecordingAccessService(peer)
+    devices_before = int(conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0])
+
+    components = build_phase15_awg3_components(settings, repo, access, peer)
+
+    assert components.available is False
+    assert components.unavailable_reason == "AWG3 bootstrap providers are invalid"
+    assert access.calls == []
+    assert peer.calls == []
+    assert peer.runtime_targets == []
+    assert int(conn.execute("SELECT COUNT(*) FROM devices").fetchone()[0]) == devices_before
 
 
 @pytest.mark.parametrize(
@@ -805,7 +956,7 @@ def test_future_admin_health_event_taxonomy_has_no_runtime_activation():
 
 def test_issuer_material_is_bound_to_exact_runtime_endpoint_and_public_key(tmp_path):
     settings, paths = _settings(tmp_path)
-    payload = _material_payload("strict-phase15-header-protection-key")
+    payload = _material_payload("strict-phase16-header-protection-key")
     payload.update(
         {
             "runtime_instance_id": "spain-awg3-runtime",
@@ -975,7 +1126,7 @@ def test_admin_adapter_rejects_noncanonical_awg3_protocol_before_fresh_boundary(
 
     with pytest.raises(Phase15BootstrapUnavailable):
         adapter.create_operator_device(
-            config_version="amneziawg_v3",
+            config_version="amneziawg_v3_1",
             device_context=OperatorDeviceContext(
                 platform=CLIENT.platform,
                 official_client_type=CLIENT.application,
@@ -1010,7 +1161,7 @@ def test_admin_adapter_forwards_only_exact_fresh_admission_evidence():
     )
 
     adapter.create_operator_device(
-        config_version="amneziawg_v3",
+        config_version="amneziawg_v3_1",
         device_context=exact_context,
     )
 
@@ -1032,7 +1183,7 @@ def test_admin_adapter_forwards_only_exact_fresh_admission_evidence():
     )
     with pytest.raises(Phase15BootstrapUnavailable):
         mismatching_adapter.create_operator_device(
-            config_version="amneziawg_v3",
+            config_version="amneziawg_v3_1",
             device_context=replace(
                 exact_context,
                 compatibility_evidence_id="different-evidence-id",
@@ -1129,7 +1280,7 @@ def test_provider_json_bytes_rows_and_nesting_are_bounded(tmp_path):
         phase15_bootstrap._read_json_object(str(deeply_nested), "test provider")
 
 
-def test_runtime_provider_row_count_is_bounded_before_domain_materialization(tmp_path):
+def test_oversized_runtime_provider_is_bounded_before_domain_materialization(tmp_path):
     settings, paths = _settings(tmp_path)
     _conn, repo = _accepted_repo(tmp_path)
     payload = json.loads(paths["runtime"].read_text(encoding="utf-8"))
@@ -1145,7 +1296,7 @@ def test_runtime_provider_row_count_is_bounded_before_domain_materialization(tmp
     )
 
     assert components.available is False
-    assert components.unavailable_reason == "AWG3 bootstrap providers are invalid"
+    assert components.unavailable_reason == "AWG3 runtime provider size exceeds limit"
 
 
 def test_provider_and_hpk_reads_are_capped_to_limit_plus_one(tmp_path, monkeypatch):
@@ -1170,7 +1321,7 @@ def test_provider_and_hpk_reads_are_capped_to_limit_plus_one(tmp_path, monkeypat
     material = load_phase15_awg3_issuer_material(settings)
     assert material.secret_resolver.resolve(
         material.header_protection_key.reference
-    ) == "strict-phase15-header-protection-key"
+    ) == "strict-phase16-header-protection-key"
 
     assert provider_read_sizes == [phase15_bootstrap._MAX_PROVIDER_BYTES + 1]
     assert hpk_read_sizes == [4097]

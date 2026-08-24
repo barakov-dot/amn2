@@ -48,6 +48,8 @@ class Awg3ClientConfigInput:
     reject_after_time: str
     keepalive_timeout: str
     max_handshake_attempts: str
+    random_trailers: bool
+    disable_cookies: bool
 
     def __post_init__(self) -> None:
         if not isinstance(self.awg2, ClientConfigInput):
@@ -69,6 +71,9 @@ class Awg3ClientConfigInput:
             "max_handshake_attempts",
         ):
             _bounded_one_line(getattr(self, field), field, maximum=64)
+        for field in ("random_trailers", "disable_cookies"):
+            if not isinstance(getattr(self, field), bool):
+                raise ValueError(field)
 
     def safe_metadata(self) -> dict[str, str]:
         return {
@@ -78,7 +83,10 @@ class Awg3ClientConfigInput:
 
 
 def render_awg3_client_config(
-    config: Awg3ClientConfigInput, *, resolver: SecretResolver
+    config: Awg3ClientConfigInput,
+    *,
+    resolver: SecretResolver,
+    include_awg31: bool = False,
 ) -> str:
     if not isinstance(config, Awg3ClientConfigInput):
         raise TypeError("config must be Awg3ClientConfigInput")
@@ -105,4 +113,9 @@ def render_awg3_client_config(
         f"KeepaliveTimeout = {config.keepalive_timeout}",
         f"MaxHandshakeAttempts = {config.max_handshake_attempts}",
     )
+    if include_awg31:
+        awg3_lines += (
+            f"RandomTrailers = {'on' if config.random_trailers else 'off'}",
+            f"DisableCookies = {'on' if config.disable_cookies else 'off'}",
+        )
     return interface + "\n" + "\n".join(awg3_lines) + marker + peer
