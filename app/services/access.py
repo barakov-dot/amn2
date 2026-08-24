@@ -313,6 +313,15 @@ class AccessService:
             runtime_target=runtime_target,
             runtime_peer_applier=runtime_peer_applier,
         )
+        if config_version == "amneziawg_v3":
+            _validate_awg3_runtime_inputs(
+                server_id=server_id,
+                client_build=client_build,
+                device_context=device_context,
+                awg3_material=awg3_material,
+                runtime_target=runtime_target,
+                runtime_peer_applier=runtime_peer_applier,
+            )
         remote_mutation: RemoteMutationResult | None = None
 
         def record_remote_mutation(result: RemoteMutationResult) -> None:
@@ -1053,6 +1062,18 @@ def _validate_awg3_runtime_inputs(
     runtime_target: RuntimeInstanceSpec | None,
     runtime_peer_applier: PeerApplier | None,
 ) -> None:
+    if device_context.protocol_version != ProtocolVersion.AWG3.value:
+        raise ValueError("complete AWG3 client context is required")
+    _require_exact_material_text(
+        device_context.runtime_instance_id,
+        "runtime_instance_id",
+    )
+    if device_context.client_identity_evidence_status != "verified":
+        raise ValueError("client_identity_evidence_status")
+    _require_exact_material_text(
+        device_context.compatibility_evidence_id,
+        "compatibility_evidence_id",
+    )
     if not isinstance(awg3_material, Awg3IssuerMaterial):
         raise ValueError("strict AWG3 issuer material is required")
     awg3_material.validate()

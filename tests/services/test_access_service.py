@@ -1732,6 +1732,204 @@ def _accepted_awg3_runtime(server_id):
     )
 
 
+def _operator_awg3_context(**changes):
+    return replace(
+        OperatorDeviceContext(
+            platform="windows",
+            official_client_type="amnezia_vpn",
+            client_version="5.0.0.5",
+            protocol_version="awg3",
+            runtime_instance_id="runtime-awg3",
+            client_identity_evidence_status="verified",
+            compatibility_evidence_id="opaque-direct-access-evidence",
+        ),
+        **changes,
+    )
+
+
+def test_operator_awg3_accepts_complete_opaque_context_and_keeps_lowest_free(
+    tmp_path,
+):
+    conn = connect(tmp_path / "operator-awg3-valid-context.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    owner_user_id = repo.create_operator_recipient(operator_label="Operator")
+    server_id = repo.ensure_default_server(
+        name="local",
+        network_cidr="10.8.0.0/24",
+    )
+    awg2_peer_applier = RecordingPeerApplier(
+        remote_allocated_ips=["10.8.0.200/32"]
+    )
+    runtime_peer_applier = RecordingPeerApplier(
+        remote_allocated_ips=["10.9.0.200/32"]
+    )
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=awg2_peer_applier,
+    )
+
+    result = service.create_operator_device(
+        owner_user_id=owner_user_id,
+        server_id=server_id,
+        device_name="AWG3 context matrix",
+        duration_days=30,
+        admin_telegram_id=999,
+        config_version="amneziawg_v3",
+        device_context=_operator_awg3_context(),
+        client_build="50005",
+        awg3_material=_awg3_issuer_material(),
+        runtime_target=_accepted_awg3_runtime(server_id),
+        runtime_peer_applier=runtime_peer_applier,
+    )
+
+    device = repo.get_device(result.device_id)
+    assert device["vpn_ip"] == "10.9.0.2"
+    assert device["protocol_version"] == "awg3"
+    assert device["runtime_instance_id"] == "runtime-awg3"
+    assert (
+        device["compatibility_evidence_id"]
+        == "opaque-direct-access-evidence"
+    )
+    assert awg2_peer_applier.calls == []
+    assert awg2_peer_applier.list_calls == []
+    assert runtime_peer_applier.list_calls == [server_id]
+    assert len(runtime_peer_applier.calls) == 1
+    assert runtime_peer_applier.calls[0]["vpn_ip"] == "10.9.0.2"
+
+
+@pytest.mark.parametrize(
+    "context",
+    (
+        pytest.param(
+            _operator_awg3_context(protocol_version="awg2"),
+            id="wrong-protocol",
+        ),
+        pytest.param(
+            _operator_awg3_context(protocol_version="AWG3"),
+            id="protocol-alias",
+        ),
+        pytest.param(
+            _operator_awg3_context(protocol_version=None),
+            id="missing-protocol",
+        ),
+        pytest.param(
+            _operator_awg3_context(protocol_version=""),
+            id="blank-protocol",
+        ),
+        pytest.param(
+            _operator_awg3_context(protocol_version="awg3 "),
+            id="whitespace-protocol",
+        ),
+        pytest.param(
+            _operator_awg3_context(client_identity_evidence_status=None),
+            id="missing-status",
+        ),
+        pytest.param(
+            _operator_awg3_context(client_identity_evidence_status="Verified"),
+            id="status-alias",
+        ),
+        pytest.param(
+            _operator_awg3_context(client_identity_evidence_status="verified "),
+            id="whitespace-status",
+        ),
+        pytest.param(
+            _operator_awg3_context(runtime_instance_id=None),
+            id="missing-runtime-id",
+        ),
+        pytest.param(
+            _operator_awg3_context(runtime_instance_id=""),
+            id="blank-runtime-id",
+        ),
+        pytest.param(
+            _operator_awg3_context(runtime_instance_id=" runtime-awg3"),
+            id="whitespace-runtime-id",
+        ),
+        pytest.param(
+            _operator_awg3_context(runtime_instance_id="other-runtime"),
+            id="wrong-runtime-id",
+        ),
+        pytest.param(
+            _operator_awg3_context(compatibility_evidence_id=None),
+            id="missing-evidence-id",
+        ),
+        pytest.param(
+            _operator_awg3_context(compatibility_evidence_id=""),
+            id="blank-evidence-id",
+        ),
+        pytest.param(
+            _operator_awg3_context(
+                compatibility_evidence_id="opaque-direct-access-evidence ",
+            ),
+            id="whitespace-evidence-id",
+        ),
+    ),
+)
+def test_operator_awg3_rejects_noncanonical_context_before_any_side_effect(
+    tmp_path,
+    monkeypatch,
+    context,
+):
+    conn = connect(tmp_path / "operator-awg3-invalid-context.sqlite3")
+    initialize_schema(conn)
+    repo = Repository(conn)
+    owner_user_id = repo.create_operator_recipient(operator_label="Operator")
+    server_id = repo.ensure_default_server(
+        name="local",
+        network_cidr="10.8.0.0/24",
+    )
+    awg2_peer_applier = RecordingPeerApplier(
+        remote_allocated_ips=["10.8.0.200/32"]
+    )
+    runtime_peer_applier = RecordingPeerApplier(
+        remote_allocated_ips=["10.9.0.200/32"]
+    )
+    service = AccessService(
+        repo=repo,
+        secret_box=SecretBox.from_app_secret(
+            "test-secret-for-access-service-1234567890"
+        ),
+        peer_applier=awg2_peer_applier,
+    )
+    material = _awg3_issuer_material()
+    artifact_calls = []
+    before = _access_side_effect_counts(conn)
+    boundary_calls = _install_access_boundary_probes(monkeypatch, repo)
+
+    with pytest.raises(ValueError):
+        service.create_operator_device(
+            owner_user_id=owner_user_id,
+            server_id=server_id,
+            device_name="Invalid AWG3 context",
+            duration_days=30,
+            admin_telegram_id=999,
+            config_version="amneziawg_v3",
+            device_context=context,
+            client_build="50005",
+            awg3_material=material,
+            runtime_target=_accepted_awg3_runtime(server_id),
+            runtime_peer_applier=runtime_peer_applier,
+            config_artifact_writer=lambda text: artifact_calls.append(text),
+        )
+
+    assert boundary_calls == {
+        "transaction": 0,
+        "owner": 0,
+        "keypair": 0,
+        "preshared_key": 0,
+    }
+    assert _access_side_effect_counts(conn) == before
+    assert awg2_peer_applier.calls == []
+    assert awg2_peer_applier.list_calls == []
+    assert runtime_peer_applier.calls == []
+    assert runtime_peer_applier.list_calls == []
+    assert material.secret_resolver.calls == []
+    assert artifact_calls == []
+
+
 def _operator_awg2_context(**changes):
     return replace(
         OperatorDeviceContext(

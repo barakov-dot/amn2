@@ -1,5 +1,6 @@
 import hashlib
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -925,6 +926,120 @@ def _phase15_admin_item(device_label):
         "client_build": CLIENT.build_id,
         "protocol_version": "awg3",
     }
+
+
+def _admin_adapter_test_doubles():
+    access = SimpleNamespace(calls=[])
+
+    def create_operator_device(**kwargs):
+        access.calls.append(kwargs)
+        return SimpleNamespace(device_id=42)
+
+    access.create_operator_device = create_operator_device
+    boundary = SimpleNamespace(
+        snapshot=SimpleNamespace(
+            client=CLIENT,
+            material=object(),
+            runtime=object(),
+        ),
+        admission=SimpleNamespace(
+            runtime_instance_id="spain-awg3-runtime",
+            compatibility_evidence_id="accepted-evidence-id",
+        ),
+        runtime_peer_applier=object(),
+    )
+    issuer = SimpleNamespace(calls=[])
+
+    def fresh_boundary():
+        issuer.calls.append("fresh_boundary")
+        return boundary
+
+    issuer.fresh_boundary = fresh_boundary
+    return access, issuer, boundary
+
+
+@pytest.mark.parametrize(
+    "protocol_version",
+    (None, "awg2", "AWG3", "", " awg3", "awg3 "),
+)
+def test_admin_adapter_rejects_noncanonical_awg3_protocol_before_fresh_boundary(
+    protocol_version,
+):
+    from app.services import phase15_bootstrap
+
+    access, issuer, _boundary = _admin_adapter_test_doubles()
+    adapter = phase15_bootstrap._FreshAwg3AdminAccessAdapter(
+        access_service=access,
+        issuer=issuer,
+    )
+
+    with pytest.raises(Phase15BootstrapUnavailable):
+        adapter.create_operator_device(
+            config_version="amneziawg_v3",
+            device_context=OperatorDeviceContext(
+                platform=CLIENT.platform,
+                official_client_type=CLIENT.application,
+                client_version=CLIENT.version,
+                protocol_version=protocol_version,
+                runtime_instance_id="spain-awg3-runtime",
+                client_identity_evidence_status="verified",
+                compatibility_evidence_id="accepted-evidence-id",
+            ),
+        )
+
+    assert issuer.calls == []
+    assert access.calls == []
+
+
+def test_admin_adapter_forwards_only_exact_fresh_admission_evidence():
+    from app.services import phase15_bootstrap
+
+    access, issuer, boundary = _admin_adapter_test_doubles()
+    adapter = phase15_bootstrap._FreshAwg3AdminAccessAdapter(
+        access_service=access,
+        issuer=issuer,
+    )
+    exact_context = OperatorDeviceContext(
+        platform=CLIENT.platform,
+        official_client_type=CLIENT.application,
+        client_version=CLIENT.version,
+        protocol_version="awg3",
+        runtime_instance_id="spain-awg3-runtime",
+        client_identity_evidence_status="verified",
+        compatibility_evidence_id="accepted-evidence-id",
+    )
+
+    adapter.create_operator_device(
+        config_version="amneziawg_v3",
+        device_context=exact_context,
+    )
+
+    assert issuer.calls == ["fresh_boundary"]
+    assert len(access.calls) == 1
+    assert access.calls[0]["device_context"] is exact_context
+    assert access.calls[0]["client_build"] == CLIENT.build_id
+    assert access.calls[0]["awg3_material"] is boundary.snapshot.material
+    assert access.calls[0]["runtime_target"] is boundary.snapshot.runtime
+    assert (
+        access.calls[0]["runtime_peer_applier"]
+        is boundary.runtime_peer_applier
+    )
+
+    mismatching_access, mismatching_issuer, _ = _admin_adapter_test_doubles()
+    mismatching_adapter = phase15_bootstrap._FreshAwg3AdminAccessAdapter(
+        access_service=mismatching_access,
+        issuer=mismatching_issuer,
+    )
+    with pytest.raises(Phase15BootstrapUnavailable):
+        mismatching_adapter.create_operator_device(
+            config_version="amneziawg_v3",
+            device_context=replace(
+                exact_context,
+                compatibility_evidence_id="different-evidence-id",
+            ),
+        )
+    assert mismatching_issuer.calls == ["fresh_boundary"]
+    assert mismatching_access.calls == []
 
 
 def test_admin_factory_uses_fresh_material_aware_runtime_issuer_success_boundary(tmp_path):

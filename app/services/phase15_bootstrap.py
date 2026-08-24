@@ -363,7 +363,10 @@ class _FreshAwg3AdminAccessAdapter:
         ):
             return self._access_service.create_operator_device(**kwargs)
         context = kwargs.get("device_context")
-        if not isinstance(context, OperatorDeviceContext):
+        if (
+            not isinstance(context, OperatorDeviceContext)
+            or context.protocol_version != ProtocolVersion.AWG3.value
+        ):
             raise Phase15BootstrapUnavailable("AWG3 admin client context is invalid")
         boundary = self._issuer.fresh_boundary()
         client = boundary.snapshot.client
