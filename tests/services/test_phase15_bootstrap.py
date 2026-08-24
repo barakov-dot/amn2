@@ -32,7 +32,7 @@ from app.services.device_passports import create_device_passport
 
 NOW = datetime(2026, 8, 14, 12, 0, tzinfo=timezone.utc)
 SOURCE_HEAD = "a" * 40
-PACKAGE_ID = "phase16-awg3-family-3-1-spain-pilot-20260824-001"
+PACKAGE_ID = "phase16-awg3-family-3-1-spain-pilot-20260824-002"
 PROTOCOL_FAMILY = "awg3"
 PROTOCOL_REVISION = "3.1"
 CONFIG_REVISION = "amneziawg_v3_1"

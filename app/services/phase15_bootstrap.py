@@ -53,7 +53,7 @@ from app.vpn.protocol_versions import (
 )
 
 
-_PHASE16_PACKAGE_ID = "phase16-awg3-family-3-1-spain-pilot-20260824-001"
+_PHASE16_PACKAGE_ID = "phase16-awg3-family-3-1-spain-pilot-20260824-002"
 _AWG31_RUNTIME_SOURCE_COMMIT = "1f50ad736ecca22a9bfc7b4606805ec9ca49fe48"
 _AWG31_RUNTIME_ARTIFACT_IDENTITY = (
     "docker.io/amneziavpn/amneziawg-go@"
