@@ -29,6 +29,15 @@ COMPATIBILITY_EVIDENCE_STATUSES = {"claimed", "passed", "failed", "superseded"}
 SHA256_DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 
 
+def _ascii_lower(text: str) -> str:
+    return "".join(
+        chr(ord(character) + 32)
+        if "A" <= character <= "Z"
+        else character
+        for character in text
+    )
+
+
 def _require_sha256_digest(value: object, field_name: str) -> None:
     if (
         not isinstance(value, str)
@@ -1057,7 +1066,7 @@ class Repository:
             raise ValueError("claim_expires_at must be later than now")
         with self.transaction():
             confirmation_columns = {
-                str(row[1])
+                _ascii_lower(str(row[1]))
                 for row in self._conn.execute(
                     "PRAGMA table_info(protocol_issuance_confirmations)"
                 )

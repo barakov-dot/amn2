@@ -993,6 +993,71 @@ def test_bound_durable_attempt_prevents_confirmation_claim_replacement_after_lea
         first.close()
 
 
+def test_ascii_case_variant_attempt_binding_prevents_claim_replacement_after_lease(
+    database_path,
+) -> None:
+    first = open_connection(database_path)
+    owner_user_id = seed_owner_and_passport(first)
+    replace_phase15_table_shape(
+        first,
+        callback_sql=phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL,
+        confirmation_sql=phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL.replace(
+            "    issuance_attempt_id INTEGER,\n",
+            "    ISSUANCE_ATTEMPT_ID INTEGER,\n",
+        ),
+    )
+    phase15_bootstrap.ensure_phase15_bootstrap_schema(first)
+    assert tuple(
+        str(row[1])
+        for row in first.execute(
+            "PRAGMA table_info(protocol_issuance_confirmations)"
+        )
+    )[-1] == "ISSUANCE_ATTEMPT_ID"
+
+    first_repo = Repository(first)
+    first_repo.create_callback_handle(**callback_values(owner_user_id))
+    first_repo.create_issuance_confirmation(**confirmation_values(owner_user_id))
+    assert first_repo.claim_issuance_confirmation(
+        "b" * 64,
+        owner_user_id,
+        NOW,
+        claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+        claim_expires_at="2026-08-14T10:06:00+00:00",
+    ) is not None
+    attempt = reserve_attempt(first_repo, owner_user_id, protocol_version="awg3")
+    assert attempt is not None
+    assert first_repo.bind_issuance_confirmation_attempt(
+        "b" * 64,
+        owner_user_id,
+        claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+        attempt_id=int(attempt["id"]),
+    ) is not None
+
+    second = open_connection(database_path)
+    try:
+        after_claim_lease = "2026-08-14T10:07:00+00:00"
+        assert Repository(second).claim_issuance_confirmation(
+            "b" * 64,
+            owner_user_id,
+            after_claim_lease,
+            claim_id_digest="4" * 64,
+            claim_expires_at="2026-08-14T10:09:00+00:00",
+        ) is None
+        consumed = first_repo.consume_issuance_confirmation(
+            "b" * 64,
+            owner_user_id,
+            after_claim_lease,
+            "issued",
+            claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+        )
+        assert consumed is not None
+        assert consumed["claim_id_digest"] == CONFIRMATION_CLAIM_DIGEST
+        assert consumed["terminal_reason"] == "issued"
+    finally:
+        second.close()
+        first.close()
+
+
 def test_matching_unclaimed_duplicate_does_not_inherit_attempt_protection(
     database_path,
 ) -> None:
