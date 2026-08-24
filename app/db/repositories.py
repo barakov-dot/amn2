@@ -1056,8 +1056,31 @@ class Repository:
         if claim_expires_at <= now:
             raise ValueError("claim_expires_at must be later than now")
         with self.transaction():
-            cursor = self._conn.execute(
+            confirmation_columns = {
+                str(row[1])
+                for row in self._conn.execute(
+                    "PRAGMA table_info(protocol_issuance_confirmations)"
+                )
+            }
+            durable_attempt_guard = ""
+            if "issuance_attempt_id" in confirmation_columns:
+                durable_attempt_guard = """
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM protocol_issuance_attempts AS attempt
+                      WHERE attempt.id =
+                                protocol_issuance_confirmations.issuance_attempt_id
+                        AND attempt.owner_user_id =
+                                protocol_issuance_confirmations.owner_user_id
+                        AND attempt.intended_passport_device_id =
+                                protocol_issuance_confirmations.passport_device_id
+                        AND attempt.request_fingerprint =
+                                protocol_issuance_confirmations.request_fingerprint
+                        AND attempt.state IN ('reserved', 'recovery_required')
+                  )
                 """
+            cursor = self._conn.execute(
+                f"""
                 UPDATE protocol_issuance_confirmations
                 SET claim_id_digest = ?,
                     claimed_at = ?,
@@ -1070,6 +1093,7 @@ class Repository:
                       claim_id_digest IS NULL
                       OR claim_expires_at <= ?
                   )
+                  {durable_attempt_guard}
                 """,
                 (
                     claim_id_digest,

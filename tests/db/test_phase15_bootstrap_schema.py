@@ -930,6 +930,69 @@ def test_exact_bound_attempt_protects_confirmation_across_repositories(
         first.close()
 
 
+@pytest.mark.parametrize("attempt_state", ["reserved", "recovery_required"])
+def test_bound_durable_attempt_prevents_confirmation_claim_replacement_after_lease(
+    database_path, attempt_state
+) -> None:
+    first = open_connection(database_path)
+    owner_user_id = seed_owner_and_passport(first)
+    first_repo = Repository(first)
+    first_repo.create_callback_handle(**callback_values(owner_user_id))
+    first_repo.create_issuance_confirmation(**confirmation_values(owner_user_id))
+    assert first_repo.claim_issuance_confirmation(
+        "b" * 64,
+        owner_user_id,
+        NOW,
+        claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+        claim_expires_at="2026-08-14T10:06:00+00:00",
+    ) is not None
+    attempt = reserve_attempt(first_repo, owner_user_id, protocol_version="awg3")
+    assert attempt is not None
+    assert first_repo.bind_issuance_confirmation_attempt(
+        "b" * 64,
+        owner_user_id,
+        claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+        attempt_id=int(attempt["id"]),
+    ) is not None
+    if attempt_state == "recovery_required":
+        attempt = first_repo.mark_protocol_issuance_attempt_recovery_required(
+            int(attempt["id"]),
+            local_device_id=None,
+            reason_code="issuer_failed",
+        )
+        assert attempt["state"] == "recovery_required"
+
+    second = open_connection(database_path)
+    try:
+        second_repo = Repository(second)
+        after_claim_lease = "2026-08-14T10:07:00+00:00"
+        replacement = second_repo.claim_issuance_confirmation(
+            "b" * 64,
+            owner_user_id,
+            after_claim_lease,
+            claim_id_digest="4" * 64,
+            claim_expires_at="2026-08-14T10:09:00+00:00",
+        )
+
+        assert replacement is None
+        consumed = first_repo.consume_issuance_confirmation(
+            "b" * 64,
+            owner_user_id,
+            after_claim_lease,
+            "issued",
+            claim_id_digest=CONFIRMATION_CLAIM_DIGEST,
+        )
+        assert consumed is not None
+        assert consumed["claim_id_digest"] == CONFIRMATION_CLAIM_DIGEST
+        assert consumed["terminal_reason"] == "issued"
+        stored_attempt = first_repo.get_protocol_issuance_attempt(int(attempt["id"]))
+        assert stored_attempt is not None
+        assert stored_attempt["state"] == attempt_state
+    finally:
+        second.close()
+        first.close()
+
+
 def test_matching_unclaimed_duplicate_does_not_inherit_attempt_protection(
     database_path,
 ) -> None:
