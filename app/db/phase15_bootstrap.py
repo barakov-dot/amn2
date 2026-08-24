@@ -739,48 +739,152 @@ def _validate_d827_index_drop(conn: sqlite3.Connection) -> None:
         raise RuntimeError("phase15 d827 index drop changed unexpected schema")
 
 
-def _table_sql(conn: sqlite3.Connection, table: str) -> str:
+def _table_sql(
+    conn: sqlite3.Connection,
+    table: str,
+) -> tuple[str, ...] | None:
     row = conn.execute(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
         (table,),
     ).fetchone()
-    return _normalize_sql(str(row[0])) if row is not None else ""
+    return _normalize_sql(str(row[0])) if row is not None else None
 
 
-def _normalize_sql(statement: str) -> str:
-    text = statement.strip().rstrip(";").rstrip()
-    normalized: list[str] = []
+def _normalize_sql(statement: str) -> tuple[str, ...] | None:
+    tokens: list[str] = []
     index = 0
-    while index < len(text):
-        if text[index] != "'":
-            if not text[index].isspace():
-                normalized.append(_ascii_lower(text[index]))
+    while index < len(statement):
+        character = statement[index]
+        if character in " \t\n\f\r":
             index += 1
             continue
+        if character.isspace():
+            return None
 
-        literal_start = index
-        index += 1
-        while index < len(text):
-            if text[index] != "'":
-                index += 1
-                continue
+        if character == "'":
+            literal_start = index
             index += 1
-            if index < len(text) and text[index] == "'":
+            while index < len(statement):
+                if statement[index] != "'":
+                    index += 1
+                    continue
                 index += 1
-                continue
-            break
-        normalized.append(text[literal_start:index])
+                if index < len(statement) and statement[index] == "'":
+                    index += 1
+                    continue
+                tokens.append(statement[literal_start:index])
+                break
+            else:
+                return None
+            continue
 
-    result = "".join(normalized)
+        if character == '"':
+            identifier_start = index
+            index += 1
+            while index < len(statement):
+                if statement[index] != '"':
+                    index += 1
+                    continue
+                index += 1
+                if index < len(statement) and statement[index] == '"':
+                    index += 1
+                    continue
+                identifier = statement[identifier_start:index]
+                if identifier != '"protocol_issuance_attempts_legacy"':
+                    return None
+                tokens.append(identifier)
+                break
+            else:
+                return None
+            continue
+
+        if character in "`[":
+            return None
+        if statement.startswith("--", index) or statement.startswith("/*", index):
+            return None
+
+        if _is_sql_identifier_start(character):
+            identifier_start = index
+            index += 1
+            while index < len(statement) and _is_sql_identifier_part(
+                statement[index]
+            ):
+                index += 1
+            identifier = statement[identifier_start:index]
+            if (
+                _ascii_lower(identifier) == "x"
+                and index < len(statement)
+                and statement[index] == "'"
+            ):
+                return None
+            tokens.append(_ascii_lower(identifier))
+            continue
+
+        if "0" <= character <= "9":
+            number_start = index
+            index += 1
+            while index < len(statement) and "0" <= statement[index] <= "9":
+                index += 1
+            if index < len(statement) and _is_sql_identifier_start(
+                statement[index]
+            ):
+                return None
+            tokens.append(statement[number_start:index])
+            continue
+
+        operator = next(
+            (
+                candidate
+                for candidate in (">=", "<=", "<>", "!=", "==")
+                if statement.startswith(candidate, index)
+            ),
+            None,
+        )
+        if operator is not None:
+            tokens.append(operator)
+            index += len(operator)
+            continue
+        if character in "=><":
+            tokens.append(character)
+            index += 1
+            continue
+        if character in "(),.;":
+            tokens.append(character)
+            index += 1
+            continue
+        return None
+
+    if tokens and tokens[-1] == ";":
+        tokens.pop()
+    normalized = tuple(tokens)
     for storage_prefix, canonical_prefix in (
-        ("createtableifnotexists", "createtable"),
-        ("createuniqueindexifnotexists", "createuniqueindex"),
-        ("createindexifnotexists", "createindex"),
-        ("createtriggerifnotexists", "createtrigger"),
+        (("create", "table", "if", "not", "exists"), ("create", "table")),
+        (
+            ("create", "unique", "index", "if", "not", "exists"),
+            ("create", "unique", "index"),
+        ),
+        (("create", "index", "if", "not", "exists"), ("create", "index")),
+        (
+            ("create", "trigger", "if", "not", "exists"),
+            ("create", "trigger"),
+        ),
     ):
-        if result.startswith(storage_prefix):
-            return canonical_prefix + result[len(storage_prefix) :]
-    return result
+        if normalized[: len(storage_prefix)] == storage_prefix:
+            return canonical_prefix + normalized[len(storage_prefix) :]
+    return normalized
+
+
+def _is_sql_identifier_start(character: str) -> bool:
+    return (
+        "A" <= character <= "Z"
+        or "a" <= character <= "z"
+        or character == "_"
+        or ord(character) >= 128
+    )
+
+
+def _is_sql_identifier_part(character: str) -> bool:
+    return _is_sql_identifier_start(character) or "0" <= character <= "9"
 
 
 def _validate_legacy_shape(conn: sqlite3.Connection) -> None:

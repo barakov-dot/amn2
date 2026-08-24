@@ -1990,6 +1990,187 @@ def test_exact_prebinding_schema_upgrades_without_value_loss(
         connection.close()
 
 
+def test_textnot_column_declaration_is_rejected_without_mutation(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        owner_user_id = seed_owner_and_passport(connection)
+        malformed_callback_sql = phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL.replace(
+            "purpose TEXT NOT NULL",
+            "purpose TEXTNOT NULL",
+        )
+        replace_phase15_table_shape(
+            connection,
+            callback_sql=malformed_callback_sql,
+            confirmation_sql=phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL,
+        )
+        purpose_info = next(
+            row
+            for row in connection.execute(
+                "PRAGMA table_info(telegram_callback_handles)"
+            )
+            if row[1] == "purpose"
+        )
+        assert (purpose_info[2], purpose_info[3]) == ("TEXTNOT", 0)
+        values = callback_values(owner_user_id, suffix="8")
+        values["purpose"] = None
+        Repository(connection).create_callback_handle(**values)
+        assert connection.execute(
+            "SELECT purpose FROM telegram_callback_handles "
+            "WHERE handle_digest = ?",
+            ("8" * 64,),
+        ).fetchone()[0] is None
+
+        assert_phase15_shape_rejected_without_mutation(connection)
+    finally:
+        connection.close()
+
+
+def test_isnull_constraint_token_merge_is_rejected_without_mutation(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        malformed_callback_sql = phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL.replace(
+            "claim_id_digest IS NULL",
+            "claim_id_digest ISNULL",
+        )
+        replace_phase15_table_shape(
+            connection,
+            callback_sql=malformed_callback_sql,
+            confirmation_sql=phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL,
+        )
+        stored_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'telegram_callback_handles'"
+        ).fetchone()[0]
+        assert "claim_id_digest ISNULL" in stored_sql
+
+        assert_phase15_shape_rejected_without_mutation(connection)
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize(
+    ("canonical", "merged"),
+    (
+        ("value TEXT NOT NULL", "value TEXTNOT NULL"),
+        ("value IS NULL", "value ISNULL"),
+        ("value NOT GLOB 'x'", "value NOTGLOB 'x'"),
+        ("value >= 1", "value > = 1"),
+    ),
+    ids=("text-not", "is-null", "not-glob", "operator"),
+)
+def test_sql_normalization_preserves_token_boundaries(
+    canonical,
+    merged,
+) -> None:
+    assert phase15_bootstrap._normalize_sql(canonical) != (
+        phase15_bootstrap._normalize_sql(merged)
+    )
+
+
+def test_sql_normalization_preserves_literal_bytes() -> None:
+    assert phase15_bootstrap._normalize_sql("value = 'a b'") != (
+        phase15_bootstrap._normalize_sql("value = 'ab'")
+    )
+    assert phase15_bootstrap._normalize_sql("value = 'A'") != (
+        phase15_bootstrap._normalize_sql("value = 'a'")
+    )
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    (
+        lambda sql: sql.replace(
+            "purpose TEXT NOT NULL,",
+            "purpose TEXT NOT NULL /* unsupported */,",
+        ),
+        lambda sql: sql.replace(
+            "purpose TEXT NOT NULL",
+            '"purpose" TEXT NOT NULL',
+        ),
+        lambda sql: sql.replace(
+            "    UNIQUE(handle_digest, owner_user_id, passport_device_id),\n",
+            "    UNIQUE(handle_digest, owner_user_id, passport_device_id),\n"
+            "    CHECK (X'00' != X'01'),\n",
+        ),
+    ),
+    ids=("comment", "quoted-identifier", "blob-literal"),
+)
+def test_unsupported_sql_token_forms_are_rejected_without_mutation(
+    database_path,
+    mutate,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        replace_phase15_table_shape(
+            connection,
+            callback_sql=mutate(phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL),
+            confirmation_sql=phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL,
+        )
+
+        assert_phase15_shape_rejected_without_mutation(connection)
+    finally:
+        connection.close()
+
+
+def test_ascii_case_and_sqlite_whitespace_variants_remain_supported(
+    database_path,
+) -> None:
+    connection = open_connection(database_path)
+    try:
+        seed_owner_and_passport(connection)
+        callback_sql = phase15_bootstrap.CREATE_CALLBACK_TABLE_SQL.replace(
+            "CREATE TABLE",
+            "cReAtE  \n\tTaBlE",
+        ).replace(
+            "purpose TEXT NOT NULL",
+            "PURPOSE\tTEXT\r\n        NOT  NULL",
+        )
+        confirmation_sql = (
+            phase15_bootstrap.CREATE_CONFIRMATION_TABLE_SQL.replace(
+                "CREATE TABLE",
+                "CrEaTe\r\n TaBlE",
+            ).replace(
+                "client_build TEXT NOT NULL",
+                "CLIENT_BUILD  TEXT\tNOT\n NULL",
+            )
+        )
+        replace_phase15_table_shape(
+            connection,
+            callback_sql=callback_sql,
+            confirmation_sql=confirmation_sql,
+        )
+        connection.execute(
+            "DROP INDEX idx_telegram_callback_handles_owner_passport"
+        )
+        connection.execute(
+            "cReAtE  InDeX idx_telegram_callback_handles_owner_passport\n"
+            "ON telegram_callback_handles (owner_user_id,\tpassport_device_id)"
+        )
+        connection.execute(
+            "DROP TRIGGER trg_phase15_callback_owner_passport_insert"
+        )
+        trigger_sql = phase15_bootstrap.TRIGGER_SQL[0].replace(
+            "CREATE TRIGGER IF NOT EXISTS",
+            "cReAtE  TrIgGeR IF\tNOT\nEXISTS",
+        ).replace(
+            "BEFORE INSERT ON",
+            "BeFoRe\r\nINSERT\tON",
+        )
+        connection.execute(trigger_sql)
+        connection.commit()
+
+        phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+        phase15_bootstrap.ensure_phase15_bootstrap_schema(connection)
+    finally:
+        connection.close()
+
+
 def test_canonical_attempt_binding_unique_rejects_second_non_null_binding(
     database_path,
 ) -> None:
