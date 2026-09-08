@@ -6,6 +6,7 @@ from pathlib import Path
 from string import Formatter
 
 from app.vpn.amneziawg_v2.config import ClientConfigInput
+from app.vpn.client_import_artifacts import build_client_import_artifact
 
 
 SUPPORTED_CLIENT_CONFIG_VERSIONS = ("amneziawg_v1_5", "amneziawg_v2")
@@ -93,7 +94,12 @@ def render_client_config_from_template(
     return render_client_config_template(template_text, config)
 
 
-def build_vpn_import_link(config_text: str) -> str:
+def build_vpn_import_link(config_text: str, *, target_client: str | None = None) -> str:
+    if target_client is not None:
+        artifact = build_client_import_artifact(config_text, target_client=target_client)
+        if artifact.vpn_import_link is None:
+            raise ConfigTemplateError("selected_client_requires_conf_file")
+        return artifact.vpn_import_link
     payload = base64.urlsafe_b64encode(config_text.encode("utf-8")).decode("ascii")
     return "vpn://" + payload.rstrip("=")
 
