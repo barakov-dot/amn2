@@ -130,7 +130,8 @@ def build_client_import_artifact(
     raw = json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     compressed = len(raw).to_bytes(4, "big") + zlib.compress(raw, 8)
     link = "vpn://" + base64.urlsafe_b64encode(compressed).decode("ascii").rstrip("=")
-    note = "Requires import verification in AmneziaVPN; no connectivity claim."
+    note = ("AmneziaVPN 5.0.1.5 Windows native import overwrites explicit MTU with 1376; "
+            "not fixed by this exporter. Verify a client with the upstream import fix before delivery.")
     if target_client == "defaultvpn":
         note = "DefaultVPN published source may replace MTU; verify installed build and all AWG fields before use."
     return ClientImportArtifact(target_client, DISPLAY_NAME + ".vpn", link.encode("ascii"), link, compatibility_note=note)

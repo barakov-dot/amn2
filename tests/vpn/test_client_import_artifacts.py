@@ -161,3 +161,11 @@ def test_single_dns_and_optional_mtu_are_not_replaced_with_unrelated_defaults():
     doc = decode(exports.build_vpn_import_link(config, target_client="amneziavpn"))
     assert doc["dns1"] == doc["dns2"] == "1.1.1.1"
     assert "mtu" not in json.loads(doc["containers"][0]["awg"]["last_config"])
+
+def test_amneziavpn_artifact_reports_known_import_mtu_override():
+    artifact = exports.build_client_import_artifact(CONFIG, target_client="amneziavpn")
+    note = artifact.compatibility_note.lower()
+    assert "5.0.1.5" in note
+    assert "mtu" in note and "1376" in note
+    assert "not fixed by this exporter" in note
+    assert not artifact.client_import_verified

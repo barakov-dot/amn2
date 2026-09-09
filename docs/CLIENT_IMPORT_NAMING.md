@@ -48,3 +48,21 @@ Wire-format references (read for interoperability; no upstream code copied):
 Next: separately permitted isolated client import acceptance; only then select the
 new mode in delivery. Live material handling and deployment require their exact
 gates. Package016, AWG2 runtime and general issuance remain untouched.
+
+## Verified limitation, 2026-09-09
+
+Manual AmneziaVPN 5.0.1.5 Windows import confirmed the exact display name.
+It also confirmed an import mismatch: raw config retains MTU 1280 while
+last_config.mtu becomes 1376. Source tracing shows the latter is passed as
+deviceMTU to the Windows service. This exporter cannot repair the installed
+client: native artifacts remain candidates, not approved delivery outputs.
+An accidental connection attempt was reported; successful connectivity and
+actual adapter MTU were not measured. Other clients are still unverified.
+
+Existing upstream fix: https://github.com/amnezia-vpn/amnezia-client/pull/3113
+(head a39f1c374ed760f886c62741d5645fd1c39c6630), OPEN / NOT MERGED on 2026-09-09.
+The patch preserves explicit non-empty MTU and applies defaults only for missing,
+empty or whitespace-only values. PR #3065 also includes an import guard but
+additionally changes global defaults. Neither PR implies a released fix.
+The local compatibility_note now reports this known Windows limitation explicitly;
+serialization, legacy mode and delivery handlers are unchanged.
