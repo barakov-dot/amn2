@@ -2,6 +2,12 @@
 
 ## 2026-09-20
 
+- Added an explicit async facade for the 30 bot workflow methods and detached
+  result snapshots. Managed factory failures close SQLite; successful workflows
+  expose idempotent close without taking ownership of externally supplied repos.
+  RED confirmed three leaked connections and absent close/facade APIs; targeted
+  worker/facade/bootstrap/workflow suite: 75 passed. Runtime wiring remains pending.
+
 - Added a sequential bot workflow worker with eight outstanding slots, its own
   FIFO, per-call context and one resource-owning thread. Queued cancellation
   removes work; dispatched work finishes. Shutdown drains and joins off-loop.

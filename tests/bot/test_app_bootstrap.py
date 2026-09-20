@@ -21,6 +21,52 @@ from app.systemd_notify import SystemdNotifyError
 from tests.server_config.test_loader import VALID_YAML
 
 
+@pytest.mark.parametrize('failure', ['schema', 'seed', 'constructor', None])
+def test_factory_closes_connection_on_failure_and_explicit_close(monkeypatch, tmp_path, failure):
+    import sqlite3
+    import threading
+    import app.main as main
+    events = []
+
+    class Connection(sqlite3.Connection):
+        def close(self):
+            events.append(threading.get_ident())
+            super().close()
+
+    conn = sqlite3.connect(':memory:', factory=Connection)
+    conn.row_factory = sqlite3.Row
+    monkeypatch.setattr(main, 'connect', lambda path: conn)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError('synthetic factory failure')
+
+    if failure == 'schema':
+        monkeypatch.setattr(main, 'initialize_schema', fail)
+    elif failure == 'seed':
+        monkeypatch.setattr(main.Repository, 'seed_default_plans', fail)
+    elif failure == 'constructor':
+        monkeypatch.setattr(main, 'BotWorkflow', fail)
+    kwargs = dict(database_path=tmp_path / 'test.sqlite3',
+                  app_secret_key='synthetic-test-secret-with-more-than-32-chars',
+                  admin_telegram_ids=set(), default_vpn_network_cidr='10.8.0.0/24',
+                  max_devices_per_user=5, default_plan_days=7)
+    try:
+        if failure:
+            with pytest.raises(RuntimeError, match='synthetic factory failure'):
+                create_workflow(**kwargs)
+        else:
+            workflow = create_workflow(**kwargs)
+            assert conn.execute('SELECT 1').fetchone()[0] == 1
+            assert events == []
+            workflow.close()
+            workflow.close()
+        with pytest.raises(sqlite3.ProgrammingError, match='closed'):
+            conn.execute('SELECT 1')
+        assert events == [threading.get_ident()]
+    finally:
+        sqlite3.Connection.close(conn)
+
+
 def test_create_workflow_wires_access_service_for_admin_approval(tmp_path):
     workflow = create_workflow(
         database_path=tmp_path / "app.sqlite3",

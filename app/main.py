@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Callable
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -285,84 +286,88 @@ def create_workflow(
     bot_device_name_sequence_seed: int = 4,
     phase15_settings: Settings | None = None,
 ) -> BotWorkflow:
-    conn = connect(database_path)
-    initialize_schema(conn)
-    repo = Repository(conn)
-    repo.seed_default_plans()
-    peer_applier = None
-    if vps_apply_enabled:
-        server_config = select_server(load_server_config(server_config_path), server_name)
-        default_server_id = _sync_server_config(repo, server_config)
-        peer_applier = ServerConfigPeerApplier(
-            server_config,
-            password=vps_ssh_password,
-        )
-    else:
-        default_server_id = repo.ensure_default_server(
-            name="local",
-            network_cidr=default_vpn_network_cidr,
-        )
+    with ExitStack() as resources:
+        conn = connect(database_path)
+        resources.callback(conn.close)
+        initialize_schema(conn)
+        repo = Repository(conn)
+        repo.seed_default_plans()
+        peer_applier = None
+        if vps_apply_enabled:
+            server_config = select_server(load_server_config(server_config_path), server_name)
+            default_server_id = _sync_server_config(repo, server_config)
+            peer_applier = ServerConfigPeerApplier(
+                server_config,
+                password=vps_ssh_password,
+            )
+        else:
+            default_server_id = repo.ensure_default_server(
+                name="local",
+                network_cidr=default_vpn_network_cidr,
+            )
 
-    access_service = AccessService(
-        repo=repo,
-        secret_box=SecretBox.from_app_secret(app_secret_key),
-        max_devices_per_user=max_devices_per_user,
-        duration_days=default_plan_days,
-        peer_applier=peer_applier,
-        client_config_template_dir=client_config_template_dir,
-        client_config_defaults=client_config_defaults,
-    )
-    secret_box = SecretBox.from_app_secret(app_secret_key)
-    phase15_components = None
-    if phase15_settings is not None:
-        phase15_components = build_phase15_awg3_components(
-            phase15_settings,
-            repo,
-            access_service,
-            peer_applier,
+        access_service = AccessService(
+            repo=repo,
+            secret_box=SecretBox.from_app_secret(app_secret_key),
+            max_devices_per_user=max_devices_per_user,
+            duration_days=default_plan_days,
+            peer_applier=peer_applier,
+            client_config_template_dir=client_config_template_dir,
+            client_config_defaults=client_config_defaults,
         )
-    workflow = BotWorkflow(
-        repo=repo,
-        admin_telegram_ids=admin_telegram_ids,
-        access_service=access_service,
-        default_server_id=default_server_id,
-        secret_box=secret_box,
-        peer_remover=peer_applier,
-        client_config_template_dir=str(client_config_template_dir)
-        if client_config_template_dir is not None
-        else None,
-        client_config_defaults=client_config_defaults,
-        device_name_prefix=bot_device_name_prefix,
-        device_name_sequence_seed=bot_device_name_sequence_seed,
-        vps_writes_enabled=vps_apply_enabled,
-        admin_config_issuance_factory=(
-            phase15_components.admin_config_issuance_factory
-            if phase15_components is not None
-            else None
-        ),
-        self_service_issuance_service=(
-            phase15_components.self_service_issuance_service
-            if phase15_components is not None
-            else None
-        ),
-        callback_state=(
-            phase15_components.callback_state
-            if phase15_components is not None
-            else None
-        ),
-        awg3_client_choices=(
-            phase15_components.awg3_client_choices
-            if phase15_components is not None
-            else ()
-        ),
-        awg3_delivery_builder=(
-            phase15_components.delivery_builder
-            if phase15_components is not None
-            else None
-        ),
-    )
-    workflow._phase15_awg3_components = phase15_components
-    return workflow
+        secret_box = SecretBox.from_app_secret(app_secret_key)
+        phase15_components = None
+        if phase15_settings is not None:
+            phase15_components = build_phase15_awg3_components(
+                phase15_settings,
+                repo,
+                access_service,
+                peer_applier,
+            )
+        workflow = BotWorkflow(
+            repo=repo,
+            resource_closer=conn.close,
+            admin_telegram_ids=admin_telegram_ids,
+            access_service=access_service,
+            default_server_id=default_server_id,
+            secret_box=secret_box,
+            peer_remover=peer_applier,
+            client_config_template_dir=str(client_config_template_dir)
+            if client_config_template_dir is not None
+            else None,
+            client_config_defaults=client_config_defaults,
+            device_name_prefix=bot_device_name_prefix,
+            device_name_sequence_seed=bot_device_name_sequence_seed,
+            vps_writes_enabled=vps_apply_enabled,
+            admin_config_issuance_factory=(
+                phase15_components.admin_config_issuance_factory
+                if phase15_components is not None
+                else None
+            ),
+            self_service_issuance_service=(
+                phase15_components.self_service_issuance_service
+                if phase15_components is not None
+                else None
+            ),
+            callback_state=(
+                phase15_components.callback_state
+                if phase15_components is not None
+                else None
+            ),
+            awg3_client_choices=(
+                phase15_components.awg3_client_choices
+                if phase15_components is not None
+                else ()
+            ),
+            awg3_delivery_builder=(
+                phase15_components.delivery_builder
+                if phase15_components is not None
+                else None
+            ),
+        )
+        workflow._phase15_awg3_components = phase15_components
+        resources.pop_all()
+        return workflow
 
 
 def _sync_server_config(repo: Repository, server: ServerConfig) -> int:

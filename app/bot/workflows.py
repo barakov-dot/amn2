@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -132,8 +133,10 @@ class BotWorkflow:
         callback_state: TelegramCallbackStateService | None = None,
         awg3_client_choices: tuple[ClientIdentity, ...] = (),
         awg3_delivery_builder=None,
+        resource_closer: Callable[[], None] | None = None,
     ) -> None:
         self._repo = repo
+        self._resource_closer = resource_closer
         self._admin_telegram_ids = admin_telegram_ids
         self._access_service = access_service
         self._default_server_id = default_server_id
@@ -160,6 +163,11 @@ class BotWorkflow:
             raise ValueError("AWG3 client choices require unique exact build IDs")
         if not self._device_name_prefix:
             raise ValueError("device_name_prefix must be non-blank")
+
+    def close(self) -> None:
+        closer, self._resource_closer = self._resource_closer, None
+        if closer is not None:
+            closer()
 
     def is_admin(self, telegram_id: int) -> bool:
         if telegram_id in self._admin_telegram_ids:
