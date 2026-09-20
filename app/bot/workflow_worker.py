@@ -73,6 +73,8 @@ class WorkflowWorker:
         await asyncio.shield(self._starting)
 
     async def _open_resource(self) -> None:
+        if self._state != 'OPEN':
+            raise WorkflowClosed('Workflow closed before factory dispatch')
         self._resource = await asyncio.get_running_loop().run_in_executor(self._executor, self._factory)
         self._pump_task = asyncio.create_task(self._pump())
 
@@ -128,6 +130,12 @@ class WorkflowWorker:
                 await self._wake.wait()
                 continue
             job = self._queued.popleft()
+            # Task.cancel() cancels the waiter synchronously, but the caller's
+            # cancellation handler may run after this pump has been awakened.
+            if job.waiter.cancelled():
+                job.state = 'TERMINAL'
+                self._release_slot(job)
+                continue
             job.state = 'DISPATCHED'
             error = None
             try:

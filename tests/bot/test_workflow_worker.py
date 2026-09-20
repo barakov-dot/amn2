@@ -222,3 +222,51 @@ def test_start_cancel_then_close_waits_for_factory_on_owner_thread():
             release.set()
             await worker.aclose()
     asyncio.run(scenario())
+
+
+def test_cancelled_waiter_before_pump_dispatch_never_invokes():
+    async def scenario():
+        calls = []
+
+        class Resource:
+            def invoke(self, method, args, kwargs):
+                calls.append('side effect')
+
+            def close(self):
+                pass
+
+        worker = WorkflowWorker(Resource, allowed_methods=frozenset({'save'}), capacity=1)
+        await worker.start()
+        try:
+            pending = asyncio.create_task(worker.call('save'))
+            # Let call enqueue; this task resumes before the newly awakened pump.
+            await asyncio.sleep(0)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+            await worker.aclose()
+            assert calls == []
+        finally:
+            await worker.aclose()
+    asyncio.run(scenario())
+
+
+def test_close_before_factory_dispatch_does_not_open_resource():
+    async def scenario():
+        calls = []
+
+        class Resource:
+            def __init__(self):
+                calls.append('factory')
+
+            def close(self):
+                calls.append('close')
+
+        worker = WorkflowWorker(Resource, allowed_methods=frozenset())
+        start = asyncio.create_task(worker.start())
+        await asyncio.sleep(0)
+        await worker.aclose()
+        outcome = await asyncio.gather(start, return_exceptions=True)
+        assert calls == []
+        assert isinstance(outcome[0], WorkflowClosed)
+    asyncio.run(scenario())

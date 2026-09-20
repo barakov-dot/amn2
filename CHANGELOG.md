@@ -2,6 +2,14 @@
 
 ## 2026-09-20
 
+- Independent review found two pre-dispatch lifecycle races. A cancelled queued
+  waiter could reach the executor before its caller handled cancellation; the
+  pump now drops it before submit. A factory could start after close had already
+  ended admission; factory submit now checks state. Both reproduced with failing
+  deterministic tests before the fix. Final relevant suite: 312 passed in 47.46s,
+  without warnings. Review of 2069e41..8bc8496 found no Critical issues; both
+  findings were addressed in this fix pass. No merge or deployment was performed.
+
 - Wired persistent bot startup and all 41 handler workflow calls through the
   worker/facade. Accepted handlers drain through remote/local completion and
   Telegram delivery recording before SQLite, session and instance lock close.
