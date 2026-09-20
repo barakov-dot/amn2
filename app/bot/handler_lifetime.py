@@ -9,7 +9,9 @@ from typing import TypeVar
 
 from aiogram import BaseMiddleware
 
+from app.bot.texts import text
 from app.bot.workflow_worker import WorkflowBusy, WorkflowClosed
+from app.services.access import RemoteOperationPartialFailure
 
 T = TypeVar('T')
 logger = logging.getLogger(__name__)
@@ -71,7 +73,35 @@ class WorkflowLifetimeMiddleware(BaseMiddleware):
         self._owner = owner
 
     async def __call__(self, handler, event, data):
-        return await self._owner.run(lambda: handler(event, data))
+        async def accepted():
+            try:
+                return await handler(event, data)
+            except RemoteOperationPartialFailure:
+                await self._reply(event, 'handler.operation_partial')
+            except WorkflowBusy:
+                await self._reply(event, 'handler.workflow_busy')
+            except WorkflowClosed:
+                await self._reply(event, 'handler.workflow_closed')
+
+        try:
+            return await self._owner.run(accepted)
+        except WorkflowBusy:
+            await self._reply(event, 'handler.workflow_busy')
+        except WorkflowClosed:
+            # No owned handler exists, and shutdown may already be closing Telegram.
+            return None
+
+    @staticmethod
+    async def _reply(event, key):
+        language = getattr(getattr(event, 'from_user', None), 'language_code', 'ru') or 'ru'
+        locale = 'ru' if language.lower().startswith('ru') else 'en'
+        message = getattr(event, 'message', None) or event
+        try:
+            await message.answer(text(key, locale=locale))
+        except Exception:
+            # A failed reply must not carry the original partial failure's
+            # exception context (possibly SSH output) to aiogram's raw logger.
+            logger.warning('bot_safe_reply_failed')
 
 
 async def await_owned_cleanup(cleanup: Awaitable[None]) -> None:

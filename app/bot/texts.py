@@ -4,6 +4,13 @@ FALLBACK_LOCALE = "en"
 
 TEXTS = {
     "ru": {
+        "handler.operation_partial": (
+            "Операция завершилась частично. Состояние сервера и бота может различаться. "
+            "Нужна проверка администратором; не повторяйте запрос."
+        ),
+        "handler.workflow_busy": "Текущий шаг не принят: бот занят. Предыдущие шаги команды могли выполниться.",
+        "handler.workflow_closed": "Бот останавливается; новый шаг не принят.",
+        "handler.delivery_record_failed": "Не удалось сохранить результат доставки. Нужна проверка администратором",
         "button.request_config": "Получить конфиг",
         "button.my_tariff": "Мой тариф",
         "button.my_traffic": "Мой трафик",
@@ -125,6 +132,13 @@ TEXTS = {
         "handler.awg3_blocked": "AWG3 сейчас несовместим или недоступен для выбранной сборки.",
     },
     "en": {
+        "handler.operation_partial": (
+            "The operation completed partially. Server and bot state may differ. "
+            "Administrator review is required; do not repeat the request."
+        ),
+        "handler.workflow_busy": "The current step was not accepted: the bot is busy. Earlier command steps may have completed.",
+        "handler.workflow_closed": "The bot is stopping; the new step was not accepted.",
+        "handler.delivery_record_failed": "Could not save the delivery result. Administrator review is required.",
         "button.request_config": "Request config",
         "button.my_tariff": "My tariff",
         "button.my_traffic": "My traffic",

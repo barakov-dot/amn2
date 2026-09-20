@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 from types import SimpleNamespace
 
 import app.bot.handlers as bot_handlers
@@ -49,6 +50,28 @@ from app.bot.ux import (
 )
 from app.server.peer_apply import PeerApplyError
 from app.services.config_delivery import ConfigMaterialUnavailable
+
+
+@pytest.mark.parametrize('record_error', [None, ValueError('record-secret')])
+def test_delivery_record_failure_never_reports_success_or_resends(record_error):
+    class Workflow(FakeWorkflow):
+        async def record_admin_config_delivery(self, **kwargs):
+            self.admin_config_deliveries.append(kwargs)
+            if record_error:
+                raise record_error
+            return False
+
+    message = FakeMessage(user_id=9001)
+    message.text = '/admin_issue_config recipient | phone | android'
+    workflow = Workflow(admin_ids={9001})
+    asyncio.run(handle_admin_issue_config(message, workflow=workflow))
+    assert len(workflow.admin_config_issues) == 1
+    assert len(message.bot.sent_documents) == 1
+    assert len(workflow.admin_config_deliveries) == 1
+    assert len(message.answers) == 1
+    response = message.answers[0]['text']
+    assert 'проверка администратором' in response
+    assert 'record-secret' not in response
 
 
 def test_handle_start_sends_header_and_language_choices_with_russian_default():
@@ -362,9 +385,9 @@ def test_handle_user_revoke_confirm_answers_callback_before_peer_revoke():
             await super().answer()
 
     class OrderingWorkflow(FakeWorkflow):
-        def revoke_user_device(self, *, telegram_id, device_id, revoked_at=None):
+        async def revoke_user_device(self, *, telegram_id, device_id, revoked_at=None):
             events.append("revoke_user_device")
-            return super().revoke_user_device(
+            return await super().revoke_user_device(
                 telegram_id=telegram_id,
                 device_id=device_id,
                 revoked_at=revoked_at,
@@ -451,9 +474,9 @@ def test_handle_user_reset_devices_confirm_answers_callback_before_peer_revoke()
             await super().answer()
 
     class OrderingWorkflow(FakeWorkflow):
-        def reset_user_devices(self, *, telegram_id, revoked_at=None):
+        async def reset_user_devices(self, *, telegram_id, revoked_at=None):
             events.append("reset_user_devices")
-            return super().reset_user_devices(
+            return await super().reset_user_devices(
                 telegram_id=telegram_id,
                 revoked_at=revoked_at,
             )
@@ -508,8 +531,8 @@ def test_handle_admin_pending_renders_approve_buttons_for_each_order():
 
 def test_handle_admin_pending_prioritizes_requested_config_version():
     class RequestedVersionWorkflow(FakeWorkflow):
-        def list_pending_orders(self, *, admin_telegram_id):
-            orders = super().list_pending_orders(admin_telegram_id=admin_telegram_id)
+        async def list_pending_orders(self, *, admin_telegram_id):
+            orders = await super().list_pending_orders(admin_telegram_id=admin_telegram_id)
             orders[0]["requested_config_version"] = "amneziawg_v2"
             return orders
 
@@ -538,9 +561,9 @@ def test_handle_admin_pending_answers_callback_before_listing_orders():
             await super().answer()
 
     class OrderingWorkflow(FakeWorkflow):
-        def list_pending_orders(self, *, admin_telegram_id):
+        async def list_pending_orders(self, *, admin_telegram_id):
             events.append("list_pending")
-            return super().list_pending_orders(admin_telegram_id=admin_telegram_id)
+            return await super().list_pending_orders(admin_telegram_id=admin_telegram_id)
 
     callback = OrderingCallback(
         data="admin:pending",
@@ -627,9 +650,9 @@ def test_handle_admin_approve_answers_callback_before_peer_apply():
             await super().answer()
 
     class OrderingWorkflow(FakeWorkflow):
-        def approve_order(self, *, admin_telegram_id, order_id, config_version):
+        async def approve_order(self, *, admin_telegram_id, order_id, config_version):
             events.append("approve_order")
-            return super().approve_order(
+            return await super().approve_order(
                 admin_telegram_id=admin_telegram_id,
                 order_id=order_id,
                 config_version=config_version,
@@ -1043,7 +1066,7 @@ def test_handle_admin_resend_issued_config_sends_existing_device_only_to_admin()
 
 def test_handle_admin_resend_issued_config_returns_safe_unavailable_response():
     class UnavailableWorkflow(FakeWorkflow):
-        def build_admin_config_handoff_for_device(self, **kwargs):
+        async def build_admin_config_handoff_for_device(self, **kwargs):
             raise ConfigMaterialUnavailable("secret-bearing internal detail")
 
     message = FakeMessage(user_id=9001)
@@ -1225,15 +1248,15 @@ class FakeWorkflow:
         self.awg3_requests = []
         self.awg3_confirmations = []
 
-    def is_admin(self, telegram_id):
+    async def is_admin(self, telegram_id):
         return telegram_id in self._admin_ids or telegram_id in getattr(
             self, "database_admin_ids", set()
         )
 
-    def is_configured_admin(self, telegram_id):
+    async def is_configured_admin(self, telegram_id):
         return telegram_id in self._admin_ids
 
-    def request_awg3(self, *, telegram_id, selection_handle):
+    async def request_awg3(self, *, telegram_id, selection_handle):
         self.awg3_requests.append((telegram_id, selection_handle))
         return SimpleNamespace(
             status="confirmation_required",
@@ -1242,7 +1265,7 @@ class FakeWorkflow:
             token="T" * 22,
         )
 
-    def confirm_awg3(self, *, telegram_id, confirmation_token):
+    async def confirm_awg3(self, *, telegram_id, confirmation_token):
         self.awg3_confirmations.append((telegram_id, confirmation_token))
         return SimpleNamespace(
             result=SimpleNamespace(
@@ -1263,7 +1286,7 @@ class FakeWorkflow:
             ),
         )
 
-    def issue_admin_config(
+    async def issue_admin_config(
         self,
         *,
         admin_telegram_id,
@@ -1284,14 +1307,15 @@ class FakeWorkflow:
             config_bytes=b"[Interface]\nPrivateKey = secret",
         )
 
-    def record_admin_config_delivery(
+    async def record_admin_config_delivery(
         self, *, admin_telegram_id, passport_device_id, delivered, reference
     ):
         self.admin_config_deliveries.append(
             (admin_telegram_id, passport_device_id, delivered)
         )
+        return True
 
-    def build_admin_config_handoff_for_device(
+    async def build_admin_config_handoff_for_device(
         self, *, admin_telegram_id, device_id
     ):
         self.admin_config_resends.append((admin_telegram_id, device_id))
@@ -1303,8 +1327,8 @@ class FakeWorkflow:
             config_bytes=b"[Interface]\nPrivateKey = secret",
         )
 
-    def get_operator_status(self, *, admin_telegram_id, now=None):
-        if not self.is_admin(admin_telegram_id):
+    async def get_operator_status(self, *, admin_telegram_id, now=None):
+        if not await self.is_admin(admin_telegram_id):
             return None
         self.status_reads.append(admin_telegram_id)
         return SimpleNamespace(
@@ -1324,8 +1348,8 @@ class FakeWorkflow:
             public_exposure_enabled=False,
         )
 
-    def get_operator_server_statuses(self, *, admin_telegram_id, limit=20):
-        if not self.is_admin(admin_telegram_id):
+    async def get_operator_server_statuses(self, *, admin_telegram_id, limit=20):
+        if not await self.is_admin(admin_telegram_id):
             return None
         self.server_status_reads.append(admin_telegram_id)
         return [
@@ -1344,8 +1368,8 @@ class FakeWorkflow:
             )
         ]
 
-    def get_operator_credential_statuses(self, *, admin_telegram_id, limit=20):
-        if not self.is_admin(admin_telegram_id):
+    async def get_operator_credential_statuses(self, *, admin_telegram_id, limit=20):
+        if not await self.is_admin(admin_telegram_id):
             return None
         self.integration_status_reads.append(admin_telegram_id)
         return [
@@ -1362,18 +1386,18 @@ class FakeWorkflow:
             )
         ]
 
-    def get_user_locale(self, *, telegram_id):
+    async def get_user_locale(self, *, telegram_id):
         return "ru"
 
-    def register_user(self, *, telegram_id, username, first_name, last_name):
+    async def register_user(self, *, telegram_id, username, first_name, last_name):
         self.registered_users.append(telegram_id)
         return 1
 
-    def set_user_locale(self, *, telegram_id, username, first_name, last_name, locale):
+    async def set_user_locale(self, *, telegram_id, username, first_name, last_name, locale):
         self.locales.append((telegram_id, locale))
         return True
 
-    def request_access(
+    async def request_access(
         self,
         *,
         telegram_id,
@@ -1386,13 +1410,13 @@ class FakeWorkflow:
         self.requests.append((username, config_version, plan_id))
         return SimpleNamespace(order_id=42, text="Access request #42 was created.")
 
-    def list_active_plans(self):
+    async def list_active_plans(self):
         return [
             {"id": "days_7", "name": "7 days"},
             {"id": "days_30", "name": "30 days"},
         ]
 
-    def build_user_traffic_views(self, *, telegram_id, now=None):
+    async def build_user_traffic_views(self, *, telegram_id, now=None):
         return [
             SimpleNamespace(
                 device_id=1,
@@ -1409,13 +1433,13 @@ class FakeWorkflow:
             )
         ]
 
-    def build_admin_traffic_views(self, *, admin_telegram_id, now=None):
-        if not self.is_admin(admin_telegram_id):
+    async def build_admin_traffic_views(self, *, admin_telegram_id, now=None):
+        if not await self.is_admin(admin_telegram_id):
             return []
         self.admin_traffic_reads.append(admin_telegram_id)
-        return self.build_user_traffic_views(telegram_id=admin_telegram_id, now=now)
+        return await self.build_user_traffic_views(telegram_id=admin_telegram_id, now=now)
 
-    def list_user_devices(self, *, telegram_id):
+    async def list_user_devices(self, *, telegram_id):
         if self._devices is not None:
             return self._devices
         return [
@@ -1431,7 +1455,7 @@ class FakeWorkflow:
             }
         ]
 
-    def build_user_resend_delivery(self, *, telegram_id, device_id):
+    async def build_user_resend_delivery(self, *, telegram_id, device_id):
         self.user_resends.append(device_id)
         if self._user_resend_error is not None:
             raise self._user_resend_error
@@ -1454,19 +1478,19 @@ class FakeWorkflow:
             ),
         )
 
-    def revoke_user_device(self, *, telegram_id, device_id, revoked_at=None):
+    async def revoke_user_device(self, *, telegram_id, device_id, revoked_at=None):
         self.revoked_devices.append(device_id)
         if self._revoke_error is not None:
             raise self._revoke_error
         return True
 
-    def reset_user_devices(self, *, telegram_id, revoked_at=None):
+    async def reset_user_devices(self, *, telegram_id, revoked_at=None):
         self.reset_requests.append(telegram_id)
         if self._revoke_error is not None:
             raise self._revoke_error
         return 2
 
-    def grant_admin(
+    async def grant_admin(
         self,
         *,
         admin_telegram_id,
@@ -1475,12 +1499,12 @@ class FakeWorkflow:
         first_name,
         last_name,
     ):
-        if not self.is_admin(admin_telegram_id):
+        if not await self.is_admin(admin_telegram_id):
             return False
         self.grants.append(target_telegram_id)
         return True
 
-    def create_manual_user(
+    async def create_manual_user(
         self,
         *,
         admin_telegram_id,
@@ -1489,12 +1513,12 @@ class FakeWorkflow:
         first_name,
         last_name,
     ):
-        if not self.is_admin(admin_telegram_id):
+        if not await self.is_admin(admin_telegram_id):
             return None
         self.manual_users.append(target_telegram_id)
         return 123
 
-    def create_manual_access_request(
+    async def create_manual_access_request(
         self,
         *,
         admin_telegram_id,
@@ -1505,13 +1529,13 @@ class FakeWorkflow:
         config_version,
         plan_id,
     ):
-        if not self.is_admin(admin_telegram_id):
+        if not await self.is_admin(admin_telegram_id):
             return None
         self.manual_orders.append((target_telegram_id, config_version, plan_id))
         return SimpleNamespace(order_id=77, text="Access request #77 was created.")
 
-    def list_pending_orders(self, *, admin_telegram_id):
-        if not self.is_admin(admin_telegram_id):
+    async def list_pending_orders(self, *, admin_telegram_id):
+        if not await self.is_admin(admin_telegram_id):
             return []
         return [
             {
@@ -1525,8 +1549,8 @@ class FakeWorkflow:
             }
         ]
 
-    def list_users(self, *, admin_telegram_id):
-        if not self.is_admin(admin_telegram_id):
+    async def list_users(self, *, admin_telegram_id):
+        if not await self.is_admin(admin_telegram_id):
             return []
         return [
             {
@@ -1542,8 +1566,8 @@ class FakeWorkflow:
             }
         ]
 
-    def approve_order(self, *, admin_telegram_id, order_id, config_version):
-        if not self.is_admin(admin_telegram_id):
+    async def approve_order(self, *, admin_telegram_id, order_id, config_version):
+        if not await self.is_admin(admin_telegram_id):
             return None
         self.approvals.append((order_id, config_version))
         if self._approval_error is not None:
@@ -1569,19 +1593,19 @@ class FakeWorkflow:
             ),
         )
 
-    def get_config_ready_template(self, *, admin_telegram_id):
-        if not self.is_admin(admin_telegram_id):
+    async def get_config_ready_template(self, *, admin_telegram_id):
+        if not await self.is_admin(admin_telegram_id):
             return None
         return "DefaultVPN template {device_id}"
 
-    def reset_config_ready_template(self, *, admin_telegram_id):
-        if not self.is_admin(admin_telegram_id):
+    async def reset_config_ready_template(self, *, admin_telegram_id):
+        if not await self.is_admin(admin_telegram_id):
             return False
         self.template_reset = True
         return True
 
-    def build_resend_delivery(self, *, admin_telegram_id, device_id):
-        if not self.is_admin(admin_telegram_id):
+    async def build_resend_delivery(self, *, admin_telegram_id, device_id):
+        if not await self.is_admin(admin_telegram_id):
             return None
         self.resends.append(device_id)
         return SimpleNamespace(

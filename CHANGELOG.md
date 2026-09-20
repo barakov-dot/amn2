@@ -2,6 +2,22 @@
 
 ## 2026-09-20
 
+- Wired persistent bot startup and all 41 handler workflow calls through the
+  worker/facade. Accepted handlers drain through remote/local completion and
+  Telegram delivery recording before SQLite, session and instance lock close.
+  Startup timeouts drain started factories; repeated cancellation retains ownership;
+  simultaneous runtime/cleanup failures are preserved. Raw phase15 components are
+  no longer exported in dispatcher context. Added safe ru/en partial-operation and
+  busy/closed replies. Failed delivery records never report success or resend.
+- Verification: handler/partial RED 5 failures; runtime RED 6 failures; a failed
+  partial-error reply additionally reproduced unsafe exception propagation and
+  now emits a fixed diagnostic marker. Final bot/device-revoke/bootstrap suite:
+  310 passed (baseline 278). Real temporary SQLite, controlled peer stubs and fake
+  Telegram only. Includes fresh authorization after queuing and remote success
+  with local rollback failure. No live access, dependency/schema changes, package
+  builds or deployment. One worker serializes this bot only; drain has no hard
+  deadline, and forced process termination/exactly-once recovery remain unsolved.
+
 - Added bounded ownership of accepted handlers and cancellation-resistant cleanup.
   Parent cancellation leaves delivery/record work alive; shutdown rejects new
   handlers and drains accepted ones. Tickets cannot be reused by child tasks.

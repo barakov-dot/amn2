@@ -139,3 +139,56 @@ def test_cleanup_failure_is_observed():
         with pytest.raises(ValueError, match='cleanup failed'):
             await await_owned_cleanup(cleanup())
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('locale', ['ru', 'en'])
+def test_middleware_partial_failure_is_safe_and_localized(locale, caplog):
+    from types import SimpleNamespace
+    from app.services.access import RemoteOperationPartialFailure
+
+    async def scenario():
+        owner = HandlerLifetime()
+        middleware = WorkflowLifetimeMiddleware(owner)
+        replies = []
+
+        class Event:
+            from_user = SimpleNamespace(language_code=locale)
+
+            async def answer(self, value):
+                replies.append(value)
+
+        async def handler(event, data):
+            raise RemoteOperationPartialFailure(
+                SimpleNamespace(operation_id='revoke', recovery_note='private-sentinel'),
+                ValueError('secret-cause'))
+
+        await middleware(handler, Event(), {})
+        await owner.drain()
+        assert len(replies) == 1
+        assert ('частично' if locale == 'ru' else 'partially') in replies[0]
+        assert 'private-sentinel' not in replies[0] + caplog.text
+        assert 'secret-cause' not in replies[0] + caplog.text
+    asyncio.run(scenario())
+
+
+def test_partial_reply_send_error_does_not_escape_with_secret_context(caplog):
+    from types import SimpleNamespace
+    from app.services.access import RemoteOperationPartialFailure
+
+    async def scenario():
+        owner = HandlerLifetime()
+
+        class Event:
+            async def answer(self, value):
+                raise RuntimeError('transport-private-detail')
+
+        async def handler(event, data):
+            raise RemoteOperationPartialFailure(
+                SimpleNamespace(operation_id='reset', recovery_note='partial-private-detail'),
+                ValueError('secret-cause'))
+
+        await WorkflowLifetimeMiddleware(owner)(handler, Event(), {})
+        await owner.drain()
+    asyncio.run(scenario())
+    assert 'private-detail' not in caplog.text and 'secret-cause' not in caplog.text
+    assert 'bot_safe_reply_failed' in caplog.text

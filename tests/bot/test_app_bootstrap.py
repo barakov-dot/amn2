@@ -210,13 +210,13 @@ def test_disabled_awg3_bootstrap_preserves_awg2_issuance(tmp_path):
     assert workflow._repo.get_device(result.device_id)["config_version"] == "amneziawg_v2"
 
 
-def test_dispatcher_exposes_phase15_bundle_without_activating_monitoring():
+def test_dispatcher_does_not_expose_phase15_bundle():
     components = SimpleNamespace(health_event_sink=None)
     workflow = SimpleNamespace(_phase15_awg3_components=components)
 
     dispatcher = create_dispatcher(workflow=workflow)
 
-    assert dispatcher["phase15_awg3_components"] is components
+    assert "phase15_awg3_components" not in dispatcher.workflow_data
 
 
 def test_create_workflow_can_enable_vps_peer_apply_from_server_config(tmp_path):
@@ -447,7 +447,7 @@ def test_persistent_bootstrap_orders_admission_before_workflow_and_explicit_poll
                 bot_factory=lambda **kwargs: events.append("bot")
                 or _FakePersistentBot(events),
                 workflow_factory=lambda settings: events.append("workflow")
-                or object(),
+                or _runtime_workflow(),
                 dispatcher_factory=lambda **kwargs: events.append("dispatcher")
                 or dispatcher,
                 admission_checker=_passing_admission(events),
@@ -504,7 +504,7 @@ def test_persistent_bootstrap_admission_failure_precedes_workflow_and_closes_ses
                 bot_factory=lambda **kwargs: events.append("bot")
                 or _FakePersistentBot(events),
                 workflow_factory=lambda settings: events.append("workflow")
-                or object(),
+                or _runtime_workflow(),
                 dispatcher_factory=lambda **kwargs: events.append("dispatcher")
                 or _FakeDispatcher(events),
                 admission_checker=failing_admission,
@@ -534,7 +534,7 @@ def test_persistent_bootstrap_recheck_failure_prevents_polling_and_readiness(tmp
                 _persistent_settings(tmp_path),
                 bot_factory=lambda **kwargs: _FakePersistentBot(events),
                 workflow_factory=lambda settings: events.append("workflow")
-                or object(),
+                or _runtime_workflow(),
                 dispatcher_factory=lambda **kwargs: events.append("dispatcher")
                 or _FakeDispatcher(events),
                 admission_checker=_passing_admission(events),
@@ -570,7 +570,7 @@ def test_persistent_bootstrap_applies_one_timeout_to_all_pre_poll_startup(tmp_pa
                     settings,
                     bot_factory=lambda **kwargs: _FakePersistentBot(events),
                     workflow_factory=lambda current_settings: events.append("workflow")
-                    or object(),
+                    or _runtime_workflow(),
                     dispatcher_factory=lambda **kwargs: events.append("dispatcher")
                     or _FakeDispatcher(events),
                     admission_checker=_passing_admission(events),
@@ -632,7 +632,7 @@ def test_persistent_bootstrap_watchdog_failure_cancels_polling_and_cleans_up(tmp
             await run_persistent_bot(
                 _persistent_settings(tmp_path),
                 bot_factory=lambda **kwargs: _FakePersistentBot(events),
-                workflow_factory=lambda settings: object(),
+                workflow_factory=lambda settings: _runtime_workflow(),
                 dispatcher_factory=lambda **kwargs: dispatcher,
                 admission_checker=_passing_admission(events),
                 state_checker=_passing_recheck(events),
@@ -655,3 +655,10 @@ def test_persistent_bootstrap_watchdog_failure_cancels_polling_and_cleans_up(tmp
         "session_close",
         "lock_exit",
     ]
+
+
+def _runtime_workflow():
+    return create_workflow(database_path=':memory:',
+        app_secret_key='synthetic-test-secret-with-more-than-32-chars',
+        admin_telegram_ids={9001}, default_vpn_network_cidr='10.8.0.0/24',
+        max_devices_per_user=5, default_plan_days=7)

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import Callable
 from contextlib import ExitStack
 from pathlib import Path
@@ -9,6 +10,9 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.exceptions import TelegramNetworkError
 
 from app.bot import create_dispatcher
+from app.bot.async_workflow import AsyncBotWorkflow, WORKFLOW_METHODS, make_workflow_resource
+from app.bot.handler_lifetime import HandlerLifetime, await_owned_cleanup
+from app.bot.workflow_worker import WorkflowWorker
 from app.bot.persistent_runtime import (
     PERSISTENT_ALLOWED_UPDATES,
     PERSISTENT_TASKS_CONCURRENCY_LIMIT,
@@ -28,7 +32,7 @@ from app.security.redaction import redact
 from app.server.peer_apply import ServerConfigPeerApplier
 from app.server_config.loader import load_server_config, select_server
 from app.server_config.models import ServerConfig
-from app.services.access import AccessService
+from app.services.access import AccessService, RemoteOperationPartialFailure
 from app.services.phase15_bootstrap import build_phase15_awg3_components
 from app.systemd_notify import SystemdNotifier
 from app.vpn.amneziawg_v2.config import ClientConfigDefaults
@@ -69,6 +73,15 @@ async def run_persistent_bot(
         polling_task: asyncio.Task[Any] | None = None
         watchdog_task: asyncio.Task[Any] | None = None
         ready_sent = False
+        lifetime = HandlerLifetime(limit=PERSISTENT_TASKS_CONCURRENCY_LIMIT)
+        worker = WorkflowWorker(
+            lambda: make_workflow_resource(lambda: workflow_factory(settings)),
+            allowed_methods=WORKFLOW_METHODS,
+            capacity=PERSISTENT_TASKS_CONCURRENCY_LIMIT,
+            outcome_sink=_report_workflow_outcome,
+            error_status=lambda exc: 'partial' if isinstance(exc, RemoteOperationPartialFailure) else 'error',
+        )
+        primary_error: BaseException | None = None
         try:
             config = PersistentBotAdmissionConfig(
                 expected_bot_username=settings.telegram_expected_bot_username,
@@ -80,8 +93,9 @@ async def run_persistent_bot(
             try:
                 async with startup_timeout:
                     result = await admission_checker(bot, config)
-                    workflow = workflow_factory(settings)
-                    dispatcher = dispatcher_factory(workflow=workflow)
+                    await worker.start()
+                    workflow = AsyncBotWorkflow(worker, guard=lifetime.require_active)
+                    dispatcher = dispatcher_factory(workflow=workflow, lifetime=lifetime)
                     await state_checker(bot, config)
             except PersistentBotAdmissionError:
                 if startup_timeout.expired():
@@ -116,17 +130,51 @@ async def run_persistent_bot(
                 watchdog_task = asyncio.create_task(active_notifier.run_watchdog())
             await _wait_for_polling_and_watchdog(polling_task, watchdog_task)
         except TelegramNetworkError as exc:
-            raise RuntimeError(
+            primary_error = RuntimeError(
                 telegram_network_error_message(settings.telegram_proxy_url)
-            ) from exc
+            )
+            raise primary_error from exc
+        except BaseException as exc:
+            primary_error = exc
+            raise
         finally:
+            lifetime.begin_shutdown()
+
+            async def cleanup():
+                errors: list[BaseException] = []
+                try:
+                    if ready_sent:
+                        active_notifier.stopping("Telegram polling stopped")
+                except BaseException as exc:
+                    errors.append(exc)
+                # Each cleanup step runs even when an earlier resource fails to close.
+                for step in (
+                    lambda: _cancel_task(watchdog_task),
+                    lambda: _cancel_task(polling_task),
+                    lifetime.drain,
+                    worker.aclose,
+                    lambda: _close_bot_session(bot),
+                ):
+                    try:
+                        await step()
+                    except BaseException as exc:
+                        errors.append(exc)
+                if errors:
+                    raise BaseExceptionGroup('Bot cleanup failed', errors)
+
             try:
-                if ready_sent:
-                    active_notifier.stopping("Telegram polling stopped")
-            finally:
-                await _cancel_task(watchdog_task)
-                await _cancel_task(polling_task)
-                await _close_bot_session(bot)
+                await await_owned_cleanup(cleanup())
+            except BaseException as cleanup_error:
+                if primary_error is not None:
+                    if isinstance(primary_error, asyncio.CancelledError) and isinstance(cleanup_error, asyncio.CancelledError):
+                        raise primary_error
+                    raise BaseExceptionGroup('Bot runtime and cleanup failed', [primary_error, cleanup_error])
+                raise
+
+
+def _report_workflow_outcome(outcome) -> None:
+    if outcome.status != 'success':
+        logging.getLogger(__name__).warning('bot_workflow_%s method=%s', outcome.status, outcome.method)
 
 
 async def _wait_for_polling_and_watchdog(
@@ -148,7 +196,11 @@ async def _wait_for_polling_and_watchdog(
 
 
 async def _cancel_task(task: asyncio.Task[Any] | None) -> None:
-    if task is None or task.done():
+    if task is None:
+        return
+    if task.done():
+        if not task.cancelled():
+            task.exception()
         return
     task.cancel()
     try:

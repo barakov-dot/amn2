@@ -3,6 +3,8 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import CallbackQuery
 from aiogram.types import Message
 
+from app.bot.async_workflow import AsyncBotWorkflow
+from app.bot.handler_lifetime import HandlerLifetime, WorkflowLifetimeMiddleware
 from app.bot.handlers import (
     AWG3_CONFIRM_PREFIX,
     AWG3_SELECT_PREFIX,
@@ -62,7 +64,7 @@ from app.bot.ux import (
 )
 
 
-def create_dispatcher(*, workflow=None) -> Dispatcher:
+def create_dispatcher(*, workflow: AsyncBotWorkflow | None = None, lifetime: HandlerLifetime | None = None) -> Dispatcher:
     router = Router()
 
     @router.message(CommandStart())
@@ -190,10 +192,9 @@ def create_dispatcher(*, workflow=None) -> Dispatcher:
 
     dispatcher = Dispatcher()
     dispatcher["workflow"] = workflow
-    dispatcher["phase15_awg3_components"] = getattr(
-        workflow,
-        "_phase15_awg3_components",
-        None,
-    )
+    owner = lifetime or HandlerLifetime()
+    middleware = WorkflowLifetimeMiddleware(owner)
+    router.message.outer_middleware(middleware)
+    router.callback_query.outer_middleware(middleware)
     dispatcher.include_router(router)
     return dispatcher

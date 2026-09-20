@@ -10,6 +10,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
 )
 
+from app.bot.async_workflow import AsyncBotWorkflow
 from app.bot.assets import BOT_LANGUAGE_SELECTION_HEADER_IMAGE_PATH
 from app.bot.delivery import TELEGRAM_COPY_TEXT_MAX_LENGTH
 from app.bot.texts import text
@@ -75,9 +76,9 @@ _AWG3_SELECT_RE = re.compile(r"^a3s:([A-Za-z0-9_-]{22,60})$")
 _AWG3_CONFIRM_RE = re.compile(r"^a3c:([A-Za-z0-9_-]{22,60})$")
 
 
-async def handle_start(message, *, workflow) -> None:
+async def handle_start(message, *, workflow: AsyncBotWorkflow) -> None:
     user = message.from_user
-    workflow.register_user(
+    await workflow.register_user(
         telegram_id=int(user.id),
         username=user.username,
         first_name=user.first_name,
@@ -96,7 +97,7 @@ async def handle_start(message, *, workflow) -> None:
     )
 
 
-async def handle_language_choice(callback, *, workflow) -> None:
+async def handle_language_choice(callback, *, workflow: AsyncBotWorkflow) -> None:
     locale = parse_language_callback(str(callback.data))
     if locale is None:
         await callback.message.answer(text("handler.unknown_language"))
@@ -104,7 +105,7 @@ async def handle_language_choice(callback, *, workflow) -> None:
         return
 
     user = callback.from_user
-    workflow.set_user_locale(
+    await workflow.set_user_locale(
         telegram_id=int(user.id),
         username=user.username,
         first_name=user.first_name,
@@ -114,11 +115,11 @@ async def handle_language_choice(callback, *, workflow) -> None:
     await callback.message.answer(
         render_start_text(
             first_name=user.first_name,
-            is_admin=workflow.is_admin(int(user.id)),
+            is_admin=await workflow.is_admin(int(user.id)),
             locale=locale,
         ),
         reply_markup=build_main_menu(
-            is_admin=workflow.is_admin(int(user.id)),
+            is_admin=await workflow.is_admin(int(user.id)),
             locale=locale,
         ),
     )
@@ -133,7 +134,7 @@ async def handle_request_config_prompt(callback) -> None:
     await callback.answer()
 
 
-async def handle_awg3_select(callback, *, workflow) -> None:
+async def handle_awg3_select(callback, *, workflow: AsyncBotWorkflow) -> None:
     if not _is_private_callback(callback):
         await callback.answer()
         return
@@ -143,7 +144,7 @@ async def handle_awg3_select(callback, *, workflow) -> None:
         await callback.answer()
         return
     try:
-        result = workflow.request_awg3(
+        result = await workflow.request_awg3(
             telegram_id=int(callback.from_user.id),
             selection_handle=parsed,
         )
@@ -173,7 +174,7 @@ async def handle_awg3_select(callback, *, workflow) -> None:
     await callback.answer()
 
 
-async def handle_awg3_confirm(callback, *, workflow) -> None:
+async def handle_awg3_confirm(callback, *, workflow: AsyncBotWorkflow) -> None:
     if not _is_private_callback(callback):
         await callback.answer()
         return
@@ -182,7 +183,7 @@ async def handle_awg3_confirm(callback, *, workflow) -> None:
         await callback.message.answer(text("handler.awg3_invalid_confirmation"))
         await callback.answer()
         return
-    confirmed = workflow.confirm_awg3(
+    confirmed = await workflow.confirm_awg3(
         telegram_id=int(callback.from_user.id),
         confirmation_token=confirmation_token,
     )
@@ -207,7 +208,7 @@ async def handle_awg3_confirm(callback, *, workflow) -> None:
     await callback.answer()
 
 
-async def handle_config_request(callback, *, workflow) -> None:
+async def handle_config_request(callback, *, workflow: AsyncBotWorkflow) -> None:
     config_version = parse_config_version_callback(
         str(callback.data),
         prefix=REQUEST_CONFIG_PREFIX,
@@ -217,7 +218,7 @@ async def handle_config_request(callback, *, workflow) -> None:
         await callback.answer()
         return
 
-    plans = workflow.list_active_plans()
+    plans = await workflow.list_active_plans()
     await callback.message.answer(
         render_plan_prompt(config_version=config_version),
         reply_markup=build_plan_keyboard(config_version=config_version, plans=plans),
@@ -225,7 +226,7 @@ async def handle_config_request(callback, *, workflow) -> None:
     await callback.answer()
 
 
-async def handle_plan_request(callback, *, workflow) -> None:
+async def handle_plan_request(callback, *, workflow: AsyncBotWorkflow) -> None:
     parsed = _parse_plan_callback(str(callback.data))
     if parsed is None:
         await callback.message.answer(text("handler.unknown_tariff"))
@@ -234,7 +235,7 @@ async def handle_plan_request(callback, *, workflow) -> None:
 
     config_version, plan_id = parsed
     user = callback.from_user
-    result = workflow.request_access(
+    result = await workflow.request_access(
         telegram_id=int(user.id),
         username=user.username,
         first_name=user.first_name,
@@ -246,20 +247,20 @@ async def handle_plan_request(callback, *, workflow) -> None:
     await callback.answer()
 
 
-async def handle_my_traffic(callback, *, workflow) -> None:
-    views = workflow.build_user_traffic_views(telegram_id=int(callback.from_user.id))
+async def handle_my_traffic(callback, *, workflow: AsyncBotWorkflow) -> None:
+    views = await workflow.build_user_traffic_views(telegram_id=int(callback.from_user.id))
     await callback.message.answer(render_user_traffic(views))
     await callback.answer()
 
 
-async def handle_my_tariff(callback, *, workflow) -> None:
-    devices = workflow.list_user_devices(telegram_id=int(callback.from_user.id))
+async def handle_my_tariff(callback, *, workflow: AsyncBotWorkflow) -> None:
+    devices = await workflow.list_user_devices(telegram_id=int(callback.from_user.id))
     await callback.message.answer(render_my_tariff(devices, now=_utc_now()))
     await callback.answer()
 
 
-async def handle_my_devices(callback, *, workflow) -> None:
-    devices = workflow.list_user_devices(telegram_id=int(callback.from_user.id))
+async def handle_my_devices(callback, *, workflow: AsyncBotWorkflow) -> None:
+    devices = await workflow.list_user_devices(telegram_id=int(callback.from_user.id))
     await callback.message.answer(render_my_devices(devices, now=_utc_now()))
     for device in devices:
         await callback.message.answer(
@@ -277,7 +278,7 @@ async def handle_my_devices(callback, *, workflow) -> None:
     await callback.answer()
 
 
-async def handle_user_resend_config(callback, *, workflow) -> None:
+async def handle_user_resend_config(callback, *, workflow: AsyncBotWorkflow) -> None:
     device_id = _parse_int_suffix(str(callback.data), USER_RESEND_PREFIX)
     if device_id is None:
         await callback.message.answer(text("handler.unknown_resend"))
@@ -285,7 +286,7 @@ async def handle_user_resend_config(callback, *, workflow) -> None:
         return
 
     try:
-        result = workflow.build_user_resend_delivery(
+        result = await workflow.build_user_resend_delivery(
             telegram_id=int(callback.from_user.id),
             device_id=device_id,
         )
@@ -303,7 +304,7 @@ async def handle_user_resend_config(callback, *, workflow) -> None:
     await callback.answer()
 
 
-async def handle_user_revoke_device(callback, *, workflow) -> None:
+async def handle_user_revoke_device(callback, *, workflow: AsyncBotWorkflow) -> None:
     device_id = _parse_int_suffix(str(callback.data), USER_REVOKE_PREFIX)
     if device_id is None:
         await callback.message.answer(text("handler.unknown_delete"))
@@ -317,7 +318,7 @@ async def handle_user_revoke_device(callback, *, workflow) -> None:
     await callback.answer()
 
 
-async def handle_user_revoke_device_confirm(callback, *, workflow) -> None:
+async def handle_user_revoke_device_confirm(callback, *, workflow: AsyncBotWorkflow) -> None:
     await callback.answer()
     device_id = _parse_int_suffix(str(callback.data), USER_REVOKE_CONFIRM_PREFIX)
     if device_id is None:
@@ -325,7 +326,7 @@ async def handle_user_revoke_device_confirm(callback, *, workflow) -> None:
         return
 
     try:
-        revoked = workflow.revoke_user_device(
+        revoked = await workflow.revoke_user_device(
             telegram_id=int(callback.from_user.id),
             device_id=device_id,
         )
@@ -351,7 +352,7 @@ async def handle_user_revoke_device_confirm(callback, *, workflow) -> None:
     )
 
 
-async def handle_user_reset_devices(callback, *, workflow) -> None:
+async def handle_user_reset_devices(callback, *, workflow: AsyncBotWorkflow) -> None:
     await callback.message.answer(
         text("handler.confirm_reset"),
         reply_markup=build_user_reset_confirm_keyboard(),
@@ -359,10 +360,10 @@ async def handle_user_reset_devices(callback, *, workflow) -> None:
     await callback.answer()
 
 
-async def handle_user_reset_devices_confirm(callback, *, workflow) -> None:
+async def handle_user_reset_devices_confirm(callback, *, workflow: AsyncBotWorkflow) -> None:
     await callback.answer()
     try:
-        changed = workflow.reset_user_devices(telegram_id=int(callback.from_user.id))
+        changed = await workflow.reset_user_devices(telegram_id=int(callback.from_user.id))
     except PeerApplyError as exc:
         await callback.message.answer(
             _peer_apply_failure_message(
@@ -380,14 +381,14 @@ async def handle_user_reset_devices_confirm(callback, *, workflow) -> None:
     )
 
 
-async def handle_admin_pending(callback, *, workflow) -> None:
+async def handle_admin_pending(callback, *, workflow: AsyncBotWorkflow) -> None:
     await callback.answer()
     admin_telegram_id = int(callback.from_user.id)
-    if not workflow.is_admin(admin_telegram_id):
+    if not await workflow.is_admin(admin_telegram_id):
         await callback.message.answer(text("handler.admin_required"))
         return
 
-    orders = workflow.list_pending_orders(admin_telegram_id=admin_telegram_id)
+    orders = await workflow.list_pending_orders(admin_telegram_id=admin_telegram_id)
     await callback.message.answer(
         render_admin_pending_orders(orders),
         reply_markup=build_admin_navigation_keyboard(),
@@ -402,89 +403,89 @@ async def handle_admin_pending(callback, *, workflow) -> None:
         )
 
 
-async def handle_admin_users(callback, *, workflow) -> None:
+async def handle_admin_users(callback, *, workflow: AsyncBotWorkflow) -> None:
     admin_telegram_id = int(callback.from_user.id)
-    if not workflow.is_admin(admin_telegram_id):
+    if not await workflow.is_admin(admin_telegram_id):
         await callback.message.answer(text("handler.admin_required"))
         await callback.answer()
         return
 
     rendered_text, keyboard = render_admin_users(
-        workflow.list_users(admin_telegram_id=admin_telegram_id)
+        await workflow.list_users(admin_telegram_id=admin_telegram_id)
     )
     await callback.message.answer(rendered_text, reply_markup=keyboard)
     await callback.answer()
 
 
-async def handle_admin_status(callback, *, workflow) -> None:
+async def handle_admin_status(callback, *, workflow: AsyncBotWorkflow) -> None:
     await callback.answer()
     admin_telegram_id = int(callback.from_user.id)
-    status = workflow.get_operator_status(admin_telegram_id=admin_telegram_id)
+    status = await workflow.get_operator_status(admin_telegram_id=admin_telegram_id)
     if status is None:
         await callback.message.answer(text("handler.admin_required"))
         return
-    locale = workflow.get_user_locale(telegram_id=admin_telegram_id)
+    locale = await workflow.get_user_locale(telegram_id=admin_telegram_id)
     rendered_text, keyboard = render_admin_status(status, locale=locale)
     await callback.message.answer(rendered_text, reply_markup=keyboard)
 
 
-async def handle_admin_servers(callback, *, workflow) -> None:
+async def handle_admin_servers(callback, *, workflow: AsyncBotWorkflow) -> None:
     await callback.answer()
     admin_telegram_id = int(callback.from_user.id)
-    statuses = workflow.get_operator_server_statuses(
+    statuses = await workflow.get_operator_server_statuses(
         admin_telegram_id=admin_telegram_id,
     )
     if statuses is None:
         await callback.message.answer(text("handler.admin_required"))
         return
-    locale = workflow.get_user_locale(telegram_id=admin_telegram_id)
+    locale = await workflow.get_user_locale(telegram_id=admin_telegram_id)
     rendered_text, keyboard = render_admin_servers(statuses, locale=locale)
     await callback.message.answer(rendered_text, reply_markup=keyboard)
 
 
-async def handle_admin_integrations(callback, *, workflow) -> None:
+async def handle_admin_integrations(callback, *, workflow: AsyncBotWorkflow) -> None:
     await callback.answer()
     admin_telegram_id = int(callback.from_user.id)
-    statuses = workflow.get_operator_credential_statuses(
+    statuses = await workflow.get_operator_credential_statuses(
         admin_telegram_id=admin_telegram_id,
     )
     if statuses is None:
         await callback.message.answer(text("handler.admin_required"))
         return
-    locale = workflow.get_user_locale(telegram_id=admin_telegram_id)
+    locale = await workflow.get_user_locale(telegram_id=admin_telegram_id)
     rendered_text, keyboard = render_admin_integrations(statuses, locale=locale)
     await callback.message.answer(rendered_text, reply_markup=keyboard)
 
 
-async def handle_admin_traffic(callback, *, workflow) -> None:
+async def handle_admin_traffic(callback, *, workflow: AsyncBotWorkflow) -> None:
     await callback.answer()
     admin_telegram_id = int(callback.from_user.id)
-    if not workflow.is_admin(admin_telegram_id):
+    if not await workflow.is_admin(admin_telegram_id):
         await callback.message.answer(text("handler.admin_required"))
         return
 
-    views = workflow.build_admin_traffic_views(
+    views = await workflow.build_admin_traffic_views(
         admin_telegram_id=admin_telegram_id,
     )
-    locale = workflow.get_user_locale(telegram_id=admin_telegram_id)
+    locale = await workflow.get_user_locale(telegram_id=admin_telegram_id)
     rendered_text, keyboard = render_admin_traffic(views, locale=locale)
     await callback.message.answer(rendered_text, reply_markup=keyboard)
 
 
-async def handle_admin_approve(callback, *, workflow) -> None:
+async def handle_admin_approve(callback, *, workflow: AsyncBotWorkflow) -> None:
     await callback.answer()
     admin_telegram_id = int(callback.from_user.id)
     parsed = parse_admin_approve_callback(str(callback.data))
     if parsed is None:
         await callback.message.answer("Unknown admin approval request.")
         return
-    if not workflow.is_admin(admin_telegram_id):
+    if not await workflow.is_admin(admin_telegram_id):
         await callback.message.answer(text("handler.admin_required"))
         return
 
     order_id, config_version = parsed
     try:
-        result = workflow.approve_order(
+        result = await workflow.approve_order(
             admin_telegram_id=admin_telegram_id,
             order_id=order_id,
             config_version=config_version,
@@ -517,9 +518,9 @@ async def handle_admin_approve(callback, *, workflow) -> None:
         )
 
 
-async def handle_admin_template(callback, *, workflow) -> None:
+async def handle_admin_template(callback, *, workflow: AsyncBotWorkflow) -> None:
     admin_telegram_id = int(callback.from_user.id)
-    template_text = workflow.get_config_ready_template(
+    template_text = await workflow.get_config_ready_template(
         admin_telegram_id=admin_telegram_id
     )
     if template_text is None:
@@ -532,9 +533,9 @@ async def handle_admin_template(callback, *, workflow) -> None:
     await callback.answer()
 
 
-async def handle_admin_reset_template(callback, *, workflow) -> None:
+async def handle_admin_reset_template(callback, *, workflow: AsyncBotWorkflow) -> None:
     admin_telegram_id = int(callback.from_user.id)
-    if not workflow.reset_config_ready_template(admin_telegram_id=admin_telegram_id):
+    if not await workflow.reset_config_ready_template(admin_telegram_id=admin_telegram_id):
         await callback.message.answer(text("handler.admin_required"))
         await callback.answer()
         return
@@ -543,7 +544,7 @@ async def handle_admin_reset_template(callback, *, workflow) -> None:
     await callback.answer()
 
 
-async def handle_admin_resend_config(callback, *, workflow) -> None:
+async def handle_admin_resend_config(callback, *, workflow: AsyncBotWorkflow) -> None:
     admin_telegram_id = int(callback.from_user.id)
     device_id = _parse_int_suffix(str(callback.data), ADMIN_RESEND_PREFIX)
     if device_id is None:
@@ -552,7 +553,7 @@ async def handle_admin_resend_config(callback, *, workflow) -> None:
         return
 
     try:
-        result = workflow.build_resend_delivery(
+        result = await workflow.build_resend_delivery(
             admin_telegram_id=admin_telegram_id,
             device_id=device_id,
         )
@@ -570,14 +571,14 @@ async def handle_admin_resend_config(callback, *, workflow) -> None:
     await callback.answer()
 
 
-async def handle_admin_grant(message, *, workflow) -> None:
+async def handle_admin_grant(message, *, workflow: AsyncBotWorkflow) -> None:
     admin_telegram_id = int(message.from_user.id)
     parsed = _parse_target_user_command(str(getattr(message, "text", "")))
     if parsed is None:
         await message.answer("Usage: /admin_grant <telegram_id> [username] [first_name]")
         return
     target_telegram_id, username, first_name = parsed
-    if not workflow.grant_admin(
+    if not await workflow.grant_admin(
         admin_telegram_id=admin_telegram_id,
         target_telegram_id=target_telegram_id,
         username=username,
@@ -589,14 +590,14 @@ async def handle_admin_grant(message, *, workflow) -> None:
     await message.answer(f"Admin role granted to telegram_id={target_telegram_id}.")
 
 
-async def handle_admin_add_user(message, *, workflow) -> None:
+async def handle_admin_add_user(message, *, workflow: AsyncBotWorkflow) -> None:
     admin_telegram_id = int(message.from_user.id)
     parsed = _parse_target_user_command(str(getattr(message, "text", "")))
     if parsed is None:
         await message.answer("Usage: /admin_add_user <telegram_id> [username] [first_name]")
         return
     target_telegram_id, username, first_name = parsed
-    user_id = workflow.create_manual_user(
+    user_id = await workflow.create_manual_user(
         admin_telegram_id=admin_telegram_id,
         target_telegram_id=target_telegram_id,
         username=username,
@@ -609,7 +610,7 @@ async def handle_admin_add_user(message, *, workflow) -> None:
     await message.answer(f"User was added: #{user_id}, telegram_id={target_telegram_id}.")
 
 
-async def handle_admin_create_order(message, *, workflow) -> None:
+async def handle_admin_create_order(message, *, workflow: AsyncBotWorkflow) -> None:
     admin_telegram_id = int(message.from_user.id)
     parsed = _parse_create_order_command(str(getattr(message, "text", "")))
     if parsed is None:
@@ -618,7 +619,7 @@ async def handle_admin_create_order(message, *, workflow) -> None:
         )
         return
     target_telegram_id, config_version, plan_id = parsed
-    result = workflow.create_manual_access_request(
+    result = await workflow.create_manual_access_request(
         admin_telegram_id=admin_telegram_id,
         target_telegram_id=target_telegram_id,
         username=None,
@@ -633,9 +634,9 @@ async def handle_admin_create_order(message, *, workflow) -> None:
     await message.answer(result.text)
 
 
-async def handle_admin_issue_config(message, *, workflow) -> None:
+async def handle_admin_issue_config(message, *, workflow: AsyncBotWorkflow) -> None:
     admin_telegram_id = int(message.from_user.id)
-    if not workflow.is_configured_admin(admin_telegram_id):
+    if not await workflow.is_configured_admin(admin_telegram_id):
         await message.answer("Admin access required.")
         return
     try:
@@ -653,7 +654,7 @@ async def handle_admin_issue_config(message, *, workflow) -> None:
     recipient_label, device_label, platform = parsed
     try:
         request_id = _telegram_message_request_id(message)
-        result = workflow.issue_admin_config(
+        result = await workflow.issue_admin_config(
             admin_telegram_id=admin_telegram_id,
             request_id=request_id,
             recipient_label=recipient_label,
@@ -698,9 +699,9 @@ def _telegram_message_request_id(message) -> str:
     return f"telegram-{chat_id}-{message_id}"
 
 
-async def handle_admin_resend_issued_config(message, *, workflow) -> None:
+async def handle_admin_resend_issued_config(message, *, workflow: AsyncBotWorkflow) -> None:
     admin_telegram_id = int(message.from_user.id)
-    if not workflow.is_configured_admin(admin_telegram_id):
+    if not await workflow.is_configured_admin(admin_telegram_id):
         await message.answer("Admin access required.")
         return
     parts = str(getattr(message, "text", "")).split()
@@ -713,7 +714,7 @@ async def handle_admin_resend_issued_config(message, *, workflow) -> None:
         await message.answer("Usage: /admin_resend_issued_config device_id")
         return
     try:
-        result = workflow.build_admin_config_handoff_for_device(
+        result = await workflow.build_admin_config_handoff_for_device(
             admin_telegram_id=admin_telegram_id,
             device_id=device_id,
         )
@@ -738,7 +739,7 @@ async def handle_admin_resend_issued_config(message, *, workflow) -> None:
 async def _send_admin_config_handoff(
     message,
     *,
-    workflow,
+    workflow: AsyncBotWorkflow,
     admin_telegram_id: int,
     result,
     success_text: str,
@@ -751,25 +752,37 @@ async def _send_admin_config_handoff(
             caption=None,
         )
     except Exception as exc:
-        workflow.record_admin_config_delivery(
-            admin_telegram_id=admin_telegram_id,
-            passport_device_id=result.passport_device_id,
-            delivered=False,
-            reference=f"telegram_error:{type(exc).__name__}",
-        )
+        try:
+            recorded = await workflow.record_admin_config_delivery(
+                admin_telegram_id=admin_telegram_id,
+                passport_device_id=result.passport_device_id,
+                delivered=False,
+                reference=f"telegram_error:{type(exc).__name__}",
+            )
+        except Exception:
+            recorded = False
+        if not recorded:
+            await message.answer(text("handler.delivery_record_failed"))
+            return
         await message.answer(failure_text)
         return
     message_id = getattr(telegram_message, "message_id", None)
-    workflow.record_admin_config_delivery(
-        admin_telegram_id=admin_telegram_id,
-        passport_device_id=result.passport_device_id,
-        delivered=True,
-        reference=(
-            f"telegram_message:{message_id}"
-            if message_id is not None
-            else "telegram_document:confirmed"
-        ),
-    )
+    try:
+        recorded = await workflow.record_admin_config_delivery(
+            admin_telegram_id=admin_telegram_id,
+            passport_device_id=result.passport_device_id,
+            delivered=True,
+            reference=(
+                f"telegram_message:{message_id}"
+                if message_id is not None
+                else "telegram_document:confirmed"
+            ),
+        )
+    except Exception:
+        recorded = False
+    if not recorded:
+        await message.answer(text("handler.delivery_record_failed"))
+        return
     await message.answer(success_text)
 
 
