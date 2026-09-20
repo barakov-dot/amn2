@@ -2,6 +2,14 @@
 
 ## 2026-09-20
 
+- Added a sequential bot workflow worker with eight outstanding slots, its own
+  FIFO, per-call context and one resource-owning thread. Queued cancellation
+  removes work; dispatched work finishes. Shutdown drains and joins off-loop.
+  Runtime wiring is pending. Baseline: 278 passed. Worker RED: missing module;
+  GREEN: 6 tests passed, including real SQLite ownership, cancellation churn,
+  capacity, context isolation, factory/close failures and startup cancellation.
+  No live access, dependency changes or deployment.
+
 - Web server health checks now run outside the application event loop. A slow
   SSH check no longer blocks other requests on that loop. Authentication, CSRF,
   SQLite access, stored health summaries, audit records and redirects retain
