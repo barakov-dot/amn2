@@ -2,6 +2,12 @@
 
 ## 2026-09-20
 
+- Added bounded ownership of accepted handlers and cancellation-resistant cleanup.
+  Parent cancellation leaves delivery/record work alive; shutdown rejects new
+  handlers and drains accepted ones. Tickets cannot be reused by child tasks.
+  RED: absent lifetime module; GREEN: 11 worker/lifetime tests passed. Runtime
+  integration follows separately; no Telegram or server operations were performed.
+
 - Added an explicit async facade for the 30 bot workflow methods and detached
   result snapshots. Managed factory failures close SQLite; successful workflows
   expose idempotent close without taking ownership of externally supplied repos.
