@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import re
@@ -2191,7 +2192,9 @@ def create_web_app(
         except LookupError:
             return PlainTextResponse("Server not found", status_code=404)
 
-        summary = run_server_health_check(actual_settings, str(server["name"]))
+        summary = await asyncio.to_thread(
+            run_server_health_check, actual_settings, str(server["name"])
+        )
         try:
             with _open_repository(actual_settings) as (repo, _conn):
                 with repo.transaction():

@@ -1,7 +1,10 @@
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 
+import pytest
 from fastapi.testclient import TestClient
 
 import app.web.app as web_app
@@ -14,6 +17,7 @@ from app.server.peer_apply import PeerApplyError
 from app.services.peer_inventory import PeerInventoryReport, RemotePeer
 from app.web.app import create_web_app
 from app.web.auth import create_password_hash
+from app.web.server_health import HealthSummary
 
 
 def test_servers_redirects_when_unauthenticated(tmp_path: Path):
@@ -923,6 +927,115 @@ def test_health_run_stores_unknown_when_server_config_is_unavailable(tmp_path: P
         assert metadata["risk_class"] == "read-only-remote"
         assert metadata["consistency_status"] == "read-only"
         assert metadata["status"] == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("health_status", "health_error"),
+    [("online", None), ("offline", "synthetic SSH timeout")],
+)
+def test_slow_health_check_keeps_server_page_responsive(
+    tmp_path: Path, monkeypatch, health_status: str, health_error: str | None
+):
+    settings = _settings(tmp_path, admin_telegram_ids="9001")
+    with _repo(Path(settings.database_path)) as repo:
+        server_id = _seed_server(repo, name="slow-health-vps")
+    started = Event()
+    release = Event()
+
+    def slow_health_check(received_settings, server_name):
+        assert received_settings is settings
+        assert server_name == "slow-health-vps"
+        started.set()
+        # Deadlock guard only: the test releases this after another page responds.
+        release.wait(timeout=10)
+        return HealthSummary(
+            status=health_status,
+            latency_ms=7,
+            ssh_ok=health_status == "online",
+            awg_ok=health_status == "online",
+            udp_port_ok=health_status == "online",
+            error=health_error,
+        )
+
+    monkeypatch.setattr(web_app, "run_server_health_check", slow_health_check)
+    # One TestClient context shares one app event loop between both requests.
+    with _authenticated_client(settings) as client:
+        page = client.get(f"/servers/{server_id}/health")
+        with ThreadPoolExecutor(max_workers=2) as requests:
+            pending = requests.submit(
+                client.post,
+                f"/servers/{server_id}/health/run",
+                data={"csrf_token": _csrf_token(page.text)},
+                follow_redirects=False,
+            )
+            try:
+                assert started.wait(timeout=5), "health check did not start"
+                other_page = requests.submit(client.get, "/servers").result(timeout=5)
+                assert other_page.status_code == 200
+                assert "slow-health-vps" in other_page.text
+                assert not pending.done(), "health completed before the page responded"
+            finally:
+                release.set()
+            response = pending.result(timeout=5)
+
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/servers/{server_id}/health"
+    with _repo(Path(settings.database_path)) as repo:
+        latest = repo.get_latest_server_health(server_id)
+        assert latest is not None
+        assert latest["status"] == health_status
+        assert latest["latency_ms"] == 7
+        assert bool(latest["ssh_ok"]) == (health_status == "online")
+        assert bool(latest["awg_ok"]) == (health_status == "online")
+        assert bool(latest["udp_port_ok"]) == (health_status == "online")
+        assert latest["error"] == health_error
+        action = _latest_admin_action(repo)
+        assert action["action"] == "web_server_health_run"
+        metadata = json.loads(action["metadata_json"])
+        assert metadata["operation_id"] == "server.health.check"
+        assert metadata["risk_class"] == "read-only-remote"
+        assert metadata["consistency_status"] == "read-only"
+        assert metadata["status"] == health_status
+        assert metadata["error"] == health_error
+
+
+@pytest.mark.parametrize(
+    ("guard", "expected_status"),
+    [("unauthenticated", 303), ("invalid_csrf", 403), ("missing_server", 404)],
+)
+def test_health_rejected_request_does_not_start_remote_check(
+    tmp_path: Path, monkeypatch, guard: str, expected_status: int
+):
+    settings = _settings(tmp_path)
+    with _repo(Path(settings.database_path)) as repo:
+        server_id = _seed_server(repo, name="guarded-health-vps")
+
+    def forbidden_check(*args, **kwargs):
+        raise AssertionError("rejected request started a remote check")
+
+    monkeypatch.setattr(web_app, "run_server_health_check", forbidden_check)
+    client = (
+        _client(settings=settings)
+        if guard == "unauthenticated"
+        else _authenticated_client(settings)
+    )
+    with client:
+        token = "invalid"
+        target_id = server_id
+        if guard == "missing_server":
+            token = _csrf_token(client.get(f"/servers/{server_id}/health").text)
+            target_id += 1000
+        response = client.post(
+            f"/servers/{target_id}/health/run",
+            data={"csrf_token": token},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == expected_status
+    if guard == "unauthenticated":
+        assert response.headers["location"] == "/login"
+    with _repo(Path(settings.database_path)) as repo:
+        assert repo.get_latest_server_health(server_id) is None
 
 
 def test_invalid_csrf_does_not_create_edit_disable_or_run_health(tmp_path: Path):
