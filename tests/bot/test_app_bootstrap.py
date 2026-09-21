@@ -336,6 +336,65 @@ def test_create_bot_uses_proxy_session_when_proxy_url_is_configured(monkeypatch)
     assert bot.session.proxy == "socks5://127.0.0.1:1080"
 
 
+@pytest.mark.parametrize('early', [False, True])
+def test_executable_scope_covers_pending_stop_and_cleanup(monkeypatch, early):
+    import signal
+    import app.main as module
+    from app.bot.lifecycle import ProcessSignalScope
+
+    previous = {signal.SIGTERM: object(), signal.SIGINT: object()}
+    registry, events = dict(previous), []
+    class Scope(ProcessSignalScope):
+        def __init__(self, stop):
+            super().__init__(stop, get_handler=registry.__getitem__, set_handler=registry.__setitem__)
+        def __enter__(self):
+            result = super().__enter__()
+            events.append('installed')
+            if early:
+                registry[signal.SIGTERM](signal.SIGTERM, None)
+            return result
+        def __exit__(self, *args):
+            result = super().__exit__(*args)
+            events.append('restored')
+            return result
+    monkeypatch.setattr(module, 'ProcessSignalScope', Scope)
+    async def runtime(stop):
+        events.append('runtime')
+        with stop.bind(asyncio.current_task(), lambda: events.append('admission_closed')):
+            try:
+                registry[signal.SIGINT](signal.SIGINT, None)
+                await asyncio.Event().wait()
+            finally:
+                stop.begin_cleanup()
+                events.append('cleanup')
+    module.main(runtime=runtime)
+    assert registry == previous
+    assert events == (['installed', 'restored'] if early else
+                      ['installed', 'runtime', 'admission_closed', 'cleanup', 'restored'])
+
+
+def test_executable_does_not_swallow_external_cancellation(monkeypatch):
+    from contextlib import nullcontext
+    import app.main as module
+    monkeypatch.setattr(module, 'ProcessSignalScope', lambda stop: nullcontext())
+    async def runtime(stop):
+        raise asyncio.CancelledError('external')
+    with pytest.raises(asyncio.CancelledError, match='external'):
+        module.main(runtime=runtime)
+
+
+def test_pending_stop_precedes_settings(monkeypatch):
+    from contextlib import contextmanager
+    import app.main as module
+    @contextmanager
+    def scope(stop):
+        stop.notify_signal()
+        yield
+    monkeypatch.setattr(module, 'ProcessSignalScope', scope)
+    monkeypatch.setattr(module, 'Settings', lambda: pytest.fail('Settings must not start'))
+    module.main()
+
+
 class _FakeSession:
     def __init__(self, events):
         self._events = events
@@ -472,6 +531,7 @@ def test_persistent_bootstrap_orders_admission_before_workflow_and_explicit_poll
     assert poll[1]["allowed_updates"] == ["message", "callback_query"]
     assert poll[1]["polling_timeout"] == 20
     assert poll[1]["close_bot_session"] is False
+    assert poll[1]["handle_signals"] is False
     assert poll[1]["handle_as_tasks"] is True
     assert poll[1]["tasks_concurrency_limit"] == 8
     assert events.index("recheck") < events.index(poll)

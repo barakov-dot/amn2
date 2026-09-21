@@ -46,6 +46,7 @@ class WorkflowWorker:
         allowed_methods: frozenset[str], capacity: int = 8,
         outcome_sink: Callable[[JobOutcome], None] | None = None,
         error_status: Callable[[BaseException], Literal['error', 'partial']] | None = None,
+        factory_start_allowed: Callable[[], bool] | None = None,
     ) -> None:
         if capacity <= 0:
             raise ValueError('capacity must be positive')
@@ -54,6 +55,7 @@ class WorkflowWorker:
         self._capacity = capacity
         self._sink = outcome_sink
         self._error_status = error_status
+        self._factory_start_allowed = factory_start_allowed
         self._state = 'NEW'
         self._queued: deque[_Job] = deque()
         self._outstanding = 0
@@ -75,6 +77,8 @@ class WorkflowWorker:
     async def _open_resource(self) -> None:
         if self._state != 'OPEN':
             raise WorkflowClosed('Workflow closed before factory dispatch')
+        if self._factory_start_allowed is not None and not self._factory_start_allowed():
+            raise WorkflowClosed('Workflow stopped before factory dispatch')
         self._resource = await asyncio.get_running_loop().run_in_executor(self._executor, self._factory)
         self._pump_task = asyncio.create_task(self._pump())
 

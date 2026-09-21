@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
@@ -12,6 +12,7 @@ from aiogram.exceptions import TelegramNetworkError
 from app.bot import create_dispatcher
 from app.bot.async_workflow import AsyncBotWorkflow, WORKFLOW_METHODS, make_workflow_resource
 from app.bot.handler_lifetime import HandlerLifetime, await_owned_cleanup
+from app.bot.lifecycle import ProcessSignalScope, StopController
 from app.bot.workflow_worker import WorkflowWorker
 from app.bot.persistent_runtime import (
     PERSISTENT_ALLOWED_UPDATES,
@@ -38,9 +39,53 @@ from app.systemd_notify import SystemdNotifier
 from app.vpn.amneziawg_v2.config import ClientConfigDefaults
 
 
-async def run() -> None:
-    settings = Settings()
-    await run_persistent_bot(settings)
+async def run(stop_controller: StopController | None = None) -> None:
+    stop = stop_controller or StopController()
+    if stop_controller is None:
+        stop.attach(asyncio.get_running_loop())
+    try:
+        stop.raise_if_requested()
+        settings = Settings()
+        stop.raise_if_requested()
+        await run_persistent_bot(settings, stop_controller=stop)
+    finally:
+        if stop_controller is None:
+            stop.detach()
+
+
+async def _supervise(stop: StopController, runtime: Callable[[StopController], Awaitable[None]]) -> None:
+    stop.attach(asyncio.get_running_loop())
+    task = asyncio.current_task()
+    error: BaseException | None = None
+    try:
+        stop.raise_if_requested()
+        await runtime(stop)
+    except asyncio.CancelledError as exc:
+        if not stop.owns_cancellation(exc, task):
+            error = exc
+        else:
+            # An explicit checkpoint may precede delivery of our task.cancel().
+            try:
+                await asyncio.sleep(0)
+            except asyncio.CancelledError as pending:
+                if not stop.owns_cancellation(pending, task):
+                    error = pending
+    except BaseException as exc:
+        error = exc
+    finally:
+        stop.detach()
+    if stop.failure is not None:
+        if error is not None and error is not stop.failure:
+            raise BaseExceptionGroup('Bot stop and runtime failed', [error, stop.failure])
+        raise stop.failure
+    if error is not None:
+        raise error
+
+
+def main(*, runtime: Callable[[StopController], Awaitable[None]] | None = None) -> None:
+    stop = StopController()
+    with ProcessSignalScope(stop):
+        asyncio.run(_supervise(stop, runtime or run))
 
 
 async def run_persistent_bot(
@@ -54,122 +99,145 @@ async def run_persistent_bot(
     lock_factory: Callable[..., Any] = PersistentBotInstanceLock,
     notifier: SystemdNotifier | None = None,
     receipt_writer: Callable[[str], Any] = print,
+    stop_controller: StopController | None = None,
 ) -> None:
-    bot_factory = bot_factory or create_bot
-    workflow_factory = workflow_factory or create_workflow_from_settings
-    dispatcher_factory = dispatcher_factory or create_dispatcher
-    active_notifier = notifier or SystemdNotifier.from_environment()
-    with lock_factory(settings.telegram_runtime_lock_path):
-        try:
-            bot = bot_factory(
-                telegram_bot_token=settings.telegram_bot_token,
-                telegram_proxy_url=settings.telegram_proxy_url,
-            )
-        except Exception:
-            raise PersistentBotAdmissionError(
-                "Telegram bot client creation failed"
-            ) from None
-
-        polling_task: asyncio.Task[Any] | None = None
-        watchdog_task: asyncio.Task[Any] | None = None
-        ready_sent = False
-        lifetime = HandlerLifetime(limit=PERSISTENT_TASKS_CONCURRENCY_LIMIT)
-        worker = WorkflowWorker(
-            lambda: make_workflow_resource(lambda: workflow_factory(settings)),
-            allowed_methods=WORKFLOW_METHODS,
-            capacity=PERSISTENT_TASKS_CONCURRENCY_LIMIT,
-            outcome_sink=_report_workflow_outcome,
-            error_status=lambda exc: 'partial' if isinstance(exc, RemoteOperationPartialFailure) else 'error',
-        )
-        primary_error: BaseException | None = None
-        try:
-            config = PersistentBotAdmissionConfig(
-                expected_bot_username=settings.telegram_expected_bot_username,
-                timeout_seconds=settings.telegram_admission_timeout_seconds,
-            )
-            startup_timeout = asyncio.timeout(
-                settings.telegram_admission_timeout_seconds
-            )
-            try:
-                async with startup_timeout:
-                    result = await admission_checker(bot, config)
-                    await worker.start()
-                    workflow = AsyncBotWorkflow(worker, guard=lifetime.require_active)
-                    dispatcher = dispatcher_factory(workflow=workflow, lifetime=lifetime)
-                    await state_checker(bot, config)
-            except PersistentBotAdmissionError:
-                if startup_timeout.expired():
-                    raise PersistentBotAdmissionError(
-                        "Telegram persistent startup timed out"
-                    ) from None
-                raise
-            except TimeoutError:
-                raise PersistentBotAdmissionError(
-                    "Telegram persistent startup timed out"
-                ) from None
-
-            polling_task = asyncio.create_task(
-                dispatcher.start_polling(
-                    bot,
-                    polling_timeout=settings.telegram_polling_timeout_seconds,
-                    allowed_updates=list(PERSISTENT_ALLOWED_UPDATES),
-                    close_bot_session=False,
-                    handle_as_tasks=True,
-                    tasks_concurrency_limit=PERSISTENT_TASKS_CONCURRENCY_LIMIT,
-                )
-            )
-            await asyncio.sleep(0)
-            if polling_task.done():
-                await polling_task
-                return
-
-            receipt_writer(result.render())
-            active_notifier.ready("Telegram polling admitted")
-            ready_sent = True
-            if active_notifier.watchdog_interval_seconds() is not None:
-                watchdog_task = asyncio.create_task(active_notifier.run_watchdog())
-            await _wait_for_polling_and_watchdog(polling_task, watchdog_task)
-        except TelegramNetworkError as exc:
-            primary_error = RuntimeError(
-                telegram_network_error_message(settings.telegram_proxy_url)
-            )
-            raise primary_error from exc
-        except BaseException as exc:
-            primary_error = exc
-            raise
-        finally:
-            lifetime.begin_shutdown()
-
-            async def cleanup():
-                errors: list[BaseException] = []
+    stop = stop_controller or StopController()
+    if stop_controller is None:
+        stop.attach(asyncio.get_running_loop())
+    lifetime = HandlerLifetime(limit=PERSISTENT_TASKS_CONCURRENCY_LIMIT)
+    try:
+        with stop.bind(asyncio.current_task(), lifetime.begin_shutdown):
+            bot_factory = bot_factory or create_bot
+            workflow_factory = workflow_factory or create_workflow_from_settings
+            dispatcher_factory = dispatcher_factory or create_dispatcher
+            active_notifier = notifier or SystemdNotifier.from_environment()
+            stop.raise_if_requested()
+            with lock_factory(settings.telegram_runtime_lock_path):
                 try:
-                    if ready_sent:
-                        active_notifier.stopping("Telegram polling stopped")
-                except BaseException as exc:
-                    errors.append(exc)
-                # Each cleanup step runs even when an earlier resource fails to close.
-                for step in (
-                    lambda: _cancel_task(watchdog_task),
-                    lambda: _cancel_task(polling_task),
-                    lifetime.drain,
-                    worker.aclose,
-                    lambda: _close_bot_session(bot),
-                ):
-                    try:
-                        await step()
-                    except BaseException as exc:
-                        errors.append(exc)
-                if errors:
-                    raise BaseExceptionGroup('Bot cleanup failed', errors)
+                    stop.raise_if_requested()
+                    bot = bot_factory(
+                        telegram_bot_token=settings.telegram_bot_token,
+                        telegram_proxy_url=settings.telegram_proxy_url,
+                    )
+                except Exception:
+                    raise PersistentBotAdmissionError(
+                        "Telegram bot client creation failed"
+                    ) from None
 
-            try:
-                await await_owned_cleanup(cleanup())
-            except BaseException as cleanup_error:
-                if primary_error is not None:
-                    if isinstance(primary_error, asyncio.CancelledError) and isinstance(cleanup_error, asyncio.CancelledError):
-                        raise primary_error
-                    raise BaseExceptionGroup('Bot runtime and cleanup failed', [primary_error, cleanup_error])
-                raise
+                polling_task: asyncio.Task[Any] | None = None
+                watchdog_task: asyncio.Task[Any] | None = None
+                ready_sent = False
+                worker = WorkflowWorker(
+                    lambda: make_workflow_resource(lambda: workflow_factory(settings)),
+                    allowed_methods=WORKFLOW_METHODS,
+                    capacity=PERSISTENT_TASKS_CONCURRENCY_LIMIT,
+                    factory_start_allowed=lambda: not stop.requested,
+                    outcome_sink=_report_workflow_outcome,
+                    error_status=lambda exc: 'partial' if isinstance(exc, RemoteOperationPartialFailure) else 'error',
+                )
+                primary_error: BaseException | None = None
+                try:
+                    stop.raise_if_requested()
+                    config = PersistentBotAdmissionConfig(
+                        expected_bot_username=settings.telegram_expected_bot_username,
+                        timeout_seconds=settings.telegram_admission_timeout_seconds,
+                    )
+                    startup_timeout = asyncio.timeout(
+                        settings.telegram_admission_timeout_seconds
+                    )
+                    try:
+                        async with startup_timeout:
+                            result = await admission_checker(bot, config)
+                            stop.raise_if_requested()
+                            await worker.start()
+                            stop.raise_if_requested()
+                            workflow = AsyncBotWorkflow(worker, guard=lifetime.require_active)
+                            dispatcher = dispatcher_factory(workflow=workflow, lifetime=lifetime)
+                            stop.raise_if_requested()
+                            await state_checker(bot, config)
+                    except PersistentBotAdmissionError:
+                        if startup_timeout.expired():
+                            raise PersistentBotAdmissionError(
+                                "Telegram persistent startup timed out"
+                            ) from None
+                        raise
+                    except TimeoutError:
+                        raise PersistentBotAdmissionError(
+                            "Telegram persistent startup timed out"
+                        ) from None
+
+                    stop.raise_if_requested()
+                    polling_task = asyncio.create_task(
+                        dispatcher.start_polling(
+                            bot,
+                            polling_timeout=settings.telegram_polling_timeout_seconds,
+                            allowed_updates=list(PERSISTENT_ALLOWED_UPDATES),
+                            close_bot_session=False,
+                            handle_signals=False,
+                            handle_as_tasks=True,
+                            tasks_concurrency_limit=PERSISTENT_TASKS_CONCURRENCY_LIMIT,
+                        )
+                    )
+                    await asyncio.sleep(0)
+                    stop.raise_if_requested()
+                    if polling_task.done():
+                        await polling_task
+                        return
+
+                    stop.raise_if_requested()
+                    receipt_writer(result.render())
+                    stop.raise_if_requested()
+                    active_notifier.ready("Telegram polling admitted")
+                    ready_sent = True
+                    if active_notifier.watchdog_interval_seconds() is not None:
+                        watchdog_task = asyncio.create_task(active_notifier.run_watchdog())
+                    await _wait_for_polling_and_watchdog(polling_task, watchdog_task)
+                except TelegramNetworkError as exc:
+                    primary_error = RuntimeError(
+                        telegram_network_error_message(settings.telegram_proxy_url)
+                    )
+                    raise primary_error from exc
+                except BaseException as exc:
+                    primary_error = exc
+                    raise
+                finally:
+                    stop.begin_cleanup()
+                    lifetime.begin_shutdown()
+
+                    async def cleanup():
+                        errors: list[BaseException] = []
+                        try:
+                            if ready_sent:
+                                active_notifier.stopping("Telegram polling stopped")
+                        except BaseException as exc:
+                            errors.append(exc)
+                        # Each cleanup step runs even when an earlier resource fails to close.
+                        for step in (
+                            lambda: _cancel_task(watchdog_task),
+                            lambda: _cancel_task(polling_task),
+                            lifetime.drain,
+                            worker.aclose,
+                            lambda: _close_bot_session(bot),
+                        ):
+                            try:
+                                await step()
+                            except BaseException as exc:
+                                if exc is not primary_error:
+                                    errors.append(exc)
+                        if errors:
+                            raise BaseExceptionGroup('Bot cleanup failed', errors)
+
+                    try:
+                        await await_owned_cleanup(cleanup())
+                    except BaseException as cleanup_error:
+                        if primary_error is not None:
+                            if isinstance(primary_error, asyncio.CancelledError) and isinstance(cleanup_error, asyncio.CancelledError):
+                                raise primary_error
+                            raise BaseExceptionGroup('Bot runtime and cleanup failed', [primary_error, cleanup_error])
+                        raise
+    finally:
+        if stop_controller is None:
+            stop.detach()
 
 
 def _report_workflow_outcome(outcome) -> None:
@@ -200,7 +268,7 @@ async def _cancel_task(task: asyncio.Task[Any] | None) -> None:
         return
     if task.done():
         if not task.cancelled():
-            task.exception()
+            await task
         return
     task.cancel()
     try:
@@ -443,4 +511,4 @@ def _sync_server_config(repo: Repository, server: ServerConfig) -> int:
 
 
 if __name__ == "__main__":
-    asyncio.run(run())
+    main()

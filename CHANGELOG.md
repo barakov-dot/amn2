@@ -2,6 +2,17 @@
 
 ## 2026-09-21
 
+- Wired stop ownership before Settings/lock/admission and guarded worker factory
+  submission, receipt and READY. Polling no longer installs its own signal handlers.
+  Accepted work still drains before workflow/session/lock close; repeated owned
+  stop does not interrupt cleanup. The executable alone normalizes owned stop.
+  Added direct-cancel/owned-stop coverage including send-record and queued revoke.
+  A new concurrent stop/poll/close failure test exposed a swallowed completed
+  polling error; cleanup now propagates it without duplicating the primary error.
+  RED: factory/runtime/wrapper missing API and the lost polling error reproduced.
+  GREEN: affected four-file set, 59 passed in 8.32s, pinned local environment.
+  Actual Linux signals and production stop budgets remain unverified; no live I/O.
+
 - Added a scoped stop controller and SIGTERM/SIGINT registration boundary.
   Signals before loop attachment are retained; admission closes once, repeated
   stop leaves cleanup alive, and external cancellation is not classified as an

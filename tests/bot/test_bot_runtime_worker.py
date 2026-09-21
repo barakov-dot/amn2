@@ -10,6 +10,7 @@ from app.bot.ux import USER_REVOKE_CONFIRM_PREFIX
 from app.bot.workflow_worker import WorkflowClosed
 from app.bot.workflows import AdminConfigHandoff
 from app.main import run_persistent_bot
+from app.bot.lifecycle import StopController
 from tests.bot.test_app_bootstrap import (
     _FakePersistentBot, _FakeDispatcher, _FakeNotifier, _RecordingLock,
     _passing_admission, _passing_recheck, _persistent_settings, _runtime_workflow,
@@ -27,8 +28,57 @@ def _runtime(tmp_path, events, factory, dispatcher_factory, **extra):
         receipt_writer=lambda value: None, **extra)
 
 
-def test_busy_revoke_drain_retains_lock_and_runs_queued_reset_once(tmp_path):
+@pytest.mark.parametrize('stage', ['admission', 'recheck', 'receipt'])
+def test_stop_at_startup_never_announces_readiness(tmp_path, stage):
     async def scenario():
+        events = []
+        stop = StopController()
+        stop.attach(asyncio.get_running_loop())
+        async def admission(bot, config):
+            if stage == 'admission':
+                stop.request_stop()
+                await asyncio.sleep(0)
+            return await _passing_admission(events)(bot, config)
+        async def recheck(bot, config):
+            if stage == 'recheck':
+                stop.request_stop()
+                await asyncio.sleep(0)
+        def factory(settings):
+            events.append('factory')
+            resource = _runtime_workflow()
+            closer = resource._resource_closer
+            resource._resource_closer = lambda: (events.append('workflow_close'), closer())
+            return resource
+        def receipt(value):
+            events.append('receipt')
+            if stage == 'receipt':
+                stop.request_stop()
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await run_persistent_bot(
+                    _persistent_settings(tmp_path), stop_controller=stop,
+                    bot_factory=lambda **kw: _FakePersistentBot(events),
+                    workflow_factory=factory,
+                    dispatcher_factory=lambda **kw: _FakeDispatcher(events),
+                    admission_checker=admission, state_checker=recheck,
+                    notifier=_FakeNotifier(events),
+                    lock_factory=lambda path: _RecordingLock(events), receipt_writer=receipt)
+            assert events[-2:] == ['session_close', 'lock_exit']
+            assert not any(isinstance(e, tuple) and e[0] in ('ready', 'stopping') for e in events)
+            if stage == 'admission':
+                assert 'factory' not in events
+            if stage != 'receipt':
+                assert 'receipt' not in events
+        finally:
+            stop.detach()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('trigger', ['cancel', 'stop'])
+def test_busy_revoke_drain_retains_lock_and_runs_queued_reset_once(tmp_path, trigger):
+    async def scenario():
+        stop = StopController()
+        stop.attach(asyncio.get_running_loop())
         events, threads, holder = [], [], {}
         entered, release = threading.Event(), threading.Event()
         dispatcher = _FakeDispatcher(events)
@@ -66,7 +116,7 @@ def test_busy_revoke_drain_retains_lock_and_runs_queued_reset_once(tmp_path):
             holder.update(workflow=workflow, owner=lifetime)
             return dispatcher
 
-        root = asyncio.create_task(_runtime(tmp_path, events, factory, build_dispatcher))
+        root = asyncio.create_task(_runtime(tmp_path, events, factory, build_dispatcher, stop_controller=stop))
         try:
             await asyncio.wait_for(dispatcher.started.wait(), 2)
             cb = FakeCallback(data=f'{USER_REVOKE_CONFIRM_PREFIX}:{holder["ids"][0]}', user_id=1001)
@@ -78,10 +128,10 @@ def test_busy_revoke_drain_retains_lock_and_runs_queued_reset_once(tmp_path):
             await asyncio.sleep(0)
             assert not second.done()
             assert events.count('peer-phone') == 1 and 'peer-laptop' not in events
-            root.cancel()
+            (root.cancel if trigger == 'cancel' else stop.request_stop)()
             for _ in range(10):
                 await asyncio.sleep(0)
-            root.cancel()
+            (root.cancel if trigger == 'cancel' else stop.request_stop)()
             await asyncio.sleep(0)
             assert not root.done()
             assert 'session_close' not in events and 'lock_exit' not in events
@@ -95,17 +145,22 @@ def test_busy_revoke_drain_retains_lock_and_runs_queued_reset_once(tmp_path):
             assert events.count('peer-phone') == events.count('peer-laptop') == 1
             assert ('statuses', ['revoked', 'revoked']) in events
             assert events[-3:] == ['workflow_close', 'session_close', 'lock_exit']
+            assert sum(isinstance(e, tuple) and e[0] == 'stopping' for e in events) == 1
             assert len(set(threads)) == 1 and threads[0] != threading.get_ident()
         finally:
             release.set()
             if not root.done():
-                root.cancel()
+                (root.cancel if trigger == 'cancel' else stop.request_stop)()
             await asyncio.gather(root, return_exceptions=True)
+            stop.detach()
     asyncio.run(scenario())
 
 
-def test_shutdown_between_send_and_record_drains_delivery_before_close(tmp_path):
+@pytest.mark.parametrize('trigger', ['cancel', 'stop'])
+def test_shutdown_between_send_and_record_drains_delivery_before_close(tmp_path, trigger):
     async def scenario():
+        stop = StopController()
+        stop.attach(asyncio.get_running_loop())
         events, holder = [], {}
         entered, release = threading.Event(), threading.Event()
         dispatcher = _FakeDispatcher(events)
@@ -131,7 +186,7 @@ def test_shutdown_between_send_and_record_drains_delivery_before_close(tmp_path)
             holder.update(workflow=workflow, owner=lifetime)
             return dispatcher
 
-        root = asyncio.create_task(_runtime(tmp_path, events, factory, build_dispatcher))
+        root = asyncio.create_task(_runtime(tmp_path, events, factory, build_dispatcher, stop_controller=stop))
         try:
             await asyncio.wait_for(dispatcher.started.wait(), 2)
             message = FakeMessage(user_id=9001)
@@ -143,19 +198,27 @@ def test_shutdown_between_send_and_record_drains_delivery_before_close(tmp_path)
             parent.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await parent
-            dispatcher.stop.set()
+            if trigger == 'stop':
+                stop.request_stop()
+            else:
+                dispatcher.stop.set()
             await asyncio.sleep(0)
             assert 'session_close' not in events
             release.set()
-            await root
+            if trigger == 'stop':
+                with pytest.raises(asyncio.CancelledError):
+                    await root
+            else:
+                await root
             assert events[-4:] == ['record_done', 'workflow_close', 'session_close', 'lock_exit']
             assert len(message.bot.sent_documents) == 1
             assert 'delivered to admin' in message.answers[-1]['text']
         finally:
             release.set()
             if not root.done():
-                root.cancel()
+                (root.cancel if trigger == 'cancel' else stop.request_stop)()
             await asyncio.gather(root, return_exceptions=True)
+            stop.detach()
     asyncio.run(scenario())
 
 
@@ -220,7 +283,8 @@ def test_startup_timeout_drains_started_factory_without_polling(tmp_path):
     asyncio.run(scenario())
 
 
-def test_primary_and_cleanup_failure_are_both_preserved(tmp_path):
+@pytest.mark.parametrize('trigger', ['error', 'stop'])
+def test_primary_and_cleanup_failure_are_both_preserved(tmp_path, trigger):
     events = []
     primary, secondary = ValueError('poll failed'), RuntimeError('close failed')
 
@@ -236,11 +300,18 @@ def test_primary_and_cleanup_failure_are_both_preserved(tmp_path):
 
     class Dispatcher:
         async def start_polling(self, *args, **kw):
+            if trigger == 'stop':
+                stop.request_stop()
             raise primary
 
+    stop = StopController()
     async def scenario():
-        with pytest.raises(BaseExceptionGroup) as caught:
-            await _runtime(tmp_path, events, factory, lambda **kw: Dispatcher())
+        stop.attach(asyncio.get_running_loop())
+        try:
+            with pytest.raises(BaseExceptionGroup) as caught:
+                await _runtime(tmp_path, events, factory, lambda **kw: Dispatcher(), stop_controller=stop)
+        finally:
+            stop.detach()
 
         def leaves(error):
             if isinstance(error, BaseExceptionGroup):
@@ -248,4 +319,38 @@ def test_primary_and_cleanup_failure_are_both_preserved(tmp_path):
             return [error]
         assert primary in leaves(caught.value) and secondary in leaves(caught.value)
         assert events[-2:] == ['session_close', 'lock_exit']
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize('stage', ['ready', 'stopping'])
+def test_notifier_failure_still_closes_session_and_lock(tmp_path, stage):
+    events = []
+    failure = RuntimeError('synthetic notifier failure')
+    class Notifier(_FakeNotifier):
+        def ready(self, status):
+            if stage == 'ready':
+                raise failure
+            super().ready(status)
+        def stopping(self, status):
+            raise failure
+    async def scenario():
+        dispatcher = _FakeDispatcher(events)
+        async def release():
+            await dispatcher.started.wait()
+            dispatcher.stop.set()
+        task = asyncio.create_task(release())
+        try:
+            with pytest.raises((RuntimeError, BaseExceptionGroup)):
+                await run_persistent_bot(
+                    _persistent_settings(tmp_path),
+                    bot_factory=lambda **kw: _FakePersistentBot(events),
+                    workflow_factory=lambda settings: _runtime_workflow(),
+                    dispatcher_factory=lambda **kw: dispatcher,
+                    admission_checker=_passing_admission(events), state_checker=_passing_recheck(events),
+                    notifier=Notifier(events), lock_factory=lambda path: _RecordingLock(events),
+                    receipt_writer=lambda value: None)
+            assert events[-2:] == ['session_close', 'lock_exit']
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
     asyncio.run(scenario())

@@ -9,6 +9,56 @@ import pytest
 from app.bot.workflow_worker import WorkflowBusy, WorkflowClosed, WorkflowWorker
 
 
+def test_stop_guard_prevents_factory_submit():
+    async def scenario():
+        calls = []
+        worker = WorkflowWorker(lambda: calls.append('factory'),
+                                allowed_methods=frozenset(),
+                                factory_start_allowed=lambda: False)
+        try:
+            with pytest.raises(WorkflowClosed):
+                await worker.start()
+        finally:
+            await worker.aclose()
+        assert calls == []
+    asyncio.run(scenario())
+
+
+def test_stop_after_factory_dispatch_retains_owner_until_close():
+    async def scenario():
+        entered, release = threading.Event(), threading.Event()
+        events, threads = [], []
+        allowed = [True]
+        class Resource:
+            def __init__(self):
+                threads.append(threading.get_ident())
+                events.append('factory')
+                entered.set()
+                assert release.wait(5)
+            def close(self):
+                events.append('close')
+                threads.append(threading.get_ident())
+        worker = WorkflowWorker(Resource, allowed_methods=frozenset(),
+                                factory_start_allowed=lambda: allowed[0])
+        starting = asyncio.create_task(worker.start())
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            allowed[0] = False
+            closing = asyncio.create_task(worker.aclose())
+            await asyncio.sleep(0)
+            assert not closing.done() and events == ['factory']
+            release.set()
+            await starting
+            await closing
+            assert events == ['factory', 'close']
+            assert len(set(threads)) == 1
+        finally:
+            release.set()
+            await worker.aclose()
+            await asyncio.gather(starting, return_exceptions=True)
+    asyncio.run(scenario())
+
+
 def test_sqlite_owned_by_worker_and_event_loop_remains_free():
     async def scenario():
         entered, release = threading.Event(), threading.Event()
