@@ -354,3 +354,16 @@ def test_notifier_failure_still_closes_session_and_lock(tmp_path, stage):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
     asyncio.run(scenario())
+
+
+def test_pending_stop_prevents_lock_and_client(tmp_path):
+    from app.main import main
+    def forbidden(*args, **kwargs):
+        pytest.fail('Pending stop must precede resource creation')
+    async def runtime(stop):
+        stop.request_stop()
+        await run_persistent_bot(
+            _persistent_settings(tmp_path), stop_controller=stop,
+            lock_factory=forbidden, bot_factory=forbidden, workflow_factory=forbidden,
+            notifier=_FakeNotifier([]))
+    main(runtime=runtime)

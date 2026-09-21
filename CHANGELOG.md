@@ -2,6 +2,16 @@
 
 ## 2026-09-21
 
+- Prepared Linux-only disposable-child SIGTERM/SIGINT tests at PRE_LOOP,
+  FACTORY_DISPATCHED and READY, with exact Popen ownership, fixed trace order,
+  10s deadlines and bounded output. No signals are sent on Windows.
+  Added a pending-stop-before-lock/client regression. Final affected eight-file
+  set: 93 passed, 6 skipped in 8.87s, no warnings; helper syntax checked.
+  Linux six-case execution and its negative control: NOT_RUN (Windows host,
+  no compatible pre-existing Linux environment provided; no environment install).
+  Status: SOURCE_IMPLEMENTED_WINDOWS_TESTED, not Linux/systemd acceptance or
+  a production stop SLA. Review was inline; full baseline was not repeated.
+
 - Wired stop ownership before Settings/lock/admission and guarded worker factory
   submission, receipt and READY. Polling no longer installs its own signal handlers.
   Accepted work still drains before workflow/session/lock close; repeated owned
