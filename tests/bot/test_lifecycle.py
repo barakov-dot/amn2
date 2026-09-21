@@ -184,3 +184,19 @@ def test_admission_close_error_still_requests_owner_cleanup():
         finally:
             stop.detach()
     asyncio.run(scenario())
+
+
+def test_controller_cannot_bind_a_second_runtime_generation():
+    from app.bot.lifecycle import StopController
+    async def scenario():
+        stop = StopController()
+        stop.attach(asyncio.get_running_loop())
+        try:
+            with stop.bind(asyncio.current_task(), lambda: None):
+                pass
+            with pytest.raises(RuntimeError, match='already owns'):
+                with stop.bind(asyncio.current_task(), lambda: None):
+                    pass
+        finally:
+            stop.detach()
+    asyncio.run(scenario())

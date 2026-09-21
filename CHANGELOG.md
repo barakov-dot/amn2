@@ -2,6 +2,14 @@
 
 ## 2026-09-21
 
+- Final contract review found that a controller could bind another runtime after
+  a normal unbind. A persistent one-bind latch now enforces the specified single
+  runtime generation. Valid RED: second bind did not raise (the first test draft
+  had a missing import, corrected before the valid RED). Final affected eight-file
+  regression after this fix: 94 passed, 6 Linux-only skipped in 9.16s, no warnings.
+  This supersedes the preceding 93-pass source result; Linux signal evidence,
+  target stop budget and deployment remain unproven/unchanged.
+
 - Prepared Linux-only disposable-child SIGTERM/SIGINT tests at PRE_LOOP,
   FACTORY_DISPATCHED and READY, with exact Popen ownership, fixed trace order,
   10s deadlines and bounded output. No signals are sent on Windows.

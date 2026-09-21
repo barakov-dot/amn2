@@ -11,6 +11,7 @@ class StopController:
     def __init__(self) -> None:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._attached_once = False
+        self._bound_once = False
         self._detached = False
         self._pending = False
         self._requested = False
@@ -88,8 +89,9 @@ class StopController:
     @contextmanager
     def bind(self, task: asyncio.Task, close_admission: Callable[[], None]) -> Iterator[None]:
         self._require_loop()
-        if self._task is not None or self._cancel_target is not None:
+        if self._bound_once:
             raise RuntimeError('Stop controller already owns a runtime')
+        self._bound_once = True
         self._task = task
         self._close_admission = close_admission
         try:
