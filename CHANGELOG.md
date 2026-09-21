@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-09-21
+
+- Added a scoped stop controller and SIGTERM/SIGINT registration boundary.
+  Signals before loop attachment are retained; admission closes once, repeated
+  stop leaves cleanup alive, and external cancellation is not classified as an
+  owned stop. Previous signal handlers are restored even after partial install
+  or restore failure. Tests use a fake registry, without host OS signals.
+  RED: missing controller and signal-scope API; GREEN: 10 passed in 2.48s on
+  Python 3.12.14 / pinned aiogram 3.30.0. Runtime wiring follows separately.
+  No dependency/unit/schema changes, live access or deployment; no hard stop SLA.
+
 ## 2026-09-20
 
 - Independent review found two pre-dispatch lifecycle races. A cancelled queued
