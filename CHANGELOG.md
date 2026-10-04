@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-10-04
+
+- Updated the two AWG3 revision literals in the top-level synthetic admin issuer
+  fixture to `amneziawg_v3_1`, matching the active passport contract. Assertions,
+  production code, dependencies and schemas are unchanged. Before: 10 failures
+  in the 397-test configuration slice; a fixture-only control isolated the cause.
+  After: the same selected slice passed 397/397 with no skips in 50.04s on
+  Windows/Python 3.12.14, using existing local dependencies and offline guards.
+  Synthetic SQLite only; no live clients, Telegram, SSH, package rebuild or deploy.
+  This is not a full-project suite, target-runtime equivalence or client acceptance.
+
 ## 2026-09-21
 
 - Final contract review found that a controller could bind another runtime after
